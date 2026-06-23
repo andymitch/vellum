@@ -37,8 +37,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
-# iroh logs -> Android logcat (debugging cross-network sync)
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Route iroh logs to Android logcat (tracing-subscriber is in [dependencies]).
 paranoid-android = "0.2"
 
 
@@ -50,5 +49,3 @@ opt-level = 3
 panic = "abort"
 strip = true
 
-[dev-dependencies]
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

@@ -53,14 +53,14 @@ pub fn run() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
         let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new("warn,iroh=info"))
+            .with(tracing_subscriber::EnvFilter::new("warn,notes_lib=info"))
             .with(paranoid_android::layer("noteslog"))
             .try_init();
     }
     #[cfg(not(target_os = "android"))]
     {
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new("warn,iroh=info,notes_lib=debug"))
+            .with_env_filter(tracing_subscriber::EnvFilter::new("warn,notes_lib=info"))
             .try_init();
     }
 
