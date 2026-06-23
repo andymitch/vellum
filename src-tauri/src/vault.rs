@@ -327,7 +327,16 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
     map_err(
         async {
             let ticket = DocTicket::from_str(&ticket).map_err(|e| anyhow!("bad ticket: {e}"))?;
-            let doc = node.docs.import(ticket).await?;
+            let DocTicket { capability, nodes } = ticket;
+            let nsid = capability.id();
+            // Re-pair safe: if we already have this namespace, open it; otherwise
+            // import it. Either way, start_sync with the ticket's peers so a peer
+            // whose node id changed (e.g. fresh install) gets reconnected.
+            let doc = match node.docs.open(nsid).await? {
+                Some(doc) => doc,
+                None => node.docs.import_namespace(capability).await?,
+            };
+            doc.start_sync(nodes).await?;
             let name = vault_name(node, &doc).await;
             Ok(VaultInfo {
                 id: doc.id().to_string(),
