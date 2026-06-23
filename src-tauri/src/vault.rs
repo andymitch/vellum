@@ -533,6 +533,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// The data path behind the `vault-changed` Tauri event: subscribing to a
+    /// doc yields a LiveEvent when it mutates (watch_vault forwards these to
+    /// `app.emit`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscribe_emits_on_change() {
+        use futures_lite::StreamExt;
+        let dir = std::env::temp_dir().join(format!("notes-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("node");
+        let doc = node.docs.create().await.expect("create");
+
+        let mut events = doc.subscribe().await.expect("subscribe");
+        doc.set_bytes(node.author, b"x.md".to_vec(), encode("hi"))
+            .await
+            .expect("write");
+
+        let got = tokio::time::timeout(Duration::from_secs(10), events.next()).await;
+        assert!(
+            matches!(got, Ok(Some(Ok(_)))),
+            "expected a LiveEvent after a local change, got {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn vault_roundtrip() {
         let dir = std::env::temp_dir().join(format!("notes-test-{}", std::process::id()));
