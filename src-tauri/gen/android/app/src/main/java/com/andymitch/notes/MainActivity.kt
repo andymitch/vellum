@@ -3,7 +3,6 @@ package com.andymitch.notes
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkRequest
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 
@@ -20,15 +19,15 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     initAndroidContext(applicationContext)
-    bindProcessToDefaultNetwork()
+    watchNetworkChanges()
   }
 
-  // Watch for default-network changes and notify iroh so it re-probes/migrates.
+  // Notify iroh on default-network changes so it re-probes/migrates (wifi<->cellular).
   // We deliberately do NOT bindProcessToNetwork: pinning the process to a network
   // leaves DNS pointed at the old network's resolver after a wifi->cellular
   // switch, so relay hostnames fail to resolve. ACCESS_NETWORK_STATE (in the
   // manifest) is what iroh needs for its socket/network association.
-  private fun bindProcessToDefaultNetwork() {
+  private fun watchNetworkChanges() {
     val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     cm.registerDefaultNetworkCallback(
       object : ConnectivityManager.NetworkCallback() {
