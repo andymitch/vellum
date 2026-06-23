@@ -67,7 +67,11 @@ impl VaultManager {
         self.node
             .get_or_try_init(|| init(self.dir.clone()))
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                let s = e.to_string();
+                eprintln!("[vault] node init failed: {s}");
+                s
+            })
     }
 }
 
@@ -231,7 +235,11 @@ fn to_nodes(b: &Builder, prefix: &str) -> Vec<TreeNode> {
 }
 
 fn map_err<T>(r: Result<T>) -> Result<T, String> {
-    r.map_err(|e| e.to_string())
+    r.map_err(|e| {
+        let s = e.to_string();
+        eprintln!("[vault] command error: {s}");
+        s
+    })
 }
 
 // ============================ commands ============================

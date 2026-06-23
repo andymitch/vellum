@@ -45,6 +45,12 @@ pub fn run() {
             .with(paranoid_android::layer("noteslog"))
             .try_init();
     }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("warn,iroh=info,notes_lib=debug"))
+            .try_init();
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
