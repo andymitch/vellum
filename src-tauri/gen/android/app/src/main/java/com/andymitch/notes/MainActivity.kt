@@ -12,6 +12,10 @@ class MainActivity : TauriActivity() {
   // ndk_context so iroh's network monitor doesn't panic on Android.
   private external fun initAndroidContext(context: Context)
 
+  // Tells iroh the network changed (Android doesn't surface this natively), so
+  // it re-probes and migrates connections on wifi <-> cellular handoff.
+  private external fun notifyNetworkChange()
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
@@ -30,6 +34,11 @@ class MainActivity : TauriActivity() {
       object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
           cm.bindProcessToNetwork(network)
+          notifyNetworkChange()
+        }
+
+        override fun onLost(network: Network) {
+          notifyNetworkChange()
         }
       },
     )

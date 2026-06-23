@@ -28,6 +28,18 @@ pub extern "system" fn Java_com_andymitch_notes_MainActivity_initAndroidContext(
     std::mem::forget(global);
 }
 
+/// Called from MainActivity's ConnectivityManager callback when the active
+/// network changes. Android doesn't surface this to native code, so we notify
+/// iroh explicitly to re-probe and migrate connections (e.g. wifi <-> cellular).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_andymitch_notes_MainActivity_notifyNetworkChange(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) {
+    vault::notify_network_change();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
