@@ -104,6 +104,26 @@ fn decode(bytes: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
 }
 
+/// Write a credential file readable only by the owner (0o600 on Unix).
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
 /// Build the persistent iroh node (endpoint + blobs + gossip + docs on a router).
 pub async fn init(dir: PathBuf) -> Result<Node> {
     std::fs::create_dir_all(&dir)?;
@@ -120,7 +140,7 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         }
         _ => {
             let sk = SecretKey::generate();
-            std::fs::write(&key_path, sk.to_bytes())?;
+            write_private(&key_path, &sk.to_bytes())?;
             sk
         }
     };
