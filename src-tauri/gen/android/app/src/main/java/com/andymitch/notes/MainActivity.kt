@@ -23,17 +23,16 @@ class MainActivity : TauriActivity() {
     bindProcessToDefaultNetwork()
   }
 
-  // Bind the whole process to the active network. Without this, iroh's UDP
-  // sockets aren't associated with the cellular network: IPv6 sends fail with
-  // EPERM and the IPv4 CLAT path fails with EIO (GSO), so the relay never
-  // connects off-wifi. Keep the binding current as networks change.
+  // Watch for default-network changes and notify iroh so it re-probes/migrates.
+  // We deliberately do NOT bindProcessToNetwork: pinning the process to a network
+  // leaves DNS pointed at the old network's resolver after a wifi->cellular
+  // switch, so relay hostnames fail to resolve. ACCESS_NETWORK_STATE (in the
+  // manifest) is what iroh needs for its socket/network association.
   private fun bindProcessToDefaultNetwork() {
     val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    cm.activeNetwork?.let { cm.bindProcessToNetwork(it) }
     cm.registerDefaultNetworkCallback(
       object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-          cm.bindProcessToNetwork(network)
           notifyNetworkChange()
         }
 
