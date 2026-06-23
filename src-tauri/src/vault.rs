@@ -8,6 +8,11 @@
 //! queries), so every stored value is prefixed with a single marker byte to
 //! guarantee it is non-empty — this lets a user clear a note to "" without the
 //! note vanishing. The marker is stripped on read.
+//!
+//! The iroh node is built lazily on the first command rather than in Tauri
+//! `setup`: on Android, iroh's network monitor reads the Android JNI context
+//! (via `ndk-context`), which tao only initializes once the event loop is
+//! running — after `setup`. Deferring the build avoids that startup race.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -27,18 +32,43 @@ use iroh_docs::{
 use iroh_gossip::net::Gossip;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::OnceCell;
 
 const NAME_KEY: &[u8] = b"\x00meta/name";
 const MARKER: u8 = 0x01;
 const KEEP: &str = ".keep";
 
-/// Managed Tauri state holding the live iroh node.
-pub struct AppState {
+/// The live iroh node (handles into the running protocols).
+pub struct Node {
     blobs: FsStore,
     docs: Docs,
     author: AuthorId,
     _router: Router,
     watched: Mutex<HashSet<NamespaceId>>,
+}
+
+/// Managed Tauri state. Builds the node lazily on first use (see module docs).
+pub struct VaultManager {
+    node: OnceCell<Node>,
+    dir: PathBuf,
+}
+
+impl VaultManager {
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            node: OnceCell::new(),
+            dir,
+        }
+    }
+
+    /// Returns the node, building it on first call. A failed build is not
+    /// cached, so the next command retries.
+    async fn node(&self) -> Result<&Node, String> {
+        self.node
+            .get_or_try_init(|| init(self.dir.clone()))
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Serialize)]
@@ -71,7 +101,7 @@ fn decode(bytes: &[u8]) -> String {
 }
 
 /// Build the persistent iroh node (endpoint + blobs + gossip + docs on a router).
-pub async fn init(dir: PathBuf) -> Result<AppState> {
+pub async fn init(dir: PathBuf) -> Result<Node> {
     std::fs::create_dir_all(&dir)?;
 
     let endpoint = Endpoint::bind(presets::N0).await?;
@@ -89,7 +119,7 @@ pub async fn init(dir: PathBuf) -> Result<AppState> {
 
     let author = docs.author_default().await?;
 
-    Ok(AppState {
+    Ok(Node {
         blobs,
         docs,
         author,
@@ -102,25 +132,24 @@ fn parse_id(id: &str) -> Result<NamespaceId> {
     NamespaceId::from_str(id).map_err(|e| anyhow!("bad vault id: {e}"))
 }
 
-async fn open(state: &AppState, id: &str) -> Result<iroh_docs::api::Doc> {
+async fn open(node: &Node, id: &str) -> Result<iroh_docs::api::Doc> {
     let nsid = parse_id(id)?;
-    state
-        .docs
+    node.docs
         .open(nsid)
         .await?
         .ok_or_else(|| anyhow!("vault not found"))
 }
 
-async fn read_key(state: &AppState, doc: &iroh_docs::api::Doc, key: &[u8]) -> Result<Option<String>> {
+async fn read_key(node: &Node, doc: &iroh_docs::api::Doc, key: &[u8]) -> Result<Option<String>> {
     let Some(entry) = doc.get_one(Query::key_exact(key)).await? else {
         return Ok(None);
     };
-    let bytes = state.blobs.blobs().get_bytes(entry.content_hash()).await?;
+    let bytes = node.blobs.blobs().get_bytes(entry.content_hash()).await?;
     Ok(Some(decode(&bytes)))
 }
 
-async fn vault_name(state: &AppState, doc: &iroh_docs::api::Doc) -> String {
-    match read_key(state, doc, NAME_KEY).await {
+async fn vault_name(node: &Node, doc: &iroh_docs::api::Doc) -> String {
+    match read_key(node, doc, NAME_KEY).await {
         Ok(Some(name)) if !name.is_empty() => name,
         _ => {
             let s = doc.id().to_string();
@@ -136,9 +165,8 @@ async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
     while let Some(entry) = stream.next().await {
         let entry = entry?;
         let key = entry.key();
-        // Skip reserved meta keys.
         if key.first() == Some(&0x00) {
-            continue;
+            continue; // reserved meta keys
         }
         if let Ok(s) = std::str::from_utf8(key) {
             keys.push(s.to_string());
@@ -173,7 +201,6 @@ fn insert_path(root: &mut Builder, segments: &[&str], full: &str, is_file: bool)
 
 fn to_nodes(b: &Builder, prefix: &str) -> Vec<TreeNode> {
     let mut out = Vec::new();
-    // Folders first, alphabetical.
     for (name, child) in &b.dirs {
         let path = if prefix.is_empty() {
             name.clone()
@@ -205,15 +232,16 @@ fn map_err<T>(r: Result<T>) -> Result<T, String> {
 // ============================ commands ============================
 
 #[tauri::command]
-pub async fn list_vaults(state: State<'_, AppState>) -> Result<Vec<VaultInfo>, String> {
+pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo>, String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let mut stream = state.docs.list().await?;
+            let mut stream = node.docs.list().await?;
             let mut out = Vec::new();
             while let Some(item) = stream.next().await {
                 let (id, _cap) = item?;
-                let doc = state.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
-                let name = vault_name(&state, &doc).await;
+                let doc = node.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
+                let name = vault_name(node, &doc).await;
                 out.push(VaultInfo {
                     id: id.to_string(),
                     name,
@@ -226,11 +254,12 @@ pub async fn list_vaults(state: State<'_, AppState>) -> Result<Vec<VaultInfo>, S
 }
 
 #[tauri::command]
-pub async fn create_vault(state: State<'_, AppState>, name: String) -> Result<VaultInfo, String> {
+pub async fn create_vault(state: State<'_, VaultManager>, name: String) -> Result<VaultInfo, String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = state.docs.create().await?;
-            doc.set_bytes(state.author, NAME_KEY.to_vec(), encode(&name)).await?;
+            let doc = node.docs.create().await?;
+            doc.set_bytes(node.author, NAME_KEY.to_vec(), encode(&name)).await?;
             Ok(VaultInfo {
                 id: doc.id().to_string(),
                 name,
@@ -241,12 +270,13 @@ pub async fn create_vault(state: State<'_, AppState>, name: String) -> Result<Va
 }
 
 #[tauri::command]
-pub async fn join_vault(state: State<'_, AppState>, ticket: String) -> Result<VaultInfo, String> {
+pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Result<VaultInfo, String> {
+    let node = state.node().await?;
     map_err(
         async {
             let ticket = DocTicket::from_str(&ticket).map_err(|e| anyhow!("bad ticket: {e}"))?;
-            let doc = state.docs.import(ticket).await?;
-            let name = vault_name(&state, &doc).await;
+            let doc = node.docs.import(ticket).await?;
+            let name = vault_name(node, &doc).await;
             Ok(VaultInfo {
                 id: doc.id().to_string(),
                 name,
@@ -257,10 +287,11 @@ pub async fn join_vault(state: State<'_, AppState>, ticket: String) -> Result<Va
 }
 
 #[tauri::command]
-pub async fn share_vault(state: State<'_, AppState>, vault: String) -> Result<String, String> {
+pub async fn share_vault(state: State<'_, VaultManager>, vault: String) -> Result<String, String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
+            let doc = open(node, &vault).await?;
             // Write capability → flat, equal ownership across all synced devices.
             let ticket = doc
                 .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
@@ -272,16 +303,16 @@ pub async fn share_vault(state: State<'_, AppState>, vault: String) -> Result<St
 }
 
 #[tauri::command]
-pub async fn list_tree(state: State<'_, AppState>, vault: String) -> Result<Vec<TreeNode>, String> {
+pub async fn list_tree(state: State<'_, VaultManager>, vault: String) -> Result<Vec<TreeNode>, String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
+            let doc = open(node, &vault).await?;
             let keys = list_keys(&doc).await?;
             let mut root = Builder::default();
             for key in &keys {
                 let segments: Vec<&str> = key.split('/').collect();
                 if segments.last() == Some(&KEEP) {
-                    // Folder marker: register the folder, not a file.
                     let dir_segments = &segments[..segments.len() - 1];
                     if !dir_segments.is_empty() {
                         insert_path(&mut root, dir_segments, "", false);
@@ -297,11 +328,12 @@ pub async fn list_tree(state: State<'_, AppState>, vault: String) -> Result<Vec<
 }
 
 #[tauri::command]
-pub async fn read_note(state: State<'_, AppState>, vault: String, path: String) -> Result<String, String> {
+pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<String, String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
-            Ok(read_key(&state, &doc, path.as_bytes()).await?.unwrap_or_default())
+            let doc = open(node, &vault).await?;
+            Ok(read_key(node, &doc, path.as_bytes()).await?.unwrap_or_default())
         }
         .await,
     )
@@ -309,15 +341,16 @@ pub async fn read_note(state: State<'_, AppState>, vault: String, path: String) 
 
 #[tauri::command]
 pub async fn write_note(
-    state: State<'_, AppState>,
+    state: State<'_, VaultManager>,
     vault: String,
     path: String,
     content: String,
 ) -> Result<(), String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
-            doc.set_bytes(state.author, path.into_bytes(), encode(&content)).await?;
+            let doc = open(node, &vault).await?;
+            doc.set_bytes(node.author, path.into_bytes(), encode(&content)).await?;
             Ok(())
         }
         .await,
@@ -325,11 +358,12 @@ pub async fn write_note(
 }
 
 #[tauri::command]
-pub async fn create_note(state: State<'_, AppState>, vault: String, path: String) -> Result<(), String> {
+pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<(), String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
-            doc.set_bytes(state.author, path.into_bytes(), encode("")).await?;
+            let doc = open(node, &vault).await?;
+            doc.set_bytes(node.author, path.into_bytes(), encode("")).await?;
             Ok(())
         }
         .await,
@@ -337,12 +371,13 @@ pub async fn create_note(state: State<'_, AppState>, vault: String, path: String
 }
 
 #[tauri::command]
-pub async fn create_folder(state: State<'_, AppState>, vault: String, path: String) -> Result<(), String> {
+pub async fn create_folder(state: State<'_, VaultManager>, vault: String, path: String) -> Result<(), String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
+            let doc = open(node, &vault).await?;
             let key = format!("{}/{}", path.trim_end_matches('/'), KEEP);
-            doc.set_bytes(state.author, key.into_bytes(), encode("")).await?;
+            doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
             Ok(())
         }
         .await,
@@ -351,32 +386,31 @@ pub async fn create_folder(state: State<'_, AppState>, vault: String, path: Stri
 
 #[tauri::command]
 pub async fn rename_path(
-    state: State<'_, AppState>,
+    state: State<'_, VaultManager>,
     vault: String,
     from: String,
     to: String,
     is_dir: bool,
 ) -> Result<(), String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
+            let doc = open(node, &vault).await?;
             if is_dir {
-                // Move every entry under the folder prefix.
                 let from_prefix = format!("{}/", from.trim_end_matches('/'));
                 let to_prefix = format!("{}/", to.trim_end_matches('/'));
                 let keys = list_keys(&doc).await?;
-                // also include .keep markers (list_keys already includes them)
                 for key in keys.iter().filter(|k| k.starts_with(&from_prefix)) {
                     let new_key = format!("{}{}", to_prefix, &key[from_prefix.len()..]);
-                    if let Some(content) = read_key(&state, &doc, key.as_bytes()).await? {
-                        doc.set_bytes(state.author, new_key.into_bytes(), encode(&content)).await?;
+                    if let Some(content) = read_key(node, &doc, key.as_bytes()).await? {
+                        doc.set_bytes(node.author, new_key.into_bytes(), encode(&content)).await?;
                     }
                 }
-                doc.del(state.author, from_prefix.into_bytes()).await?;
+                doc.del(node.author, from_prefix.into_bytes()).await?;
             } else {
-                let content = read_key(&state, &doc, from.as_bytes()).await?.unwrap_or_default();
-                doc.set_bytes(state.author, to.into_bytes(), encode(&content)).await?;
-                doc.del(state.author, from.into_bytes()).await?;
+                let content = read_key(node, &doc, from.as_bytes()).await?.unwrap_or_default();
+                doc.set_bytes(node.author, to.into_bytes(), encode(&content)).await?;
+                doc.del(node.author, from.into_bytes()).await?;
             }
             Ok(())
         }
@@ -386,20 +420,21 @@ pub async fn rename_path(
 
 #[tauri::command]
 pub async fn delete_path(
-    state: State<'_, AppState>,
+    state: State<'_, VaultManager>,
     vault: String,
     path: String,
     is_dir: bool,
 ) -> Result<(), String> {
+    let node = state.node().await?;
     map_err(
         async {
-            let doc = open(&state, &vault).await?;
+            let doc = open(node, &vault).await?;
             let prefix = if is_dir {
                 format!("{}/", path.trim_end_matches('/'))
             } else {
                 path
             };
-            doc.del(state.author, prefix.into_bytes()).await?;
+            doc.del(node.author, prefix.into_bytes()).await?;
             Ok(())
         }
         .await,
@@ -410,17 +445,18 @@ pub async fn delete_path(
 #[tauri::command]
 pub async fn watch_vault(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, VaultManager>,
     vault: String,
 ) -> Result<(), String> {
+    let node = state.node().await?;
     let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
     {
-        let mut watched = state.watched.lock().unwrap();
+        let mut watched = node.watched.lock().unwrap();
         if !watched.insert(nsid) {
             return Ok(()); // already watching
         }
     }
-    let doc = open(&state, &vault).await.map_err(|e| e.to_string())?;
+    let doc = open(node, &vault).await.map_err(|e| e.to_string())?;
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
     let vault_id = vault.clone();
     tauri::async_runtime::spawn(async move {
@@ -441,24 +477,21 @@ mod tests {
     async fn vault_roundtrip() {
         let dir = std::env::temp_dir().join(format!("notes-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let state = init(dir.clone()).await.expect("init node");
+        let node = init(dir.clone()).await.expect("init node");
 
-        // create vault + name
-        let doc = state.docs.create().await.expect("create doc");
-        doc.set_bytes(state.author, NAME_KEY.to_vec(), encode("My Vault"))
+        let doc = node.docs.create().await.expect("create doc");
+        doc.set_bytes(node.author, NAME_KEY.to_vec(), encode("My Vault"))
             .await
             .expect("set name");
-        assert_eq!(vault_name(&state, &doc).await, "My Vault");
+        assert_eq!(vault_name(&node, &doc).await, "My Vault");
 
-        // write + read a note (content goes through blobs)
-        doc.set_bytes(state.author, b"a/b.md".to_vec(), encode("hello"))
+        doc.set_bytes(node.author, b"a/b.md".to_vec(), encode("hello"))
             .await
             .expect("set note");
-        let got = read_key(&state, &doc, b"a/b.md").await.expect("read").unwrap();
+        let got = read_key(&node, &doc, b"a/b.md").await.expect("read").unwrap();
         assert_eq!(got, "hello");
 
-        // empty content stays alive (marker byte, not a tombstone)
-        doc.set_bytes(state.author, b"empty.md".to_vec(), encode(""))
+        doc.set_bytes(node.author, b"empty.md".to_vec(), encode(""))
             .await
             .expect("set empty");
         let keys = list_keys(&doc).await.expect("list");
@@ -466,8 +499,7 @@ mod tests {
         assert!(keys.contains(&"empty.md".to_string()));
         assert!(!keys.iter().any(|k| k.starts_with('\u{0}')), "meta key leaked");
 
-        // delete removes it
-        doc.del(state.author, b"a/b.md".to_vec()).await.expect("del");
+        doc.del(node.author, b"a/b.md".to_vec()).await.expect("del");
         let keys2 = list_keys(&doc).await.expect("list2");
         assert!(!keys2.contains(&"a/b.md".to_string()));
 
