@@ -4,6 +4,11 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // iroh's networking stack uses rustls with no built-in provider; install one
+    // before anything spins up a TLS client (relay/discovery). Required on
+    // Android, harmless if a provider is already set elsewhere.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
