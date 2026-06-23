@@ -345,11 +345,13 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
             let DocTicket { capability, nodes } = ticket;
             let nsid = capability.id();
             // Re-pair safe: if we already have this namespace, open it; otherwise
-            // import it. Either way, start_sync with the ticket's peers so a peer
-            // whose node id changed (e.g. fresh install) gets reconnected.
-            let doc = match node.docs.open(nsid).await? {
-                Some(doc) => doc,
-                None => node.docs.import_namespace(capability).await?,
+            // import it. open() errors ("Replica not found") for a namespace we
+            // don't have, so treat any non-Some result as "needs import". Either
+            // way, start_sync with the ticket's peers so a peer whose node id
+            // changed (e.g. fresh install) gets reconnected.
+            let doc = match node.docs.open(nsid).await {
+                Ok(Some(doc)) => doc,
+                _ => node.docs.import_namespace(capability).await?,
             };
             doc.start_sync(nodes).await?;
             let name = vault_name(node, &doc).await;
