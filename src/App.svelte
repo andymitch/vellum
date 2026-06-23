@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
-  import { readNote, writeNote } from "$lib/vault";
+  import { readNote, writeNote, onVaultChanged } from "$lib/vault";
   import { Code, Eye, type Icon as IconType } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -45,6 +46,22 @@
       writeNote(v, p, c);
       lastLoaded = c;
     }, 400);
+  });
+
+  // Pull remote edits into the open note. A peer's write (or the blob finishing
+  // download) emits vault-changed; re-read the active note. Skip if we have
+  // unsaved local edits (content !== lastLoaded) so we don't clobber typing.
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    onVaultChanged(async (vaultId) => {
+      if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
+      const fresh = await readNote(activeVault, activePath);
+      if (fresh !== lastLoaded) {
+        content = fresh;
+        lastLoaded = fresh;
+      }
+    }).then((u) => (unlisten = u));
+    return () => unlisten?.();
   });
 </script>
 
