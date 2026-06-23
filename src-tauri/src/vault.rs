@@ -470,6 +470,11 @@ pub async fn watch_vault(
         }
     }
     let doc = open(node, &vault).await.map_err(|e| e.to_string())?;
+    // Resume live sync. We only call start_sync on join, so after an app
+    // restart a previously-joined vault wouldn't sync. iroh-docs persists per-
+    // namespace sync peers, so start_sync with no explicit peers reconnects to
+    // the peers we synced with before.
+    let _ = doc.start_sync(Vec::new()).await;
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
     let vault_id = vault.clone();
     tauri::async_runtime::spawn(async move {
