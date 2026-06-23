@@ -1,0 +1,140 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Custom theme matching the Obsidian "Things" theme by colineckert.
+ * Base hue 212 / sat 15%, accent hue 215 / sat 75%.
+ * Light is :root, dark is .dark (default — <html class="dark">).
+ */
+
+:root {
+  --radius: 0.5rem;
+
+  /* Things — light */
+  --background: #ffffff;
+  --foreground: hsl(212 10% 17%);
+  --card: #ffffff;
+  --card-foreground: hsl(212 10% 17%);
+  --popover: #ffffff;
+  --popover-foreground: hsl(212 10% 17%);
+  --primary: hsl(215 75% 60%);
+  --primary-foreground: #ffffff;
+  --secondary: #fcfcfc;
+  --secondary-foreground: hsl(212 10% 17%);
+  --muted: hsl(212 15% 95%);
+  --muted-foreground: hsl(207 10% 37%);
+  --accent: hsl(215 75% 60%);
+  --accent-foreground: #ffffff;
+  --destructive: hsl(0 70% 50%);
+  --destructive-foreground: #ffffff;
+  --border: hsl(212 15% 88%);
+  --input: hsl(212 15% 88%);
+  --ring: hsl(215 75% 60%);
+
+  /* CodeMirror editor tokens (kept in sync with the palette above) */
+  --editor-bg: var(--background);
+  --editor-fg: var(--foreground);
+  --editor-accent: var(--accent);
+  --editor-muted: var(--muted-foreground);
+  --editor-selection: hsl(215 75% 60% / 0.18);
+  --editor-cursor: hsl(215 75% 60%);
+  --editor-code-bg: hsl(212 15% 95%);
+  --editor-border: var(--border);
+
+  /* Code syntax highlighting — light */
+  --code-keyword: #a626a4;
+  --code-string: #50a14f;
+  --code-number: #b76b01;
+  --code-comment: hsl(207 10% 55%);
+  --code-function: #4078f2;
+  --code-type: #c18401;
+  --code-variable: #e45649;
+}
+
+.dark {
+  /* Things — dark */
+  --background: #1c2127;
+  --foreground: #dadada;
+  --card: #282c34;
+  --card-foreground: #dadada;
+  --popover: #282c34;
+  --popover-foreground: #dadada;
+  --primary: hsl(215 75% 70%);
+  --primary-foreground: #1c2127;
+  --secondary: #282c34;
+  --secondary-foreground: #dadada;
+  --muted: #282c34;
+  --muted-foreground: hsl(212 15% 78%);
+  --accent: hsl(215 75% 70%);
+  --accent-foreground: #1c2127;
+  --destructive: hsl(0 70% 60%);
+  --destructive-foreground: #ffffff;
+  --border: hsl(212 15% 28%);
+  --input: hsl(212 15% 28%);
+  --ring: hsl(215 75% 70%);
+
+  --editor-bg: var(--background);
+  --editor-fg: var(--foreground);
+  --editor-accent: var(--accent);
+  --editor-muted: var(--muted-foreground);
+  --editor-selection: hsl(215 75% 70% / 0.22);
+  --editor-cursor: hsl(215 75% 70%);
+  --editor-code-bg: hsl(212 15% 22%);
+  --editor-border: var(--border);
+
+  /* Code syntax highlighting — dark */
+  --code-keyword: #c678dd;
+  --code-string: #98c379;
+  --code-number: #d19a66;
+  --code-comment: hsl(212 15% 55%);
+  --code-function: #61afef;
+  --code-type: #e5c07b;
+  --code-variable: #e06c75;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono:
+    "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+}
