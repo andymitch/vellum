@@ -26,7 +26,9 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || "127.0.0.1",
+    // Bind all interfaces so one server serves both the desktop webview
+    // (localhost) and a mobile device/emulator (LAN IP) simultaneously.
+    host: "0.0.0.0",
     hmr: host
       ? {
           protocol: "ws",
