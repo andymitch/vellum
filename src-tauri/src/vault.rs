@@ -124,6 +124,19 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     }
 }
 
+// Android only: a clone of the endpoint, so the JNI network-change hook (fired
+// from Kotlin's ConnectivityManager callback) can notify iroh. Android doesn't
+// surface network changes to native code, so iroh relies on us telling it.
+#[cfg(target_os = "android")]
+static ENDPOINT: std::sync::OnceLock<Endpoint> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub fn notify_network_change() {
+    if let Some(ep) = ENDPOINT.get().cloned() {
+        tauri::async_runtime::spawn(async move { ep.network_change().await });
+    }
+}
+
 /// Build the persistent iroh node (endpoint + blobs + gossip + docs on a router).
 pub async fn init(dir: PathBuf) -> Result<Node> {
     std::fs::create_dir_all(&dir)?;
@@ -148,6 +161,8 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         .secret_key(secret)
         .bind()
         .await?;
+    #[cfg(target_os = "android")]
+    let _ = ENDPOINT.set(endpoint.clone());
     let blobs = FsStore::load(dir.join("blobs")).await?;
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let docs = Docs::persistent(dir.clone())
@@ -645,15 +660,16 @@ mod tests {
             .unwrap();
         println!("TICKET={ticket}");
         println!("VAULT={}", doc.id());
+        // Long-running: report phone-note.md whenever it changes, so a network
+        // handoff on the phone can be observed (does sync survive the switch?).
         let start = Instant::now();
-        loop {
+        let mut last = String::new();
+        while start.elapsed() < Duration::from_secs(900) {
             if let Ok(Some(v)) = read_key(&node, &doc, b"phone-note.md").await {
-                println!("GOT_PHONE={v}");
-                break;
-            }
-            if start.elapsed() > Duration::from_secs(180) {
-                println!("TIMEOUT_NO_PHONE_NOTE");
-                break;
+                if v != last {
+                    println!("GOT_PHONE@{}s={v}", start.elapsed().as_secs());
+                    last = v;
+                }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
