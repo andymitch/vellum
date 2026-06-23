@@ -3738,6 +3738,8 @@ dependencies = [
  "iroh-blobs",
  "iroh-docs",
  "iroh-gossip",
+ "jni 0.21.1",
+ "ndk-context",
  "rustls",
  "serde",
  "serde_json",
