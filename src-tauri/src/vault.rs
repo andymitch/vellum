@@ -144,8 +144,13 @@ async fn read_key(node: &Node, doc: &iroh_docs::api::Doc, key: &[u8]) -> Result<
     let Some(entry) = doc.get_one(Query::key_exact(key)).await? else {
         return Ok(None);
     };
-    let bytes = node.blobs.blobs().get_bytes(entry.content_hash()).await?;
-    Ok(Some(decode(&bytes)))
+    // After a sync the entry can exist before its content blob has downloaded;
+    // get_bytes then errors. Treat that as "not available yet" — iroh emits a
+    // ContentReady event (→ vault-changed) that triggers a refetch once it lands.
+    match node.blobs.blobs().get_bytes(entry.content_hash()).await {
+        Ok(bytes) => Ok(Some(decode(&bytes))),
+        Err(_) => Ok(None),
+    }
 }
 
 async fn vault_name(node: &Node, doc: &iroh_docs::api::Doc) -> String {
