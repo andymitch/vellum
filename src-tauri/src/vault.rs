@@ -569,6 +569,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore]
     async fn mac_relay_peer() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
         let dir = std::env::temp_dir().join("notes-mac-relay");
         let _ = std::fs::remove_dir_all(&dir);
         let node = init(dir.clone()).await.expect("node");
