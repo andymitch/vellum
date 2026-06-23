@@ -36,6 +36,9 @@ rustls = { version = "0.23", features = ["ring"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+# iroh logs -> Android logcat (debugging cross-network sync)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+paranoid-android = "0.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -45,3 +48,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

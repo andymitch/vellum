@@ -35,6 +35,17 @@ pub fn run() {
     // Android, harmless if a provider is already set elsewhere.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // Route iroh logs to Android logcat for cross-network debugging.
+    #[cfg(target_os = "android")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new("warn,iroh=info"))
+            .with(paranoid_android::layer("noteslog"))
+            .try_init();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
