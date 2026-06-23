@@ -472,6 +472,66 @@ pub async fn watch_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Poll a key until it appears (content synced + downloaded) or timeout.
+    async fn await_key(
+        node: &Node,
+        doc: &iroh_docs::api::Doc,
+        key: &[u8],
+        timeout: Duration,
+    ) -> Option<String> {
+        let start = Instant::now();
+        loop {
+            if let Ok(Some(v)) = read_key(node, doc, key).await {
+                return Some(v);
+            }
+            if start.elapsed() > timeout {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
+
+    /// Two real iroh nodes: A shares a vault (write ticket), B joins, and edits
+    /// propagate both directions (flat ownership). Mirrors share_vault/join_vault
+    /// by round-tripping the ticket through a string.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn p2p_sync_roundtrip() {
+        let base = std::env::temp_dir().join(format!("notes-p2p-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = init(base.join("a")).await.expect("node A");
+        let b = init(base.join("b")).await.expect("node B");
+
+        // A creates a vault + note, shares with write capability.
+        let doc_a = a.docs.create().await.expect("create");
+        doc_a
+            .set_bytes(a.author, b"shared/hello.md".to_vec(), encode("from A"))
+            .await
+            .expect("A write");
+        let ticket = doc_a
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .expect("share");
+
+        // B joins from the (stringified) ticket.
+        let ticket = DocTicket::from_str(&ticket.to_string()).expect("parse ticket");
+        let doc_b = b.docs.import(ticket).await.expect("import");
+
+        // A's note reaches B.
+        let got = await_key(&b, &doc_b, b"shared/hello.md", Duration::from_secs(30)).await;
+        assert_eq!(got.as_deref(), Some("from A"), "B did not receive A's note");
+
+        // Flat ownership: B writes, A receives.
+        doc_b
+            .set_bytes(b.author, b"shared/reply.md".to_vec(), encode("from B"))
+            .await
+            .expect("B write");
+        let got2 = await_key(&a, &doc_a, b"shared/reply.md", Duration::from_secs(30)).await;
+        assert_eq!(got2.as_deref(), Some("from B"), "A did not receive B's note");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[tokio::test]
     async fn vault_roundtrip() {
