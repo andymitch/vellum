@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use futures_lite::StreamExt;
-use iroh::{endpoint::presets, protocol::Router, Endpoint};
+use iroh::{endpoint::presets, protocol::Router, Endpoint, SecretKey};
 use iroh_blobs::{store::fs::FsStore, BlobsProtocol};
 use iroh_docs::{
     api::protocol::{AddrInfoOptions, ShareMode},
@@ -108,7 +108,26 @@ fn decode(bytes: &[u8]) -> String {
 pub async fn init(dir: PathBuf) -> Result<Node> {
     std::fs::create_dir_all(&dir)?;
 
-    let endpoint = Endpoint::bind(presets::N0).await?;
+    // Persist the endpoint secret key so the node id is stable across restarts.
+    // Without this, iroh generates a fresh key each launch → a new node id →
+    // persisted sync peers reference a dead id and never reconnect.
+    let key_path = dir.join("endpoint-secret");
+    let secret = match std::fs::read(&key_path) {
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            SecretKey::from_bytes(&arr)
+        }
+        _ => {
+            let sk = SecretKey::generate();
+            std::fs::write(&key_path, sk.to_bytes())?;
+            sk
+        }
+    };
+    let endpoint = Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .bind()
+        .await?;
     let blobs = FsStore::load(dir.join("blobs")).await?;
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let docs = Docs::persistent(dir.clone())
