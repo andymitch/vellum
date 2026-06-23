@@ -82,7 +82,19 @@
   async function share() {
     if (!activeVault) return;
     const ticket = await shareVault(activeVault);
-    window.prompt("Share this ticket (copy):", ticket);
+    // window.prompt ignores its default value in the Tauri webview, so the
+    // ticket must be surfaced another way: copy to clipboard + show it.
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(ticket);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+    window.alert(
+      (copied ? "Vault ticket (copied to clipboard):\n\n" : "Vault ticket:\n\n") +
+        ticket,
+    );
   }
 
   async function newRootNote() {
