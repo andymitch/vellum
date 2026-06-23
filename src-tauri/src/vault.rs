@@ -562,6 +562,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Headless relay peer for manual cross-network testing. Run with:
+    ///   cargo test mac_relay_peer -- --ignored --nocapture
+    /// Prints a TICKET; a phone (on cellular) joins it → forces the iroh relay
+    /// path. Waits up to 3 min for the phone to write `phone-note.md`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn mac_relay_peer() {
+        let dir = std::env::temp_dir().join("notes-mac-relay");
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("node");
+        let doc = node.docs.create().await.expect("create");
+        doc.set_bytes(node.author, NAME_KEY.to_vec(), encode("MacRelay")).await.unwrap();
+        doc.set_bytes(node.author, b"mac-note.md".to_vec(), encode("from mac")).await.unwrap();
+        let ticket = doc
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .unwrap();
+        println!("TICKET={ticket}");
+        println!("VAULT={}", doc.id());
+        let start = Instant::now();
+        loop {
+            if let Ok(Some(v)) = read_key(&node, &doc, b"phone-note.md").await {
+                println!("GOT_PHONE={v}");
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(180) {
+                println!("TIMEOUT_NO_PHONE_NOTE");
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
     #[tokio::test]
     async fn vault_roundtrip() {
         let dir = std::env::temp_dir().join(format!("notes-test-{}", std::process::id()));
