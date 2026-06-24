@@ -21,10 +21,11 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use futures_lite::StreamExt;
-use iroh::{endpoint::presets, protocol::Router, Endpoint, SecretKey};
+use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::{store::fs::FsStore, BlobsProtocol};
 use iroh_docs::{
     api::protocol::{AddrInfoOptions, ShareMode},
+    engine::LiveEvent,
     protocol::Docs,
     store::Query,
     AuthorId, DocTicket, NamespaceId,
@@ -38,6 +39,9 @@ const NAME_KEY: &[u8] = b"\x00meta/name";
 const MARKER: u8 = 0x01;
 const KEEP: &str = ".keep";
 
+/// Per-vault set of known sync peers, by EndpointId. Persisted to `peers.json`.
+type PeerMap = BTreeMap<NamespaceId, HashSet<EndpointId>>;
+
 /// The live iroh node (handles into the running protocols).
 pub struct Node {
     blobs: FsStore,
@@ -45,6 +49,12 @@ pub struct Node {
     author: AuthorId,
     _router: Router,
     watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
+    dir: PathBuf,
+    our_id: EndpointId,
+    // Known sync peers per vault. We dial these by EndpointId (discovery resolves
+    // the current relay + addresses), so connections survive address/network
+    // changes and restarts — rather than relying on stale ticket addresses.
+    peers: std::sync::Arc<Mutex<PeerMap>>,
 }
 
 /// Managed Tauri state. Builds the node lazily on first use (see module docs).
@@ -104,6 +114,68 @@ fn decode(bytes: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
 }
 
+fn peers_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("peers.json")
+}
+
+/// Load the per-vault peer set (EndpointIds) persisted on disk.
+fn load_peers(dir: &std::path::Path) -> PeerMap {
+    let mut out = PeerMap::new();
+    let Ok(s) = std::fs::read_to_string(peers_path(dir)) else {
+        return out;
+    };
+    let raw: BTreeMap<String, Vec<String>> = serde_json::from_str(&s).unwrap_or_default();
+    for (k, ids) in raw {
+        if let Ok(nsid) = NamespaceId::from_str(&k) {
+            out.insert(
+                nsid,
+                ids.iter().filter_map(|i| EndpointId::from_str(i).ok()).collect(),
+            );
+        }
+    }
+    out
+}
+
+fn save_peers(dir: &std::path::Path, map: &PeerMap) {
+    let raw: BTreeMap<String, Vec<String>> = map
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(|i| i.to_string()).collect()))
+        .collect();
+    if let Ok(s) = serde_json::to_string(&raw) {
+        let _ = std::fs::write(peers_path(dir), s);
+    }
+}
+
+/// Remember a vault's sync peer by EndpointId and persist it. Skips our own id.
+/// Lets us re-dial the peer later via discovery, regardless of its current
+/// address — this is what makes long-lived sync survive network changes.
+fn remember_peer(
+    dir: &std::path::Path,
+    peers: &Mutex<PeerMap>,
+    our_id: EndpointId,
+    nsid: NamespaceId,
+    id: EndpointId,
+) {
+    if id == our_id {
+        return;
+    }
+    let mut m = peers.lock().unwrap();
+    if m.entry(nsid).or_default().insert(id) {
+        save_peers(dir, &m);
+    }
+}
+
+/// Node-id-only addresses for a vault's known peers. Empty per-address info means
+/// the endpoint resolves the live relay + direct addresses via discovery.
+fn peer_addrs(peers: &Mutex<PeerMap>, nsid: NamespaceId) -> Vec<EndpointAddr> {
+    peers
+        .lock()
+        .unwrap()
+        .get(&nsid)
+        .map(|s| s.iter().map(|id| EndpointAddr::new(*id)).collect())
+        .unwrap_or_default()
+}
+
 /// Write a credential file readable only by the owner (0o600 on Unix).
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -132,6 +204,7 @@ struct NetHandle {
     endpoint: Endpoint,
     docs: Docs,
     watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
+    peers: std::sync::Arc<Mutex<PeerMap>>,
 }
 #[cfg(target_os = "android")]
 static NET: std::sync::OnceLock<NetHandle> = std::sync::OnceLock::new();
@@ -141,14 +214,17 @@ pub fn notify_network_change() {
     let Some(net) = NET.get() else { return };
     let endpoint = net.endpoint.clone();
     let docs = net.docs.clone();
+    let peers = net.peers.clone();
     let nsids: Vec<NamespaceId> = net.watched.lock().unwrap().iter().copied().collect();
     tauri::async_runtime::spawn(async move {
-        // Re-probe the network, then re-establish live sync for open vaults so
-        // connections migrate to the new transport (e.g. relay after wifi drop).
+        // Tell iroh the network changed so it re-probes (Android doesn't surface
+        // this natively). Discovery + relay then do the heavy lifting: re-dial
+        // each open vault's peers by EndpointId and let iroh resolve the new
+        // transport (relay after a wifi drop, direct addrs after holepunch).
         endpoint.network_change().await;
         for nsid in nsids {
             if let Ok(Some(doc)) = docs.open(nsid).await {
-                let _ = doc.start_sync(Vec::new()).await;
+                let _ = doc.start_sync(peer_addrs(&peers, nsid)).await;
             }
         }
     });
@@ -185,11 +261,14 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         .await?;
 
     let watched = std::sync::Arc::new(Mutex::new(HashSet::new()));
+    let our_id = endpoint.id();
+    let peers = std::sync::Arc::new(Mutex::new(load_peers(&dir)));
     #[cfg(target_os = "android")]
     let _ = NET.set(NetHandle {
         endpoint: endpoint.clone(),
         docs: docs.clone(),
         watched: watched.clone(),
+        peers: peers.clone(),
     });
 
     let router = Router::builder(endpoint)
@@ -206,6 +285,9 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         author,
         _router: router,
         watched,
+        dir,
+        our_id,
+        peers,
     })
 }
 
@@ -428,15 +510,20 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
             let ticket = DocTicket::from_str(&ticket).map_err(|e| anyhow!("bad ticket: {e}"))?;
             let DocTicket { capability, nodes } = ticket;
             let nsid = capability.id();
+            // Remember the ticket's peers by EndpointId so we can re-dial them
+            // via discovery later, even after their addresses change.
+            for n in &nodes {
+                remember_peer(&node.dir, &node.peers, node.our_id, nsid, n.id);
+            }
             // Re-pair safe: if we already have this namespace, open it; otherwise
             // import it. open() errors ("Replica not found") for a namespace we
-            // don't have, so treat any non-Some result as "needs import". Either
-            // way, start_sync with the ticket's peers so a peer whose node id
-            // changed (e.g. fresh install) gets reconnected.
+            // don't have, so treat any non-Some result as "needs import".
             let doc = match node.docs.open(nsid).await {
                 Ok(Some(doc)) => doc,
                 _ => node.docs.import_namespace(capability).await?,
             };
+            // Bootstrap with the ticket's full addresses (relay) for a robust
+            // first connect; subsequent syncs re-dial by EndpointId via discovery.
             doc.start_sync(nodes).await?;
             let name = vault_name(node, &doc).await;
             Ok(VaultInfo {
@@ -476,6 +563,13 @@ pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Resu
     let node = state.node().await?;
     let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
     node.watched.lock().unwrap().remove(&nsid);
+    // Forget this vault's cached peers too, so we don't keep dialing them.
+    {
+        let mut m = node.peers.lock().unwrap();
+        if m.remove(&nsid).is_some() {
+            save_peers(&node.dir, &m);
+        }
+    }
     map_err(
         async {
             // leave() ends live sync.
@@ -674,13 +768,16 @@ pub async fn watch_vault(
         }
     }
     let doc = open(node, &vault).await.map_err(|e| e.to_string())?;
-    // Resume live sync. We only call start_sync on join, so after an app
-    // restart a previously-joined vault wouldn't sync. iroh-docs persists per-
-    // namespace sync peers, so start_sync with no explicit peers reconnects to
-    // the peers we synced with before.
-    let _ = doc.start_sync(Vec::new()).await;
+    // Resume live sync by actively dialing the vault's known peers by EndpointId.
+    // (start_sync with an empty peer list only listens — it doesn't re-initiate,
+    // which is why sync didn't recover after a restart.) Discovery resolves each
+    // peer's current relay + addresses, so this works across network changes.
+    let _ = doc.start_sync(peer_addrs(&node.peers, nsid)).await;
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
     let vault_id = vault.clone();
+    let peers = node.peers.clone();
+    let dir = node.dir.clone();
+    let our_id = node.our_id;
     // Initial nudge: on join the vault name (and other meta) can finish syncing
     // in the gap between join reading it and this subscription starting, so that
     // ContentReady event is missed. Emit once now so the UI re-reads whatever
@@ -688,9 +785,20 @@ pub async fn watch_vault(
     let _ = app.emit("vault-changed", &vault_id);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = stream.next().await {
-            if event.is_ok() {
-                let _ = app.emit("vault-changed", &vault_id);
+            let Ok(ev) = event else { continue };
+            // Learn peers from live sync so re-dial works in both directions —
+            // crucially, the sharer discovers the joiner's EndpointId this way.
+            match &ev {
+                LiveEvent::NeighborUp(id) => remember_peer(&dir, &peers, our_id, nsid, *id),
+                LiveEvent::InsertRemote { from, .. } => {
+                    remember_peer(&dir, &peers, our_id, nsid, *from)
+                }
+                LiveEvent::SyncFinished(ev) => {
+                    remember_peer(&dir, &peers, our_id, nsid, ev.peer)
+                }
+                _ => {}
             }
+            let _ = app.emit("vault-changed", &vault_id);
         }
     });
     Ok(())

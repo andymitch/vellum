@@ -73,20 +73,29 @@ pub fn run() {
     // Android, harmless if a provider is already set elsewhere.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Route iroh logs to Android logcat for cross-network debugging.
+    // Log filter. Desktop honors RUST_LOG (e.g. `iroh_gossip=debug` to debug
+    // cross-network sync); Android logs to logcat tag `noteslog` at a quiet
+    // default. Both fall back to warn + our own info.
+    const DEFAULT_LOG: &str = "warn,notes_lib=info";
+    #[cfg(target_os = "android")]
+    let filter = tracing_subscriber::EnvFilter::new(DEFAULT_LOG);
+    #[cfg(not(target_os = "android"))]
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG));
+
     #[cfg(target_os = "android")]
     {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
         let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new("warn,notes_lib=info"))
+            .with(filter)
             .with(paranoid_android::layer("noteslog"))
             .try_init();
     }
     #[cfg(not(target_os = "android"))]
     {
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new("warn,notes_lib=info"))
+            .with_env_filter(filter)
             .try_init();
     }
 
