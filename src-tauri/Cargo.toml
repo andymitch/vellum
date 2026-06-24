@@ -31,6 +31,7 @@ futures-lite = "2.6.1"
 tokio = { version = "1.52.3", features = ["full"] }
 rustls = { version = "0.23", features = ["ring"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+iroh-mdns-address-lookup = "0.4"
 
 # Android-only: used to hand the JNI JavaVM + Context to ndk_context so iroh's
 # network monitor works (Tauri doesn't populate ndk_context — see lib.rs).

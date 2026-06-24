@@ -31,6 +31,7 @@ use iroh_docs::{
     AuthorId, DocTicket, NamespaceId,
 };
 use iroh_gossip::net::Gossip;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
@@ -250,8 +251,13 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
             sk
         }
     };
+    // N0 preset = pkarr publish + n0 DNS resolution + relays. Add mDNS so peers
+    // on the same LAN discover each other directly, even when n0 DNS/relays are
+    // unreachable (restrictive wifi, captive networks) — fixes same-network sync
+    // when a peer can't publish to pkarr.
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret)
+        .address_lookup(MdnsAddressLookup::builder())
         .bind()
         .await?;
     let blobs = FsStore::load(dir.join("blobs")).await?;
@@ -304,7 +310,12 @@ async fn open(node: &Node, id: &str) -> Result<iroh_docs::api::Doc> {
 }
 
 async fn read_key(node: &Node, doc: &iroh_docs::api::Doc, key: &[u8]) -> Result<Option<String>> {
-    let Some(entry) = doc.get_one(Query::key_exact(key)).await? else {
+    // single_latest_per_key: when a note has been edited on multiple devices it
+    // has one entry per author; we want the newest across all authors. A plain
+    // key_exact query sorts by author and returns an arbitrary (often stale) one,
+    // which made a peer's edit invisible once we'd also edited the same note.
+    let query = Query::single_latest_per_key().key_exact(key);
+    let Some(entry) = doc.get_one(query).await? else {
         return Ok(None);
     };
     // After a sync the entry can exist before its content blob has downloaded;
