@@ -43,6 +43,16 @@
   --editor-code-bg: hsl(212 15% 95%);
   --editor-border: var(--border);
 
+  /* Things markdown accents — shared across light/dark (theme defines them once).
+     H1/H6 stay text-colored/muted; H2-H5 + emphasis + quotes get distinct hues. */
+  --md-h2: #2e80f2; /* blue */
+  --md-h3: #2e80f2; /* blue */
+  --md-h4: #e5b567; /* yellow */
+  --md-h5: #e83e3e; /* red */
+  --md-strong: #ff82b2; /* pink */
+  --md-em: #ff82b2; /* pink */
+  --md-quote: #3eb4bf; /* teal */
+
   /* Code syntax highlighting — light */
   --code-keyword: #a626a4;
   --code-string: #50a14f;
@@ -94,6 +104,162 @@
   --code-variable: #e06c75;
 }
 
+/* ============================ Nord ============================ */
+[data-theme="nord"] {
+  --background: #eceff4;
+  --foreground: #2e3440;
+  --card: #e5e9f0;
+  --card-foreground: #2e3440;
+  --popover: #e5e9f0;
+  --popover-foreground: #2e3440;
+  --primary: #5e81ac;
+  --primary-foreground: #eceff4;
+  --secondary: #e5e9f0;
+  --secondary-foreground: #2e3440;
+  --muted: #e5e9f0;
+  --muted-foreground: #4c566a;
+  --accent: #5e81ac;
+  --accent-foreground: #eceff4;
+  --destructive: #bf616a;
+  --destructive-foreground: #eceff4;
+  --border: #d8dee9;
+  --input: #d8dee9;
+  --ring: #5e81ac;
+  --editor-selection: rgb(94 129 172 / 0.18);
+  --editor-cursor: #5e81ac;
+  --editor-code-bg: #e5e9f0;
+  --code-keyword: #5e81ac;
+  --code-string: #4f7a3f;
+  --code-number: #b2592f;
+  --code-comment: #7a869a;
+  --code-function: #5e81ac;
+  --code-type: #2f7e7a;
+  --code-variable: #bf616a;
+  --md-h2: #5e81ac;
+  --md-h3: #5e81ac;
+  --md-h4: #b08500;
+  --md-h5: #bf616a;
+  --md-strong: #9d6fa0;
+  --md-em: #9d6fa0;
+  --md-quote: #2f7e7a;
+}
+[data-theme="nord"].dark {
+  --background: #2e3440;
+  --foreground: #eceff4;
+  --card: #3b4252;
+  --card-foreground: #eceff4;
+  --popover: #3b4252;
+  --popover-foreground: #eceff4;
+  --primary: #88c0d0;
+  --primary-foreground: #2e3440;
+  --secondary: #3b4252;
+  --secondary-foreground: #eceff4;
+  --muted: #3b4252;
+  --muted-foreground: #9aa3b2;
+  --accent: #88c0d0;
+  --accent-foreground: #2e3440;
+  --destructive: #bf616a;
+  --destructive-foreground: #eceff4;
+  --border: #434c5e;
+  --input: #434c5e;
+  --ring: #88c0d0;
+  --editor-selection: rgb(136 192 208 / 0.22);
+  --editor-cursor: #88c0d0;
+  --editor-code-bg: #3b4252;
+  --code-keyword: #81a1c1;
+  --code-string: #a3be8c;
+  --code-number: #d08770;
+  --code-comment: #616e88;
+  --code-function: #88c0d0;
+  --code-type: #8fbcbb;
+  --code-variable: #d8dee9;
+  --md-h2: #88c0d0;
+  --md-h3: #81a1c1;
+  --md-h4: #ebcb8b;
+  --md-h5: #bf616a;
+  --md-strong: #b48ead;
+  --md-em: #b48ead;
+  --md-quote: #8fbcbb;
+}
+
+/* ========================== Rosé Pine ========================== */
+[data-theme="rose-pine"] {
+  --background: #faf4ed;
+  --foreground: #575279;
+  --card: #fffaf3;
+  --card-foreground: #575279;
+  --popover: #fffaf3;
+  --popover-foreground: #575279;
+  --primary: #286983;
+  --primary-foreground: #faf4ed;
+  --secondary: #f2e9e1;
+  --secondary-foreground: #575279;
+  --muted: #f2e9e1;
+  --muted-foreground: #797593;
+  --accent: #286983;
+  --accent-foreground: #faf4ed;
+  --destructive: #b4637a;
+  --destructive-foreground: #faf4ed;
+  --border: #dfd9d3;
+  --input: #dfd9d3;
+  --ring: #286983;
+  --editor-selection: rgb(40 105 131 / 0.15);
+  --editor-cursor: #286983;
+  --editor-code-bg: #f2e9e1;
+  --code-keyword: #907aa9;
+  --code-string: #ea9d34;
+  --code-number: #d7827e;
+  --code-comment: #9893a5;
+  --code-function: #56949f;
+  --code-type: #286983;
+  --code-variable: #575279;
+  --md-h2: #56949f;
+  --md-h3: #286983;
+  --md-h4: #ea9d34;
+  --md-h5: #b4637a;
+  --md-strong: #907aa9;
+  --md-em: #907aa9;
+  --md-quote: #286983;
+}
+[data-theme="rose-pine"].dark {
+  --background: #191724;
+  --foreground: #e0def4;
+  --card: #1f1d2e;
+  --card-foreground: #e0def4;
+  --popover: #1f1d2e;
+  --popover-foreground: #e0def4;
+  --primary: #9ccfd8;
+  --primary-foreground: #191724;
+  --secondary: #1f1d2e;
+  --secondary-foreground: #e0def4;
+  --muted: #1f1d2e;
+  --muted-foreground: #908caa;
+  --accent: #9ccfd8;
+  --accent-foreground: #191724;
+  --destructive: #eb6f92;
+  --destructive-foreground: #191724;
+  --border: #26233a;
+  --input: #26233a;
+  --ring: #9ccfd8;
+  --editor-selection: rgb(156 207 216 / 0.20);
+  --editor-cursor: #9ccfd8;
+  --editor-code-bg: #1f1d2e;
+  --code-keyword: #c4a7e7;
+  --code-string: #f6c177;
+  --code-number: #ebbcba;
+  --code-comment: #6e6a86;
+  --code-function: #9ccfd8;
+  --code-type: #31748f;
+  --code-variable: #e0def4;
+  --md-h2: #9ccfd8;
+  --md-h3: #31748f;
+  --md-h4: #f6c177;
+  --md-h5: #eb6f92;
+  --md-strong: #c4a7e7;
+  --md-em: #c4a7e7;
+  --md-quote: #31748f;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -125,6 +291,7 @@
     Arial, sans-serif;
   --font-mono:
     "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-vellum: "Fraunces", Georgia, "Times New Roman", serif;
 }
 
 @layer base {
@@ -136,5 +303,21 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+  }
+
+  /* Only editable text is selectable. UI chrome (file names, labels, rendered
+     preview) is not — feels native, avoids stray highlights on mobile. */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input,
+  textarea,
+  [contenteditable="true"],
+  [contenteditable=""] {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
   }
 }

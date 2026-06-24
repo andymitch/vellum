@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="/favicon.png" />
@@ -8,6 +8,20 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>notes</title>
+    <!-- Apply the saved theme before paint to avoid a flash. Mirrors theme.svelte.ts. -->
+    <script>
+      try {
+        var t = JSON.parse(localStorage.getItem("notes-theme") || "{}");
+        if (t.palette && t.palette !== "things")
+          document.documentElement.dataset.theme = t.palette;
+        var mode = t.mode || "system";
+        var dark =
+          mode === "dark" ||
+          (mode === "system" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

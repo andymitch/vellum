@@ -40,6 +40,32 @@ pub extern "system" fn Java_com_andymitch_notes_MainActivity_notifyNetworkChange
     vault::notify_network_change();
 }
 
+/// Sync the native system-bar icon contrast to the web theme. The bars are
+/// transparent (drawn behind the themed web header), so Android can't infer the
+/// right icon color from its own light/dark mode — the frontend pushes it here
+/// on every theme change. No-op off Android.
+#[tauri::command]
+fn set_dark_mode(dark: bool) {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return;
+        };
+        let _ = env.call_static_method(
+            "com/andymitch/notes/MainActivity",
+            "setDarkMode",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(dark as u8)],
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = dark;
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
@@ -64,8 +90,12 @@ pub fn run() {
             .try_init();
     }
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // Native camera QR scanner for joining vaults (mobile only; the crate is
+    // gated to android/ios in Cargo.toml).
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    builder
         .setup(|app| {
             // The iroh node is built lazily on first command (see vault.rs):
             // on Android it must start after tao initializes the JNI context,
@@ -75,10 +105,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_dark_mode,
             vault::list_vaults,
             vault::create_vault,
             vault::join_vault,
             vault::share_vault,
+            vault::forget_vault,
             vault::list_tree,
             vault::read_note,
             vault::write_note,

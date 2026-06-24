@@ -44,7 +44,7 @@ pub struct Node {
     docs: Docs,
     author: AuthorId,
     _router: Router,
-    watched: Mutex<HashSet<NamespaceId>>,
+    watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
 }
 
 /// Managed Tauri state. Builds the node lazily on first use (see module docs).
@@ -128,13 +128,30 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 // from Kotlin's ConnectivityManager callback) can notify iroh. Android doesn't
 // surface network changes to native code, so iroh relies on us telling it.
 #[cfg(target_os = "android")]
-static ENDPOINT: std::sync::OnceLock<Endpoint> = std::sync::OnceLock::new();
+struct NetHandle {
+    endpoint: Endpoint,
+    docs: Docs,
+    watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
+}
+#[cfg(target_os = "android")]
+static NET: std::sync::OnceLock<NetHandle> = std::sync::OnceLock::new();
 
 #[cfg(target_os = "android")]
 pub fn notify_network_change() {
-    if let Some(ep) = ENDPOINT.get().cloned() {
-        tauri::async_runtime::spawn(async move { ep.network_change().await });
-    }
+    let Some(net) = NET.get() else { return };
+    let endpoint = net.endpoint.clone();
+    let docs = net.docs.clone();
+    let nsids: Vec<NamespaceId> = net.watched.lock().unwrap().iter().copied().collect();
+    tauri::async_runtime::spawn(async move {
+        // Re-probe the network, then re-establish live sync for open vaults so
+        // connections migrate to the new transport (e.g. relay after wifi drop).
+        endpoint.network_change().await;
+        for nsid in nsids {
+            if let Ok(Some(doc)) = docs.open(nsid).await {
+                let _ = doc.start_sync(Vec::new()).await;
+            }
+        }
+    });
 }
 
 /// Build the persistent iroh node (endpoint + blobs + gossip + docs on a router).
@@ -161,13 +178,19 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         .secret_key(secret)
         .bind()
         .await?;
-    #[cfg(target_os = "android")]
-    let _ = ENDPOINT.set(endpoint.clone());
     let blobs = FsStore::load(dir.join("blobs")).await?;
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let docs = Docs::persistent(dir.clone())
         .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
         .await?;
+
+    let watched = std::sync::Arc::new(Mutex::new(HashSet::new()));
+    #[cfg(target_os = "android")]
+    let _ = NET.set(NetHandle {
+        endpoint: endpoint.clone(),
+        docs: docs.clone(),
+        watched: watched.clone(),
+    });
 
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
@@ -182,7 +205,7 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         docs,
         author,
         _router: router,
-        watched: Mutex::new(HashSet::new()),
+        watched,
     })
 }
 
@@ -236,6 +259,67 @@ async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
         }
     }
     Ok(keys)
+}
+
+/// Strip characters illegal in a path segment; collapse runs of whitespace.
+fn sanitize_title(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Obsidian-style: derive a `<title>.md` filename from a note's first non-blank
+/// line when it is an ATX H1 (`# Title`). Returns None otherwise (H2+, no
+/// leading heading, or a title that sanitizes to nothing).
+fn derive_basename(content: &str) -> Option<String> {
+    let first = content.lines().find(|l| !l.trim().is_empty())?;
+    let rest = first.trim_start().strip_prefix('#')?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None; // "#x" (no space) or "## h2" — not an H1
+    }
+    let title = sanitize_title(rest.trim());
+    if title.is_empty() {
+        return None;
+    }
+    Some(format!("{title}.md"))
+}
+
+/// Split a key into (dir, basename). dir is "" for a root-level key.
+fn split_path(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => ("", path),
+    }
+}
+
+async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
+    Ok(doc.get_one(Query::key_exact(key.as_bytes())).await?.is_some())
+}
+
+/// Find a free key by inserting/incrementing a numeric suffix before the
+/// extension: `Untitled.md` → `Untitled 1.md` → `Untitled 2.md` …
+async fn free_key(doc: &iroh_docs::api::Doc, path: &str) -> Result<String> {
+    if !key_exists(doc, path).await? {
+        return Ok(path.to_string());
+    }
+    let (stem, ext) = match path.rfind('.') {
+        Some(i) => (&path[..i], &path[i..]),
+        None => (path, ""),
+    };
+    let mut n = 1;
+    loop {
+        let cand = format!("{stem} {n}{ext}");
+        if !key_exists(doc, &cand).await? {
+            return Ok(cand);
+        }
+        n += 1;
+    }
 }
 
 // ---- intermediate tree node used while building ----
@@ -371,10 +455,47 @@ pub async fn share_vault(state: State<'_, VaultManager>, vault: String) -> Resul
         async {
             let doc = open(node, &vault).await?;
             // Write capability → flat, equal ownership across all synced devices.
+            // Relay (node id + relay URL) keeps the ticket short enough for a
+            // low-density QR while staying resilient: the relay guarantees the
+            // first connection, then holepunching upgrades to direct addresses
+            // and iroh-docs persists the discovered sync peers for next time.
             let ticket = doc
-                .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+                .share(ShareMode::Write, AddrInfoOptions::Relay)
                 .await?;
             Ok(ticket.to_string())
+        }
+        .await,
+    )
+}
+
+/// Stop syncing a vault and drop its local replica. The namespace can be
+/// rejoined later from a ticket (re-pair safe via join_vault). Other peers keep
+/// their copy — this only forgets it on this device.
+#[tauri::command]
+pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Result<(), String> {
+    let node = state.node().await?;
+    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
+    node.watched.lock().unwrap().remove(&nsid);
+    map_err(
+        async {
+            // leave() ends live sync.
+            if let Ok(Some(doc)) = node.docs.open(nsid).await {
+                let _ = doc.leave().await;
+            }
+            // drop_doc requires the replica's open-handle count to be 0, but
+            // iroh-docs' `Doc` has no Drop-close, so every open() we ever made
+            // for this namespace leaked a handle. Each drop_doc attempt releases
+            // one handle (via its internal close) even when it then fails with
+            // "replica is not closed", so retry until the count hits 0 and the
+            // remove succeeds. Bounded so a genuine error can't spin forever.
+            for _ in 0..256 {
+                match node.docs.drop_doc(nsid).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) if e.to_string().contains("not closed") => continue,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(anyhow!("could not close vault replica to drop it"))
         }
         .await,
     )
@@ -423,26 +544,44 @@ pub async fn write_note(
     vault: String,
     path: String,
     content: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            doc.set_bytes(node.author, path.into_bytes(), encode(&content)).await?;
-            Ok(())
+            doc.set_bytes(node.author, path.clone().into_bytes(), encode(&content)).await?;
+            // Keep the filename synced to the first H1 (Obsidian-style). Move the
+            // key only when the derived name differs and is free — never clobber
+            // an existing note. Returns the (possibly new) path so the frontend
+            // can keep editing the same note.
+            if path.ends_with(".md") {
+                if let Some(base) = derive_basename(&content) {
+                    let (dir, cur) = split_path(&path);
+                    if base != cur {
+                        let target = if dir.is_empty() { base } else { format!("{dir}/{base}") };
+                        if !key_exists(&doc, &target).await? {
+                            doc.set_bytes(node.author, target.clone().into_bytes(), encode(&content)).await?;
+                            doc.del(node.author, path.clone().into_bytes()).await?;
+                            return Ok(target);
+                        }
+                    }
+                }
+            }
+            Ok(path)
         }
         .await,
     )
 }
 
 #[tauri::command]
-pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<(), String> {
+pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<String, String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            doc.set_bytes(node.author, path.into_bytes(), encode("")).await?;
-            Ok(())
+            let free = free_key(&doc, &path).await?;
+            doc.set_bytes(node.author, free.clone().into_bytes(), encode("")).await?;
+            Ok(free)
         }
         .await,
     )
@@ -542,6 +681,11 @@ pub async fn watch_vault(
     let _ = doc.start_sync(Vec::new()).await;
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
     let vault_id = vault.clone();
+    // Initial nudge: on join the vault name (and other meta) can finish syncing
+    // in the gap between join reading it and this subscription starting, so that
+    // ContentReady event is missed. Emit once now so the UI re-reads whatever
+    // landed in that window (e.g. the real name replacing "vault-xxxx").
+    let _ = app.emit("vault-changed", &vault_id);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = stream.next().await {
             if event.is_ok() {
@@ -650,10 +794,25 @@ mod tests {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .try_init();
+        // Persistent dir → stable id + reuse the same vault across restarts, so
+        // a restart doesn't orphan a phone that already joined.
         let dir = std::env::temp_dir().join("notes-mac-relay");
-        let _ = std::fs::remove_dir_all(&dir);
         let node = init(dir.clone()).await.expect("node");
-        let doc = node.docs.create().await.expect("create");
+        let doc = {
+            let mut list = Box::pin(node.docs.list().await.expect("list"));
+            let mut existing = None;
+            while let Some(item) = list.next().await {
+                if let Ok((id, _)) = item {
+                    existing = node.docs.open(id).await.ok().flatten();
+                    break;
+                }
+            }
+            match existing {
+                Some(d) => d,
+                None => node.docs.create().await.expect("create"),
+            }
+        };
+        doc.start_sync(Vec::new()).await.ok();
         doc.set_bytes(node.author, NAME_KEY.to_vec(), encode("MacRelay")).await.unwrap();
         doc.set_bytes(node.author, b"mac-note.md".to_vec(), encode("from mac")).await.unwrap();
         let ticket = doc

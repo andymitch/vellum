@@ -39,27 +39,55 @@
     font-family: var(--font-sans);
   }
 
+  /* No dead space above the first block (headings carry a top margin). */
+  .md-preview :global(> :first-child) {
+    margin-top: 0;
+  }
+
   .md-preview :global(h1),
   .md-preview :global(h2),
   .md-preview :global(h3),
-  .md-preview :global(h4) {
+  .md-preview :global(h4),
+  .md-preview :global(h5),
+  .md-preview :global(h6) {
     font-weight: 700;
     line-height: 1.25;
     margin: 1.4em 0 0.5em;
-    color: var(--editor-fg);
   }
+  /* Things colors headings per level; H1/H6 stay neutral */
   .md-preview :global(h1) {
     font-size: 1.9em;
+    color: var(--editor-fg);
   }
   .md-preview :global(h2) {
     font-size: 1.5em;
+    color: var(--md-h2);
   }
   .md-preview :global(h3) {
     font-size: 1.25em;
+    color: var(--md-h3);
+  }
+  .md-preview :global(h4) {
+    color: var(--md-h4);
+  }
+  .md-preview :global(h5) {
+    color: var(--md-h5);
+  }
+  .md-preview :global(h6) {
+    color: var(--editor-muted);
   }
 
   .md-preview :global(p) {
     margin: 0.75em 0;
+  }
+
+  .md-preview :global(strong),
+  .md-preview :global(b) {
+    color: var(--md-strong);
+  }
+  .md-preview :global(em),
+  .md-preview :global(i) {
+    color: var(--md-em);
   }
 
   .md-preview :global(a) {
@@ -76,7 +104,7 @@
   .md-preview :global(blockquote) {
     margin: 0.75em 0;
     padding-left: 1em;
-    border-left: 3px solid var(--editor-accent);
+    border-left: 3px solid var(--md-quote);
     color: var(--editor-muted);
   }
 

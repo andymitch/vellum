@@ -60,18 +60,16 @@ const thingsEditorTheme = EditorView.theme(
 );
 
 const thingsHighlightStyle = HighlightStyle.define([
-  // Headings — accent colored, bold, scaled up
+  // Headings — Things colors them per level (H1/H6 stay neutral)
   { tag: t.heading1, color: "var(--editor-fg)", fontWeight: "700", fontSize: "1.6em" },
-  { tag: t.heading2, color: "var(--editor-fg)", fontWeight: "700", fontSize: "1.4em" },
-  { tag: t.heading3, color: "var(--editor-fg)", fontWeight: "600", fontSize: "1.2em" },
-  {
-    tag: [t.heading4, t.heading5, t.heading6],
-    color: "var(--editor-fg)",
-    fontWeight: "600",
-  },
-  // Inline emphasis
-  { tag: t.strong, color: "var(--editor-fg)", fontWeight: "700" },
-  { tag: t.emphasis, color: "var(--editor-fg)", fontStyle: "italic" },
+  { tag: t.heading2, color: "var(--md-h2)", fontWeight: "700", fontSize: "1.4em" },
+  { tag: t.heading3, color: "var(--md-h3)", fontWeight: "600", fontSize: "1.2em" },
+  { tag: t.heading4, color: "var(--md-h4)", fontWeight: "600" },
+  { tag: t.heading5, color: "var(--md-h5)", fontWeight: "600" },
+  { tag: t.heading6, color: "var(--editor-muted)", fontWeight: "600" },
+  // Inline emphasis — Things uses pink for both bold and italic
+  { tag: t.strong, color: "var(--md-strong)", fontWeight: "700" },
+  { tag: t.emphasis, color: "var(--md-em)", fontStyle: "italic" },
   { tag: t.strikethrough, textDecoration: "line-through" },
   // Links & references
   { tag: [t.link, t.url], color: "var(--editor-accent)", textDecoration: "underline" },
@@ -80,6 +78,9 @@ const thingsHighlightStyle = HighlightStyle.define([
     tag: t.monospace,
     fontFamily: "var(--font-mono)",
     fontSize: "0.9em",
+    background: "var(--editor-code-bg)",
+    borderRadius: "4px",
+    padding: "0.1em 0.3em",
   },
   // Markdown syntax punctuation (#, *, -, etc.) — muted
   {
