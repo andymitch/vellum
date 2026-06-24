@@ -1,36 +1,82 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
-  import { readNote, writeNote, onVaultChanged } from "$lib/vault";
-  import { Code, Eye, PanelLeft, NotebookPen, type Icon as IconType } from "@lucide/svelte";
+  import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
+  import SettingsSheet from "$lib/components/SettingsSheet.svelte";
+  import Fab from "$lib/components/Fab.svelte";
+  import {
+    readNote,
+    writeNote,
+    createNote,
+    renamePath,
+    deletePath,
+    onVaultChanged,
+    type TreeNode,
+  } from "$lib/vault";
+  import { session } from "$lib/session.svelte";
+  import { createAndOpenNote } from "$lib/notes";
+  import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
-  const modes: { id: Mode; label: string; icon: typeof IconType }[] = [
-    { id: "source", label: "Source", icon: Code },
-    { id: "preview", label: "Preview", icon: Eye },
-  ];
-  let mode = $state<Mode>("source");
+  let mode = $state<Mode>(session.mode);
+  function setMode(m: Mode) {
+    mode = m;
+    session.mode = m;
+  }
 
-  let sidebarOpen = $state(true);
-  const isMobile = () => window.matchMedia("(max-width: 767px)").matches;
+  const mobileInit = window.matchMedia("(max-width: 767px)").matches;
+  let mobile = $state(mobileInit);
+  // Auto-open the drawer on launch only when no note will be restored. On desktop
+  // the sidebar is a persistent panel, so default open there.
+  let sidebarOpen = $state(!mobileInit || !session.path);
+  function setSidebar(open: boolean) {
+    sidebarOpen = open;
+  }
 
   let activeVault = $state<string | null>(null);
   let activePath = $state<string | null>(null);
   let content = $state("");
   let lastLoaded = $state("");
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let renameTimer: ReturnType<typeof setTimeout> | undefined;
   // Stable per-open id for the editor's {#key}. Lets activePath change under us
   // (H1-driven rename) without remounting the editor and losing the cursor.
   let openToken = $state(0);
   // For a freshly created note: range of the "# Title" text to preselect.
   let pendingSelect = $state<{ from: number; to: number } | null>(null);
 
+  // Editor handle + focus, for the mobile markdown toolbar.
+  let editorView = $state<EditorView | undefined>(undefined);
+  let editorFocused = $state(false);
+
+  // Settings sheet + the vault tree (for file move/duplicate folder lists).
+  let settingsOpen = $state(false);
+  let tree = $state<TreeNode[]>([]);
+
+  function* walk(nodes: TreeNode[]): Generator<TreeNode> {
+    for (const n of nodes) {
+      yield n;
+      if (n.children) yield* walk(n.children);
+    }
+  }
+  const folders = $derived([
+    { path: "", label: "/" },
+    ...[...walk(tree)].filter((n) => n.is_dir).map((n) => ({ path: n.path, label: n.path })),
+  ]);
+  const currentDir = $derived(
+    activePath ? activePath.split("/").slice(0, -1).join("/") : "",
+  );
+
   async function handleOpen(vault: string, path: string, selectTitle = false) {
     clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
     activeVault = vault;
     activePath = path;
+    session.vault = vault;
+    session.path = path;
     content = await readNote(vault, path);
     lastLoaded = content;
     // Preselect the H1 title (the text after "# " on the first line) so a new
@@ -42,34 +88,117 @@
       pendingSelect = null;
     }
     openToken++;
-    if (isMobile()) sidebarOpen = false;
+    if (mobile) setSidebar(false);
   }
 
   function handleVaultChange(vault: string | null) {
     clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
     activeVault = vault;
     activePath = null;
     content = "";
     lastLoaded = "";
     pendingSelect = null;
+    session.vault = vault;
+    session.path = null;
   }
 
-  // Debounced autosave — only when the content actually diverges from what we loaded.
+  function closeNote() {
+    clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
+    activePath = null;
+    content = "";
+    lastLoaded = "";
+    pendingSelect = null;
+    session.path = null;
+  }
+
+  // FAB: new note in the current note's folder (root if none), then edit it.
+  async function newNoteHere() {
+    if (!activeVault) return;
+    const dir = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
+    await createAndOpenNote(activeVault, dir, handleOpen);
+  }
+
+  // File actions (from the settings sheet).
+  async function moveNote(dir: string) {
+    if (!activeVault || !activePath) return;
+    clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
+    const base = activePath.split("/").pop()!;
+    const to = dir ? `${dir}/${base}` : base;
+    await renamePath(activeVault, activePath, to, false);
+    handleOpen(activeVault, to);
+  }
+  // Duplicate the note in the same folder as "X (copy).md" (or "X (copy N).md").
+  async function duplicateNote() {
+    if (!activeVault || !activePath) return;
+    const md = await readNote(activeVault, activePath);
+    const slash = activePath.lastIndexOf("/");
+    const dir = slash === -1 ? "" : activePath.slice(0, slash);
+    const stem = activePath.slice(slash + 1).replace(/\.md$/, "");
+    const siblings = new Set(
+      [...walk(tree)]
+        .filter((n) => !n.is_dir)
+        .map((n) => {
+          const s = n.path.lastIndexOf("/");
+          return { d: s === -1 ? "" : n.path.slice(0, s), name: n.path.slice(s + 1) };
+        })
+        .filter((x) => x.d === dir)
+        .map((x) => x.name),
+    );
+    let name = `${stem} (copy).md`;
+    for (let i = 2; siblings.has(name); i++) name = `${stem} (copy ${i}).md`;
+    const dest = dir ? `${dir}/${name}` : name;
+    // Rewrite the first H1 so the in-doc title matches the new filename (the
+    // filename follows the H1, so leaving it stale would rename the copy back).
+    const newStem = name.replace(/\.md$/, "");
+    const dupMd = md.replace(/^#[ \t]+.*$/m, `# ${newStem}`);
+    const created = await createNote(activeVault, dest);
+    const finalPath = await writeNote(activeVault, created, dupMd, false);
+    handleOpen(activeVault, finalPath);
+  }
+  async function copyContents() {
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
+  async function deleteNote() {
+    if (!activeVault || !activePath) return;
+    clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
+    await deletePath(activeVault, activePath, false);
+    closeNote();
+  }
+
+  // Autosave. Two debounces:
+  //  - 400ms: write content only (no rename) — fast, keeps the DB current.
+  //  - 1500ms: once typing settles, allow the H1->filename rename. Splitting
+  //    them means typing a title doesn't rename (and emit a sync tombstone) on
+  //    every keystroke — only once the title stops changing.
   $effect(() => {
     const c = content;
     const v = activeVault;
     const p = activePath;
     if (!v || !p || c === lastLoaded) return;
     clearTimeout(saveTimer);
+    clearTimeout(renameTimer);
     saveTimer = setTimeout(async () => {
-      const finalPath = await writeNote(v, p, c);
+      await writeNote(v, p, c, false);
+      lastLoaded = c;
+    }, 400);
+    renameTimer = setTimeout(async () => {
+      const finalPath = await writeNote(v, p, c, true);
       lastLoaded = c;
       // The first H1 may have renamed the file. Follow it if we're still on
       // this note (no remount — openToken is unchanged, so the cursor stays).
       if (finalPath !== p && activeVault === v && activePath === p) {
         activePath = finalPath;
+        session.path = finalPath;
       }
-    }, 400);
+    }, 1500);
   });
 
   // Pull remote edits into the open note. A peer's write (or the blob finishing
@@ -77,6 +206,10 @@
   // unsaved local edits (content !== lastLoaded) so we don't clobber typing.
   onMount(() => {
     let unlisten: (() => void) | undefined;
+    // Reactive mobile flag — gates the FAB + markdown toolbar on resize/rotate.
+    const mq = window.matchMedia("(max-width: 767px)");
+    const onMq = (e: MediaQueryListEvent) => (mobile = e.matches);
+    mq.addEventListener("change", onMq);
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
@@ -85,7 +218,10 @@
         lastLoaded = fresh;
       }
     }).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    return () => {
+      mq.removeEventListener("change", onMq);
+      unlisten?.();
+    };
   });
 </script>
 
@@ -105,7 +241,7 @@
         aria-label="Toggle sidebar"
         aria-pressed={sidebarOpen}
         title="Toggle sidebar"
-        onclick={() => (sidebarOpen = !sidebarOpen)}
+        onclick={() => setSidebar(!sidebarOpen)}
       >
         <PanelLeft size={16} />
       </button>
@@ -126,27 +262,41 @@
       </span>
     </div>
 
-    <div
-      class="inline-flex items-center gap-0.5 rounded-full border border-border bg-background p-0.5"
-      role="group"
-      aria-label="View mode"
-    >
-      {#each modes as m (m.id)}
-        {@const Icon = m.icon}
-        <button
-          type="button"
+    <div class="flex items-center gap-1.5">
+      <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit. -->
+      <button
+        type="button"
+        class="inline-flex items-center gap-0.5 rounded-full border border-border bg-background p-0.5"
+        aria-label="Toggle view mode"
+        title={mode === "source" ? "Switch to preview" : "Switch to source"}
+        onclick={() => setMode(mode === "source" ? "preview" : "source")}
+      >
+        <span
           class="flex items-center justify-center rounded-full p-1.5 transition-colors {mode ===
-          m.id
+          'source'
             ? 'bg-primary text-primary-foreground'
-            : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
-          aria-pressed={mode === m.id}
-          aria-label={m.label}
-          title={m.label}
-          onclick={() => (mode = m.id)}
+            : 'text-muted-foreground'}"
         >
-          <Icon size={16} />
-        </button>
-      {/each}
+          <Code size={16} />
+        </span>
+        <span
+          class="flex items-center justify-center rounded-full p-1.5 transition-colors {mode ===
+          'preview'
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground'}"
+        >
+          <Eye size={16} />
+        </span>
+      </button>
+      <button
+        type="button"
+        class="flex items-center justify-center rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="Settings"
+        title="Settings"
+        onclick={() => (settingsOpen = true)}
+      >
+        <Settings size={16} />
+      </button>
     </div>
   </header>
 
@@ -158,7 +308,7 @@
         type="button"
         class="fixed inset-0 z-20 bg-black/50 md:hidden"
         aria-label="Close sidebar"
-        onclick={() => (sidebarOpen = false)}
+        onclick={() => setSidebar(false)}
       ></button>
     {/if}
 
@@ -179,6 +329,7 @@
           {activePath}
           onopen={handleOpen}
           onvaultchange={handleVaultChange}
+          ontree={(t) => (tree = t)}
         />
       </div>
     </aside>
@@ -193,9 +344,35 @@
         <Preview value={content} />
       {:else}
         {#key openToken}
-          <Editor bind:value={content} selectOnMount={pendingSelect} />
+          <Editor
+            bind:value={content}
+            selectOnMount={pendingSelect}
+            bind:view={editorView}
+            bind:focused={editorFocused}
+          />
         {/key}
       {/if}
     </main>
   </div>
 </div>
+
+<!-- Mobile: floating new-note button (hidden while previewing) -->
+{#if mobile && mode !== "preview" && activeVault}
+  <Fab onclick={newNoteHere} />
+{/if}
+
+<!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->
+{#if mobile && mode === "source" && activePath && editorFocused && editorView}
+  <MarkdownToolbar view={editorView} />
+{/if}
+
+<SettingsSheet
+  bind:open={settingsOpen}
+  {activePath}
+  {folders}
+  {currentDir}
+  onmove={moveNote}
+  onduplicate={duplicateNote}
+  oncopy={copyContents}
+  ondelete={deleteNote}
+/>
