@@ -10,10 +10,17 @@
   let {
     value = $bindable(""),
     selectOnMount = null,
-  }: { value?: string; selectOnMount?: { from: number; to: number } | null } = $props();
+    view = $bindable<EditorView | undefined>(undefined),
+    focused = $bindable(false),
+  }: {
+    value?: string;
+    selectOnMount?: { from: number; to: number } | null;
+    // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
+    view?: EditorView;
+    focused?: boolean;
+  } = $props();
 
   let container: HTMLDivElement;
-  let view: EditorView | undefined;
 
   // Create the editor once. onMount is non-reactive, so reading props here
   // does not subscribe the editor to them — keystrokes won't recreate the view.
@@ -37,6 +44,17 @@
             if (update.docChanged) {
               value = update.state.doc.toString();
             }
+          }),
+          // Track focus so the mobile toolbar only shows while editing.
+          EditorView.domEventHandlers({
+            focus: () => {
+              focused = true;
+              return false;
+            },
+            blur: () => {
+              focused = false;
+              return false;
+            },
           }),
         ],
       }),

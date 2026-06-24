@@ -18,14 +18,18 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use futures_lite::StreamExt;
 use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId, SecretKey};
-use iroh_blobs::{store::fs::FsStore, BlobsProtocol};
+use iroh_blobs::{
+    store::{fs::options::Options, fs::FsStore, GcConfig},
+    BlobsProtocol,
+};
 use iroh_docs::{
     api::protocol::{AddrInfoOptions, ShareMode},
-    engine::LiveEvent,
+    engine::{LiveEvent, ProtectCallbackHandler},
     protocol::Docs,
     store::Query,
     AuthorId, DocTicket, NamespaceId,
@@ -39,9 +43,24 @@ use tokio::sync::OnceCell;
 const NAME_KEY: &[u8] = b"\x00meta/name";
 const MARKER: u8 = 0x01;
 const KEEP: &str = ".keep";
+// How often to sweep orphaned content blobs (old note versions no longer
+// referenced by any entry). Blobs referenced by current entries are protected.
+const GC_INTERVAL: Duration = Duration::from_secs(600);
+// Drop a cached peer we haven't seen sync in this long, so dead peers (old
+// devices, closed emulators) don't accumulate and get re-dialed forever.
+const PEER_TTL_SECS: u64 = 60 * 60 * 24 * 30; // 30 days
 
-/// Per-vault set of known sync peers, by EndpointId. Persisted to `peers.json`.
-type PeerMap = BTreeMap<NamespaceId, HashSet<EndpointId>>;
+/// Per-vault known sync peers: EndpointId -> last-seen unix seconds. Persisted to
+/// `peers.json`. The timestamp lets us prune peers we haven't synced with in a
+/// long time (PEER_TTL_SECS) so dead devices don't pile up.
+type PeerMap = BTreeMap<NamespaceId, BTreeMap<EndpointId, u64>>;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// The live iroh node (handles into the running protocols).
 pub struct Node {
@@ -119,37 +138,59 @@ fn peers_path(dir: &std::path::Path) -> PathBuf {
     dir.join("peers.json")
 }
 
-/// Load the per-vault peer set (EndpointIds) persisted on disk.
+/// Load the per-vault peer map persisted on disk, pruning stale entries. Accepts
+/// the legacy list format (`{nsid: [id,...]}`) and migrates it (last-seen = now).
 fn load_peers(dir: &std::path::Path) -> PeerMap {
     let mut out = PeerMap::new();
     let Ok(s) = std::fs::read_to_string(peers_path(dir)) else {
         return out;
     };
-    let raw: BTreeMap<String, Vec<String>> = serde_json::from_str(&s).unwrap_or_default();
-    for (k, ids) in raw {
-        if let Ok(nsid) = NamespaceId::from_str(&k) {
-            out.insert(
-                nsid,
-                ids.iter().filter_map(|i| EndpointId::from_str(i).ok()).collect(),
-            );
+    let now = now_secs();
+    let cutoff = now.saturating_sub(PEER_TTL_SECS);
+    if let Ok(raw) = serde_json::from_str::<BTreeMap<String, BTreeMap<String, u64>>>(&s) {
+        for (k, ids) in raw {
+            let Ok(nsid) = NamespaceId::from_str(&k) else { continue };
+            let m: BTreeMap<EndpointId, u64> = ids
+                .iter()
+                .filter(|(_, &ts)| ts >= cutoff)
+                .filter_map(|(i, &ts)| EndpointId::from_str(i).ok().map(|id| (id, ts)))
+                .collect();
+            if !m.is_empty() {
+                out.insert(nsid, m);
+            }
+        }
+    } else if let Ok(legacy) = serde_json::from_str::<BTreeMap<String, Vec<String>>>(&s) {
+        for (k, ids) in legacy {
+            if let Ok(nsid) = NamespaceId::from_str(&k) {
+                let m = ids
+                    .iter()
+                    .filter_map(|i| EndpointId::from_str(i).ok().map(|id| (id, now)))
+                    .collect();
+                out.insert(nsid, m);
+            }
         }
     }
     out
 }
 
 fn save_peers(dir: &std::path::Path, map: &PeerMap) {
-    let raw: BTreeMap<String, Vec<String>> = map
+    let raw: BTreeMap<String, BTreeMap<String, u64>> = map
         .iter()
-        .map(|(k, v)| (k.to_string(), v.iter().map(|i| i.to_string()).collect()))
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                v.iter().map(|(id, ts)| (id.to_string(), *ts)).collect(),
+            )
+        })
         .collect();
     if let Ok(s) = serde_json::to_string(&raw) {
         let _ = std::fs::write(peers_path(dir), s);
     }
 }
 
-/// Remember a vault's sync peer by EndpointId and persist it. Skips our own id.
-/// Lets us re-dial the peer later via discovery, regardless of its current
-/// address — this is what makes long-lived sync survive network changes.
+/// Remember a vault's sync peer by EndpointId, stamping last-seen = now. Skips our
+/// own id. Persists immediately for a newly-seen peer; refreshed timestamps for
+/// known peers are flushed periodically (see the flush task in `init`).
 fn remember_peer(
     dir: &std::path::Path,
     peers: &Mutex<PeerMap>,
@@ -161,7 +202,8 @@ fn remember_peer(
         return;
     }
     let mut m = peers.lock().unwrap();
-    if m.entry(nsid).or_default().insert(id) {
+    let is_new = m.entry(nsid).or_default().insert(id, now_secs()).is_none();
+    if is_new {
         save_peers(dir, &m);
     }
 }
@@ -173,8 +215,26 @@ fn peer_addrs(peers: &Mutex<PeerMap>, nsid: NamespaceId) -> Vec<EndpointAddr> {
         .lock()
         .unwrap()
         .get(&nsid)
-        .map(|s| s.iter().map(|id| EndpointAddr::new(*id)).collect())
+        .map(|s| s.keys().map(|id| EndpointAddr::new(*id)).collect())
         .unwrap_or_default()
+}
+
+/// Prune peers not seen within PEER_TTL_SECS and persist. Returns true if any
+/// were dropped.
+fn prune_peers(dir: &std::path::Path, peers: &Mutex<PeerMap>) {
+    let cutoff = now_secs().saturating_sub(PEER_TTL_SECS);
+    let mut m = peers.lock().unwrap();
+    let before: usize = m.values().map(|v| v.len()).sum();
+    for v in m.values_mut() {
+        v.retain(|_, &mut ts| ts >= cutoff);
+    }
+    m.retain(|_, v| !v.is_empty());
+    let after: usize = m.values().map(|v| v.len()).sum();
+    // Always persist: refreshes on-disk last-seen for live peers so they don't
+    // get pruned later just because their timestamp was only ever set on insert.
+    if before != after || !m.is_empty() {
+        save_peers(dir, &m);
+    }
 }
 
 /// Write a credential file readable only by the owner (0o600 on Unix).
@@ -260,15 +320,40 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         .address_lookup(MdnsAddressLookup::builder())
         .bind()
         .await?;
-    let blobs = FsStore::load(dir.join("blobs")).await?;
+    // Blob GC. Without it, every saved note version leaves an orphaned content
+    // blob on disk forever. The protect handler lets iroh-docs report the blobs
+    // still referenced by current entries across ALL replicas, so GC only sweeps
+    // true orphans — vaults that aren't currently open stay protected too.
+    let (protect_handler, protect_cb) = ProtectCallbackHandler::new();
+    let blobs_root = dir.join("blobs");
+    let mut blob_opts = Options::new(&blobs_root);
+    blob_opts.gc = Some(GcConfig {
+        interval: GC_INTERVAL,
+        add_protected: Some(protect_cb),
+    });
+    let blobs = FsStore::load_with_opts(blobs_root.join("blobs.db"), blob_opts).await?;
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let docs = Docs::persistent(dir.clone())
+        .protect_handler(protect_handler)
         .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
         .await?;
 
     let watched = std::sync::Arc::new(Mutex::new(HashSet::new()));
     let our_id = endpoint.id();
     let peers = std::sync::Arc::new(Mutex::new(load_peers(&dir)));
+    // Periodically refresh on-disk peer last-seen and prune dead peers, so an
+    // actively-syncing peer keeps a fresh timestamp (avoids being pruned) while
+    // long-gone devices age out of the cache.
+    {
+        let peers = peers.clone();
+        let dir = dir.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                prune_peers(&dir, &peers);
+            }
+        });
+    }
     #[cfg(target_os = "android")]
     let _ = NET.set(NetHandle {
         endpoint: endpoint.clone(),
@@ -649,6 +734,7 @@ pub async fn write_note(
     vault: String,
     path: String,
     content: String,
+    allow_rename: bool,
 ) -> Result<String, String> {
     let node = state.node().await?;
     map_err(
@@ -658,8 +744,10 @@ pub async fn write_note(
             // Keep the filename synced to the first H1 (Obsidian-style). Move the
             // key only when the derived name differs and is free — never clobber
             // an existing note. Returns the (possibly new) path so the frontend
-            // can keep editing the same note.
-            if path.ends_with(".md") {
+            // can keep editing the same note. Gated on allow_rename so fast
+            // keystroke autosaves don't rename (each rename leaves a tombstone
+            // that syncs forever) — only the settled-title save renames.
+            if allow_rename && path.ends_with(".md") {
                 if let Some(base) = derive_basename(&content) {
                     let (dir, cur) = split_path(&path);
                     if base != cur {
