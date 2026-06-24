@@ -40,6 +40,9 @@ ndk-context = "0.1"
 # Route iroh logs to Android logcat (tracing-subscriber is in [dependencies]).
 paranoid-android = "0.2"
 
+[target.'cfg(any(target_os="android",target_os="ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2.4.5"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

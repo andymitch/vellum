@@ -7,7 +7,10 @@
   import { onMount } from "svelte";
   import { thingsTheme } from "./things-theme";
 
-  let { value = $bindable("") }: { value?: string } = $props();
+  let {
+    value = $bindable(""),
+    selectOnMount = null,
+  }: { value?: string; selectOnMount?: { from: number; to: number } | null } = $props();
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
@@ -19,6 +22,11 @@
       parent: container,
       state: EditorState.create({
         doc: value,
+        // For a freshly created note, preselect the "Untitled" title so typing
+        // immediately renames it (the filename follows the first H1).
+        selection: selectOnMount
+          ? { anchor: selectOnMount.from, head: selectOnMount.to }
+          : undefined,
         extensions: [
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -33,6 +41,7 @@
         ],
       }),
     });
+    if (selectOnMount) view.focus();
 
     return () => {
       view?.destroy();
