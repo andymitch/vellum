@@ -7,6 +7,7 @@
         shareVault,
         forgetVault,
         listTree,
+        readNote,
         createFolder,
         renamePath,
         deletePath,
@@ -37,7 +38,8 @@
     } from "@tauri-apps/plugin-barcode-scanner";
     import { session } from "$lib/session.svelte";
     import { portal } from "$lib/portal";
-    import { createAndOpenNote } from "$lib/notes";
+    import { drag } from "$lib/dnd";
+    import { createAndOpenNote, duplicateNote } from "$lib/notes";
 
     // The native camera scanner only exists on mobile; gate the Scan button on it.
     const canScan = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -288,6 +290,16 @@
             const to = join(dirOf(node.path), name);
             await renamePath(activeVault, node.path, to, node.is_dir);
             if (activePath === node.path) onopen(activeVault, to);
+        } else if (kind === "duplicate") {
+            const finalPath = await duplicateNote(activeVault, node.path, tree);
+            onopen(activeVault, finalPath);
+        } else if (kind === "copy") {
+            try {
+                await navigator.clipboard.writeText(await readNote(activeVault, node.path));
+            } catch {
+                /* clipboard may be unavailable */
+            }
+            return; // nothing changed on disk
         } else if (kind === "delete") {
             if (!(await askConfirm(`Delete "${node.name}"?`))) return;
             await deletePath(activeVault, node.path, node.is_dir);
@@ -298,6 +310,23 @@
             )
                 onvaultchange(activeVault);
         }
+        await refreshTree();
+    }
+
+    // Drag-and-drop move (desktop): move `from` into folder `toDir` ("" = root).
+    // Follows the open note if it (or its containing folder) moved.
+    const dndEnabled = !window.matchMedia("(max-width: 767px)").matches;
+    let rootDragOver = $state(false);
+    async function moveTo(from: string, isDir: boolean, toDir: string) {
+        if (!activeVault || !from) return;
+        // No-op if already there; never drop a folder into itself or a descendant.
+        if (dirOf(from) === toDir) return;
+        if (toDir === from || toDir.startsWith(from + "/")) return;
+        const dest = join(toDir, from.split("/").pop()!);
+        await renamePath(activeVault, from, dest, isDir);
+        if (activePath === from) onopen(activeVault, dest);
+        else if (activePath && activePath.startsWith(from + "/"))
+            onopen(activeVault, dest + activePath.slice(from.length));
         await refreshTree();
     }
 
@@ -367,15 +396,41 @@
         </button>
     </div>
 
-    <!-- Tree -->
-    <div class="min-h-0 flex-1 overflow-auto px-1 pb-2">
+    <!-- Tree. The scroll area is a drop target for moving items to the vault root. -->
+    <div
+        class="min-h-0 flex-1 overflow-auto px-1 pb-2 {rootDragOver
+            ? 'rounded bg-muted'
+            : ''}"
+        role="tree"
+        tabindex="-1"
+        ondragenter={dndEnabled ? (e) => e.preventDefault() : undefined}
+        ondragover={dndEnabled
+            ? (e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                  rootDragOver = true;
+              }
+            : undefined}
+        ondragleave={dndEnabled ? () => (rootDragOver = false) : undefined}
+        ondrop={dndEnabled
+            ? (e) => {
+                  e.preventDefault();
+                  rootDragOver = false;
+                  const d = drag.item;
+                  drag.item = null;
+                  if (d) moveTo(d.path, d.is_dir, "");
+              }
+            : undefined}
+    >
         {#if activeVault && tree.length}
             <Tree
                 nodes={tree}
                 {activePath}
                 {expanded}
+                dnd={dndEnabled}
                 onselect={(node) => onopen(activeVault!, node.path)}
                 onmenu={openMenu}
+                onmove={moveTo}
             />
         {:else if activeVault}
             <p class="px-2 py-4 text-sm text-muted-foreground">Empty vault.</p>
@@ -511,6 +566,15 @@
             <button
                 class="block w-full px-3 py-1 text-left hover:bg-muted"
                 onclick={() => act("rename", node)}>Rename</button
+            >
+        {:else}
+            <button
+                class="block w-full px-3 py-1 text-left hover:bg-muted"
+                onclick={() => act("duplicate", node)}>Duplicate</button
+            >
+            <button
+                class="block w-full px-3 py-1 text-left hover:bg-muted"
+                onclick={() => act("copy", node)}>Copy contents</button
             >
         {/if}
         <button
