@@ -8,7 +8,8 @@ import type { Extension } from "@codemirror/state";
  * Colors are pulled from CSS custom properties defined in app.css so the
  * editor stays in sync with light/dark mode automatically.
  */
-const thingsEditorTheme = EditorView.theme(
+const thingsEditorTheme = (dark: boolean) =>
+  EditorView.theme(
   {
   "&": {
     color: "var(--editor-fg)",
@@ -56,7 +57,7 @@ const thingsEditorTheme = EditorView.theme(
     color: "var(--editor-muted)",
   },
   },
-  { dark: true },
+  { dark },
 );
 
 const thingsHighlightStyle = HighlightStyle.define([
@@ -130,7 +131,10 @@ const thingsHighlightStyle = HighlightStyle.define([
   },
 ]);
 
-export const thingsTheme: Extension = [
-  thingsEditorTheme,
+// Built per-mode: the editor chrome theme needs the correct `dark` flag (so
+// CodeMirror picks matching defaults), while the syntax highlight style is
+// var-driven and shared. Caller reconfigures this when the theme mode changes.
+export const thingsTheme = (dark: boolean): Extension => [
+  thingsEditorTheme(dark),
   syntaxHighlighting(thingsHighlightStyle),
 ];

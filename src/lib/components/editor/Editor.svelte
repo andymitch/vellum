@@ -1,11 +1,28 @@
 <script lang="ts">
   import { EditorView, keymap } from "@codemirror/view";
-  import { EditorState } from "@codemirror/state";
+  import { EditorState, Compartment } from "@codemirror/state";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
   import { languages } from "@codemirror/language-data";
   import { onMount } from "svelte";
   import { thingsTheme } from "./things-theme";
+  import { theme } from "$lib/theme.svelte";
+  import { wrapInline, insertLink } from "./markdown-actions";
+
+  // Desktop style hotkeys. Each toggles/applies inline markdown to the selection
+  // (the same actions as the mobile toolbar). Bound ahead of the default keymap
+  // so they take precedence. Mod = Cmd (macOS) / Ctrl (elsewhere).
+  const styleKeymap = [
+    { key: "Mod-b", run: (v: EditorView) => (wrapInline(v, "**"), true) },
+    { key: "Mod-i", run: (v: EditorView) => (wrapInline(v, "*"), true) },
+    { key: "Mod-e", run: (v: EditorView) => (wrapInline(v, "`"), true) },
+    { key: "Mod-Shift-x", run: (v: EditorView) => (wrapInline(v, "~~"), true) },
+    { key: "Mod-k", run: (v: EditorView) => (insertLink(v), true) },
+  ];
+
+  // Theme lives in a compartment so light/dark (and OS) changes can reconfigure
+  // it without recreating the editor.
+  const themeConf = new Compartment();
 
   let {
     value = $bindable(""),
@@ -36,10 +53,10 @@
           : undefined,
         extensions: [
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          keymap.of([...styleKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
-          thingsTheme,
+          themeConf.of(thingsTheme(theme.dark)),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               value = update.state.doc.toString();
@@ -65,6 +82,12 @@
       view?.destroy();
       view = undefined;
     };
+  });
+
+  // Reconfigure the editor theme when light/dark (or the OS preference) flips.
+  $effect(() => {
+    const dark = theme.dark;
+    view?.dispatch({ effects: themeConf.reconfigure(thingsTheme(dark)) });
   });
 
   // Push external `value` changes into the editor. Guarded against the echo
