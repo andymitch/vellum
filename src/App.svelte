@@ -261,7 +261,7 @@
        Overlay titlebar removes the native drag strip; child buttons still click. -->
   <header
     data-tauri-drag-region
-    class="flex shrink-0 items-center justify-between border-b border-border bg-secondary/40 {isMacDesktop
+    class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'}"
     style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
@@ -287,7 +287,12 @@
            the *leading* path (left) so the filename stays visible. The container
            is rtl (so overflow/ellipsis lands on the left); an inner `dir="ltr"`
            override keeps the path itself reading left-to-right. -->
-      <span data-tauri-drag-region class="path-crumb text-sm font-medium">
+      <!-- Base color is the muted/60 of the leading segments so the truncation
+           ellipsis matches them; the active segment overrides with text-foreground. -->
+      <span
+        data-tauri-drag-region
+        class="path-crumb text-sm font-medium text-muted-foreground/60"
+      >
         {#if activePath}
           {@const parts = activePath.replace(/\.md$/, "").split("/")}
           <bdo dir="ltr">
