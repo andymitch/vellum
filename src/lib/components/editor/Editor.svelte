@@ -4,9 +4,11 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
   import { languages } from "@codemirror/language-data";
+  import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
   import { onMount } from "svelte";
   import { thingsTheme } from "./things-theme";
   import { theme } from "$lib/theme.svelte";
+  import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { wrapInline, insertLink } from "./markdown-actions";
 
   // Desktop style hotkeys. Each toggles/applies inline markdown to the selection
@@ -23,6 +25,11 @@
   // Theme lives in a compartment so light/dark (and OS) changes can reconfigure
   // it without recreating the editor.
   const themeConf = new Compartment();
+  // Input-assist settings (close-brackets behavior + the content DOM's
+  // autocomplete/autocapitalize/autocorrect/spellcheck attributes) each live in
+  // a compartment so the settings sheet can toggle them live without a remount.
+  const bracketsConf = new Compartment();
+  const attrsConf = new Compartment();
 
   let {
     value = $bindable(""),
@@ -46,10 +53,18 @@
         doc: value,
         extensions: [
           history(),
-          keymap.of([...styleKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
+          keymap.of([
+            ...styleKeymap,
+            ...closeBracketsKeymap,
+            ...defaultKeymap,
+            ...historyKeymap,
+            indentWithTab,
+          ]),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
           themeConf.of(thingsTheme(theme.dark)),
+          bracketsConf.of(editorSettings.closeBrackets ? closeBrackets() : []),
+          attrsConf.of(EditorView.contentAttributes.of(contentAttrs())),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               value = update.state.doc.toString();
@@ -80,6 +95,25 @@
   $effect(() => {
     const dark = theme.dark;
     view?.dispatch({ effects: themeConf.reconfigure(thingsTheme(dark)) });
+  });
+
+  // Reconfigure input-assist when the settings sheet toggles them. Reading each
+  // getter subscribes this effect to its changes.
+  $effect(() => {
+    const brackets = editorSettings.closeBrackets;
+    view?.dispatch({
+      effects: bracketsConf.reconfigure(brackets ? closeBrackets() : []),
+    });
+  });
+  $effect(() => {
+    // Touch each so the effect re-runs when any attribute setting changes.
+    editorSettings.autocomplete;
+    editorSettings.autocapitalize;
+    editorSettings.autocorrect;
+    editorSettings.spellcheck;
+    view?.dispatch({
+      effects: attrsConf.reconfigure(EditorView.contentAttributes.of(contentAttrs())),
+    });
   });
 
   // Push external `value` changes into the editor. Guarded against the echo
