@@ -26,12 +26,10 @@
 
   let {
     value = $bindable(""),
-    selectOnMount = null,
     view = $bindable<EditorView | undefined>(undefined),
     focused = $bindable(false),
   }: {
     value?: string;
-    selectOnMount?: { from: number; to: number } | null;
     // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
     view?: EditorView;
     focused?: boolean;
@@ -46,11 +44,6 @@
       parent: container,
       state: EditorState.create({
         doc: value,
-        // For a freshly created note, preselect the "Untitled" title so typing
-        // immediately renames it (the filename follows the first H1).
-        selection: selectOnMount
-          ? { anchor: selectOnMount.from, head: selectOnMount.to }
-          : undefined,
         extensions: [
           history(),
           keymap.of([...styleKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -76,7 +69,6 @@
         ],
       }),
     });
-    if (selectOnMount) view.focus();
 
     return () => {
       view?.destroy();

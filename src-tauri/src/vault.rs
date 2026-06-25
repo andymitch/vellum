@@ -439,43 +439,6 @@ async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
     Ok(keys)
 }
 
-/// Strip characters illegal in a path segment; collapse runs of whitespace.
-fn sanitize_title(title: &str) -> String {
-    let cleaned: String = title
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect();
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Obsidian-style: derive a `<title>.md` filename from a note's first non-blank
-/// line when it is an ATX H1 (`# Title`). Returns None otherwise (H2+, no
-/// leading heading, or a title that sanitizes to nothing).
-fn derive_basename(content: &str) -> Option<String> {
-    let first = content.lines().find(|l| !l.trim().is_empty())?;
-    let rest = first.trim_start().strip_prefix('#')?;
-    if !rest.starts_with(char::is_whitespace) {
-        return None; // "#x" (no space) or "## h2" — not an H1
-    }
-    let title = sanitize_title(rest.trim());
-    if title.is_empty() {
-        return None;
-    }
-    Some(format!("{title}.md"))
-}
-
-/// Split a key into (dir, basename). dir is "" for a root-level key.
-fn split_path(path: &str) -> (&str, &str) {
-    match path.rfind('/') {
-        Some(i) => (&path[..i], &path[i + 1..]),
-        None => ("", path),
-    }
-}
-
 async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
     Ok(doc.get_one(Query::key_exact(key.as_bytes())).await?.is_some())
 }
@@ -734,33 +697,13 @@ pub async fn write_note(
     vault: String,
     path: String,
     content: String,
-    allow_rename: bool,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
             doc.set_bytes(node.author, path.clone().into_bytes(), encode(&content)).await?;
-            // Keep the filename synced to the first H1 (Obsidian-style). Move the
-            // key only when the derived name differs and is free — never clobber
-            // an existing note. Returns the (possibly new) path so the frontend
-            // can keep editing the same note. Gated on allow_rename so fast
-            // keystroke autosaves don't rename (each rename leaves a tombstone
-            // that syncs forever) — only the settled-title save renames.
-            if allow_rename && path.ends_with(".md") {
-                if let Some(base) = derive_basename(&content) {
-                    let (dir, cur) = split_path(&path);
-                    if base != cur {
-                        let target = if dir.is_empty() { base } else { format!("{dir}/{base}") };
-                        if !key_exists(&doc, &target).await? {
-                            doc.set_bytes(node.author, target.clone().into_bytes(), encode(&content)).await?;
-                            doc.del(node.author, path.clone().into_bytes()).await?;
-                            return Ok(target);
-                        }
-                    }
-                }
-            }
-            Ok(path)
+            Ok(())
         }
         .await,
     )
