@@ -9,7 +9,7 @@ use tauri::Manager;
 /// iroh node is lazily built on the first command.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_andymitch_notes_MainActivity_initAndroidContext(
+pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext(
     mut env: jni::JNIEnv,
     _class: jni::objects::JClass,
     context: jni::objects::JObject,
@@ -33,7 +33,7 @@ pub extern "system" fn Java_com_andymitch_notes_MainActivity_initAndroidContext(
 /// iroh explicitly to re-probe and migrate connections (e.g. wifi <-> cellular).
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_andymitch_notes_MainActivity_notifyNetworkChange(
+pub extern "system" fn Java_com_andymitch_vellum_MainActivity_notifyNetworkChange(
     _env: jni::JNIEnv,
     _class: jni::objects::JClass,
 ) {
@@ -56,7 +56,7 @@ fn set_dark_mode(dark: bool) {
             return;
         };
         let _ = env.call_static_method(
-            "com/andymitch/notes/MainActivity",
+            "com/andymitch/vellum/MainActivity",
             "setDarkMode",
             "(Z)V",
             &[jni::objects::JValue::Bool(dark as u8)],
