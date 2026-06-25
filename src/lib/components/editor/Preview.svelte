@@ -2,6 +2,7 @@
   import { Marked } from "marked";
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   let { value = $bindable("") }: { value?: string } = $props();
 
@@ -43,9 +44,24 @@
       (m, pre, mark, post) => (i++ === index ? pre + (mark === " " ? "x" : " ") + post : m),
     );
   }
+
+  // The webview would otherwise navigate the whole app to an external link or
+  // open it in an in-app view. Intercept clicks on absolute/mailto links and
+  // hand them to the OS default browser via the opener plugin instead.
+  function onClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement | null)?.closest("a");
+    const href = a?.getAttribute("href");
+    if (!href || !/^(https?:|mailto:)/i.test(href)) return;
+    e.preventDefault();
+    openUrl(href);
+  }
 </script>
 
-<div class="md-preview" onchange={onToggle}>
+<!-- onclick delegates link handling to the OS browser; the real <a>s inside are
+     keyboard-accessible, so the static-element a11y rules don't apply here. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="md-preview" onchange={onToggle} onclick={onClick}>
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 </div>
@@ -142,14 +158,47 @@
     list-style: none;
     margin-left: -1.2em;
   }
-  /* Bigger, theme-colored, interactive task checkboxes. */
+  /* A sublist nested under a checkbox line must cancel that -1.2em pull-back so
+     its bullets stay indented under the task text, not flush with it. */
+  .md-preview :global(li:has(> input[type="checkbox"]) > ul),
+  .md-preview :global(li:has(> input[type="checkbox"]) > ol) {
+    margin-left: 1.2em;
+  }
+  /* Theme-aware task checkboxes: a subtle "off-background" box that respects the
+     active palette, with the checked state drawn in the theme accent. */
   .md-preview :global(li > input[type="checkbox"]) {
+    appearance: none;
+    -webkit-appearance: none;
     width: 1.15em;
     height: 1.15em;
     margin-right: 0.45em;
-    accent-color: var(--editor-accent);
+    vertical-align: -0.22em;
+    border: 1.5px solid var(--editor-border);
+    border-radius: 0.3em;
+    background: var(--secondary);
     cursor: pointer;
-    vertical-align: -0.18em;
+    position: relative;
+  }
+  /* Checked: solid fill in the primary color (matching the source/preview
+     toggle), with the checkmark drawn in the contrasting foreground. */
+  .md-preview :global(li > input[type="checkbox"]:checked) {
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+  .md-preview :global(li > input[type="checkbox"]:checked)::after {
+    content: "";
+    position: absolute;
+    left: 0.38em;
+    top: 0.11em;
+    width: 0.3em;
+    height: 0.62em;
+    border: solid var(--primary-foreground);
+    border-width: 0 0.2em 0.2em 0;
+    transform: rotate(45deg);
+  }
+  /* Fade a completed task line (the whole row, checkbox included). */
+  .md-preview :global(li:has(> input[type="checkbox"]:checked)) {
+    opacity: 0.55;
   }
 
   .md-preview :global(blockquote) {

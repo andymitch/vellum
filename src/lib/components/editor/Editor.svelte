@@ -9,17 +9,19 @@
   import { thingsTheme } from "./things-theme";
   import { theme } from "$lib/theme.svelte";
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
-  import { wrapInline, insertLink } from "./markdown-actions";
+  import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
 
-  // Desktop style hotkeys. Each toggles/applies inline markdown to the selection
-  // (the same actions as the mobile toolbar). Bound ahead of the default keymap
-  // so they take precedence. Mod = Cmd (macOS) / Ctrl (elsewhere).
+  // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
+  // same actions as the mobile toolbar). Bound ahead of the default keymap so
+  // they take precedence. Mod = Cmd (macOS) / Ctrl (elsewhere).
   const styleKeymap = [
     { key: "Mod-b", run: (v: EditorView) => (wrapInline(v, "**"), true) },
     { key: "Mod-i", run: (v: EditorView) => (wrapInline(v, "*"), true) },
     { key: "Mod-e", run: (v: EditorView) => (wrapInline(v, "`"), true) },
     { key: "Mod-Shift-x", run: (v: EditorView) => (wrapInline(v, "~~"), true) },
     { key: "Mod-k", run: (v: EditorView) => (insertLink(v), true) },
+    // Toggle a task-list checkbox on each selected line.
+    { key: "Mod--", run: (v: EditorView) => (toggleLinePrefix(v, "- [ ] "), true) },
   ];
 
   // Theme lives in a compartment so light/dark (and OS) changes can reconfigure
@@ -62,6 +64,13 @@
           ]),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
+          // Treat the keyboard+toolbar occlusion (--editor-kb-inset; 0 when no
+          // keyboard) as invisible bottom space, so CM's own scroll-into-view
+          // on each keystroke keeps the caret clear of it.
+          EditorView.scrollMargins.of((v) => {
+            const h = parseInt(getComputedStyle(v.dom).getPropertyValue("--editor-kb-inset"));
+            return h ? { bottom: h } : null;
+          }),
           themeConf.of(thingsTheme(theme.dark)),
           bracketsConf.of(editorSettings.closeBrackets ? closeBrackets() : []),
           attrsConf.of(EditorView.contentAttributes.of(contentAttrs())),
