@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade, fly } from "svelte/transition";
   import { X, Copy, FolderInput, CopyPlus, Trash2 } from "@lucide/svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { portal } from "$lib/portal";
@@ -10,6 +11,32 @@
     { id: "light", label: "Light" },
     { id: "dark", label: "Dark" },
   ];
+
+  // Keyboard shortcuts shown in settings. `keys` are abstract tokens rendered
+  // per-platform: Mod = ⌘ on macOS / Ctrl elsewhere, Shift = ⇧ / Shift. Keep
+  // this list in sync with App.svelte's onKeydown and Editor.svelte's styleKeymap.
+  const isMac = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+  const SHORTCUTS: { keys: string[]; label: string }[] = [
+    { keys: ["Mod", "\\"], label: "Toggle sidebar" },
+    { keys: ["Mod", ","], label: "Open settings" },
+    { keys: ["Mod", "N"], label: "New note" },
+    { keys: ["Mod", "Shift", "N"], label: "New folder" },
+    { keys: ["Mod", "P"], label: "Toggle source / preview" },
+    { keys: ["Mod", "B"], label: "Bold" },
+    { keys: ["Mod", "I"], label: "Italic" },
+    { keys: ["Mod", "E"], label: "Inline code" },
+    { keys: ["Mod", "Shift", "X"], label: "Strikethrough" },
+    { keys: ["Mod", "K"], label: "Insert link" },
+    { keys: ["Mod", "-"], label: "Toggle checkbox" },
+  ];
+  function keyLabel(k: string): string {
+    if (k === "Mod") return isMac ? "⌘" : "Ctrl";
+    if (k === "Shift") return isMac ? "⇧" : "Shift";
+    return k.length === 1 ? k.toUpperCase() : k;
+  }
+
+  let version = $state("");
+  getVersion().then((v) => (version = v));
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
   const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
@@ -173,6 +200,30 @@
             />
           </label>
         {/each}
+
+        <div class="my-4 border-t border-border"></div>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Keyboard shortcuts
+        </p>
+        {#each SHORTCUTS as s (s.label)}
+          <div class="flex items-center justify-between gap-3 py-1.5">
+            <span class="text-sm">{s.label}</span>
+            <span class="flex items-center gap-1">
+              {#each s.keys as k (k)}
+                <kbd
+                  class="min-w-5 rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground"
+                >
+                  {keyLabel(k)}
+                </kbd>
+              {/each}
+            </span>
+          </div>
+        {/each}
+
+        <div class="my-4 border-t border-border"></div>
+        <p class="text-center text-xs text-muted-foreground">
+          Vellum{version ? ` v${version}` : ""}
+        </p>
       </div>
     </div>
   </div>
