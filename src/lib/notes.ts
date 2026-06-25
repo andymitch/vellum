@@ -1,18 +1,18 @@
 import { createNote, writeNote, readNote, type TreeNode } from "./vault";
 
-/// Create a new "Untitled" note in `dir` (empty string = vault root), seed it
-/// with an H1 title, and open it for editing with the title preselected. Returns
-/// the note's final path. Shared by the sidebar New Note button and the mobile FAB.
+/// Create an empty note named `name` in `dir` (empty string = vault root) and
+/// open it. The filename is independent of the content — callers prompt for the
+/// name. `createNote` de-duplicates against existing siblings. Returns the path.
 export async function createAndOpenNote(
   vault: string,
   dir: string,
-  open: (vault: string, path: string, selectTitle?: boolean) => void,
+  name: string,
+  open: (vault: string, path: string) => void,
 ): Promise<string> {
-  const path = await createNote(vault, dir ? `${dir}/Untitled.md` : "Untitled.md");
-  const title = path.split("/").pop()!.replace(/\.md$/, "");
-  const finalPath = await writeNote(vault, path, `# ${title}\n`);
-  open(vault, finalPath, true);
-  return finalPath;
+  const file = name.endsWith(".md") ? name : `${name}.md`;
+  const path = await createNote(vault, dir ? `${dir}/${file}` : file);
+  open(vault, path);
+  return path;
 }
 
 function* walkFiles(nodes: TreeNode[]): Generator<TreeNode> {
@@ -23,9 +23,9 @@ function* walkFiles(nodes: TreeNode[]): Generator<TreeNode> {
 }
 
 /// Duplicate the note at `path` into the same folder as "X (copy)" (or
-/// "X (copy N)"), rewriting the first H1 to match the new name so the in-doc
-/// title and filename stay in sync. `tree` supplies the sibling names to dedupe
-/// against. Returns the new note's path.
+/// "X (copy N)"). Content is copied verbatim — the filename is independent of
+/// it. `tree` supplies the sibling names to dedupe against. Returns the new
+/// note's path.
 export async function duplicateNote(
   vault: string,
   path: string,
@@ -47,10 +47,7 @@ export async function duplicateNote(
   let name = `${stem} (copy).md`;
   for (let i = 2; siblings.has(name); i++) name = `${stem} (copy ${i}).md`;
   const dest = dir ? `${dir}/${name}` : name;
-  // Rewrite the first H1 so the in-doc title matches the new filename (the
-  // filename follows the H1, so leaving it stale would rename the copy back).
-  const newStem = name.replace(/\.md$/, "");
-  const dupMd = md.replace(/^#[ \t]+.*$/m, `# ${newStem}`);
   const created = await createNote(vault, dest);
-  return writeNote(vault, created, dupMd, false);
+  await writeNote(vault, created, md);
+  return created;
 }

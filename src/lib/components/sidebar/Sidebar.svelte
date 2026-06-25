@@ -63,7 +63,7 @@
         ontree,
     }: {
         activePath?: string | null;
-        onopen: (vault: string, path: string, selectTitle?: boolean) => void;
+        onopen: (vault: string, path: string) => void;
         onvaultchange: (vault: string | null) => void;
         // Notify the parent of the current tree (used to derive the folder list
         // for move/duplicate actions).
@@ -245,17 +245,25 @@
         if (id === activeVault) await setActive(vaults[0]?.id ?? null);
     }
 
-    // Create a note (named from its first H1, Obsidian-style). Prepopulate the H1
-    // with the unique "Untitled" name and open it with that title preselected so
-    // the user can immediately type a real name.
+    // Create a note in `dir` ("" = vault root). Filename and content are
+    // independent, so we prompt for a name up front (createNote de-dupes).
     async function newNoteIn(vault: string, dir: string) {
-        await createAndOpenNote(vault, dir, onopen);
+        const name = (await askText("New note name"))?.trim();
+        if (!name) return;
+        if (dir) expanded[dir] = true;
+        await createAndOpenNote(vault, dir, name, onopen);
         await refreshTree();
     }
 
     async function newRootNote() {
         if (!activeVault) return;
         await newNoteIn(activeVault, "");
+    }
+
+    // Imperative hook for the App's FAB / Cmd+N (it owns those, but the name
+    // prompt + creation live here alongside the other dialogs).
+    export function newNoteHotkey(dir = "") {
+        if (activeVault) newNoteIn(activeVault, dir);
     }
 
     async function newRootFolder() {

@@ -17,7 +17,7 @@
     type TreeNode,
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
-  import { createAndOpenNote, duplicateNote as duplicateNoteFile } from "$lib/notes";
+  import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -56,12 +56,9 @@
   let content = $state("");
   let lastLoaded = $state("");
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  let renameTimer: ReturnType<typeof setTimeout> | undefined;
-  // Stable per-open id for the editor's {#key}. Lets activePath change under us
-  // (H1-driven rename) without remounting the editor and losing the cursor.
+  // Per-open id for the editor's {#key}, so switching notes remounts the editor
+  // with a fresh document.
   let openToken = $state(0);
-  // For a freshly created note: range of the "# Title" text to preselect.
-  let pendingSelect = $state<{ from: number; to: number } | null>(null);
 
   // Editor handle + focus, for the mobile markdown toolbar.
   let editorView = $state<EditorView | undefined>(undefined);
@@ -87,61 +84,46 @@
     activePath ? activePath.split("/").slice(0, -1).join("/") : "",
   );
 
-  async function handleOpen(vault: string, path: string, selectTitle = false) {
+  async function handleOpen(vault: string, path: string) {
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     activeVault = vault;
     activePath = path;
     session.vault = vault;
     session.path = path;
     content = await readNote(vault, path);
     lastLoaded = content;
-    // Preselect the H1 title (the text after "# " on the first line) so a new
-    // note can be renamed by just typing.
-    if (selectTitle && content.startsWith("# ")) {
-      const nl = content.indexOf("\n");
-      pendingSelect = { from: 2, to: nl === -1 ? content.length : nl };
-    } else {
-      pendingSelect = null;
-    }
     openToken++;
     if (mobile) setSidebar(false);
   }
 
   function handleVaultChange(vault: string | null) {
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     activeVault = vault;
     activePath = null;
     content = "";
     lastLoaded = "";
-    pendingSelect = null;
     session.vault = vault;
     session.path = null;
   }
 
   function closeNote() {
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     activePath = null;
     content = "";
     lastLoaded = "";
-    pendingSelect = null;
     session.path = null;
   }
 
-  // FAB: new note in the current note's folder (root if none), then edit it.
-  async function newNoteHere() {
-    if (!activeVault) return;
-    const dir = activePath ? activePath.split("/").slice(0, -1).join("/") : "";
-    await createAndOpenNote(activeVault, dir, handleOpen);
+  // FAB / Cmd+N: new note in the current note's folder (root if none). The name
+  // prompt + creation live in the sidebar (alongside its other dialogs).
+  function newNoteHere() {
+    sidebar?.newNoteHotkey(currentDir);
   }
 
   // File actions (from the settings sheet).
   async function moveNote(dir: string) {
     if (!activeVault || !activePath) return;
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     const base = activePath.split("/").pop()!;
     const to = dir ? `${dir}/${base}` : base;
     await renamePath(activeVault, activePath, to, false);
@@ -163,37 +145,22 @@
   async function deleteNote() {
     if (!activeVault || !activePath) return;
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     await deletePath(activeVault, activePath, false);
     closeNote();
   }
 
-  // Autosave. Two debounces:
-  //  - 400ms: write content only (no rename) — fast, keeps the DB current.
-  //  - 1500ms: once typing settles, allow the H1->filename rename. Splitting
-  //    them means typing a title doesn't rename (and emit a sync tombstone) on
-  //    every keystroke — only once the title stops changing.
+  // Autosave: debounce content writes 400ms. The filename never changes from
+  // content, so a single content-only save is all we need.
   $effect(() => {
     const c = content;
     const v = activeVault;
     const p = activePath;
     if (!v || !p || c === lastLoaded) return;
     clearTimeout(saveTimer);
-    clearTimeout(renameTimer);
     saveTimer = setTimeout(async () => {
-      await writeNote(v, p, c, false);
+      await writeNote(v, p, c);
       lastLoaded = c;
     }, 400);
-    renameTimer = setTimeout(async () => {
-      const finalPath = await writeNote(v, p, c, true);
-      lastLoaded = c;
-      // The first H1 may have renamed the file. Follow it if we're still on
-      // this note (no remount — openToken is unchanged, so the cursor stays).
-      if (finalPath !== p && activeVault === v && activePath === p) {
-        activePath = finalPath;
-        session.path = finalPath;
-      }
-    }, 1500);
   });
 
   // Pull remote edits into the open note. A peer's write (or the blob finishing
@@ -398,7 +365,6 @@
         {#key openToken}
           <Editor
             bind:value={content}
-            selectOnMount={pendingSelect}
             bind:view={editorView}
             bind:focused={editorFocused}
           />
