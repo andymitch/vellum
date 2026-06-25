@@ -158,14 +158,44 @@
     list-style: none;
     margin-left: -1.2em;
   }
-  /* Bigger, theme-colored, interactive task checkboxes. */
+  /* A sublist nested under a checkbox line must cancel that -1.2em pull-back so
+     its bullets stay indented under the task text, not flush with it. */
+  .md-preview :global(li:has(> input[type="checkbox"]) > ul),
+  .md-preview :global(li:has(> input[type="checkbox"]) > ol) {
+    margin-left: 1.2em;
+  }
+  /* Theme-aware task checkboxes: a subtle "off-background" box that respects the
+     active palette, with the checked state drawn in the theme accent. */
   .md-preview :global(li > input[type="checkbox"]) {
+    appearance: none;
+    -webkit-appearance: none;
     width: 1.15em;
     height: 1.15em;
     margin-right: 0.45em;
-    accent-color: var(--editor-accent);
+    vertical-align: -0.22em;
+    border: 1.5px solid var(--editor-border);
+    border-radius: 0.3em;
+    background: var(--secondary);
     cursor: pointer;
-    vertical-align: -0.18em;
+    position: relative;
+  }
+  .md-preview :global(li > input[type="checkbox"]:checked) {
+    border-color: var(--editor-accent);
+  }
+  .md-preview :global(li > input[type="checkbox"]:checked)::after {
+    content: "";
+    position: absolute;
+    left: 0.33em;
+    top: 0.12em;
+    width: 0.26em;
+    height: 0.52em;
+    border: solid var(--editor-accent);
+    border-width: 0 0.16em 0.16em 0;
+    transform: rotate(45deg);
+  }
+  /* Fade a completed task line (the whole row, checkbox included). */
+  .md-preview :global(li:has(> input[type="checkbox"]:checked)) {
+    opacity: 0.55;
   }
 
   .md-preview :global(blockquote) {
