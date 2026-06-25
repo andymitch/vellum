@@ -621,6 +621,10 @@
                     use:focusSelect
                     class="mb-3 w-full rounded border border-border bg-background px-2 py-1.5 text-sm outline-none focus:border-primary"
                     placeholder="Paste vault ticket"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    autocomplete="off"
+                    spellcheck="false"
                     bind:value={d.value}
                     onkeydown={(e) => {
                         if (e.key === "Enter") resolveDialog(d.value);
@@ -656,6 +660,10 @@
                 <input
                     use:focusSelect
                     class="mb-3 w-full rounded border border-border bg-background px-2 py-1.5 text-sm outline-none focus:border-primary"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    autocomplete="off"
+                    spellcheck="false"
                     bind:value={d.value}
                     onkeydown={(e) => {
                         if (e.key === "Enter") resolveDialog(d.value);
@@ -696,6 +704,7 @@
                 <textarea
                     class="mb-3 h-28 w-full resize-none rounded border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
                     readonly
+                    spellcheck="false"
                     onclick={(e) =>
                         (e.currentTarget as HTMLTextAreaElement).select()}
                     >{d.value}</textarea
