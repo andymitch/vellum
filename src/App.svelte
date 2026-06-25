@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
@@ -10,14 +11,13 @@
   import {
     readNote,
     writeNote,
-    createNote,
     renamePath,
     deletePath,
     onVaultChanged,
     type TreeNode,
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
-  import { createAndOpenNote } from "$lib/notes";
+  import { createAndOpenNote, duplicateNote as duplicateNoteFile } from "$lib/notes";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -29,6 +29,21 @@
 
   const mobileInit = window.matchMedia("(max-width: 767px)").matches;
   let mobile = $state(mobileInit);
+  // macOS desktop uses an Overlay titlebar (traffic lights float over our header,
+  // so the window chrome takes the header's color). The header is compacted to the
+  // titlebar height and its left edge is inset to clear the lights — except in
+  // fullscreen, where macOS hides them and the toggle can sit flush left.
+  const isMacDesktop = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+  const chromeIcon = isMacDesktop ? 14 : 16;
+  let fullscreen = $state(false);
+  onMount(() => {
+    if (!isMacDesktop) return;
+    const w = getCurrentWindow();
+    const sync = () => w.isFullscreen().then((v) => (fullscreen = v));
+    sync();
+    const un = w.onResized(sync);
+    return () => un.then((f) => f());
+  });
   // Auto-open the drawer on launch only when no note will be restored. On desktop
   // the sidebar is a persistent panel, so default open there.
   let sidebarOpen = $state(!mobileInit || !session.path);
@@ -133,29 +148,7 @@
   // Duplicate the note in the same folder as "X (copy).md" (or "X (copy N).md").
   async function duplicateNote() {
     if (!activeVault || !activePath) return;
-    const md = await readNote(activeVault, activePath);
-    const slash = activePath.lastIndexOf("/");
-    const dir = slash === -1 ? "" : activePath.slice(0, slash);
-    const stem = activePath.slice(slash + 1).replace(/\.md$/, "");
-    const siblings = new Set(
-      [...walk(tree)]
-        .filter((n) => !n.is_dir)
-        .map((n) => {
-          const s = n.path.lastIndexOf("/");
-          return { d: s === -1 ? "" : n.path.slice(0, s), name: n.path.slice(s + 1) };
-        })
-        .filter((x) => x.d === dir)
-        .map((x) => x.name),
-    );
-    let name = `${stem} (copy).md`;
-    for (let i = 2; siblings.has(name); i++) name = `${stem} (copy ${i}).md`;
-    const dest = dir ? `${dir}/${name}` : name;
-    // Rewrite the first H1 so the in-doc title matches the new filename (the
-    // filename follows the H1, so leaving it stale would rename the copy back).
-    const newStem = name.replace(/\.md$/, "");
-    const dupMd = md.replace(/^#[ \t]+.*$/m, `# ${newStem}`);
-    const created = await createNote(activeVault, dest);
-    const finalPath = await writeNote(activeVault, created, dupMd, false);
+    const finalPath = await duplicateNoteFile(activeVault, activePath, tree);
     handleOpen(activeVault, finalPath);
   }
   async function copyContents() {
@@ -229,23 +222,33 @@
   class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
 >
-  <!-- Top bar -->
+  <!-- Top bar. data-tauri-drag-region lets the window drag by the header, since the
+       Overlay titlebar removes the native drag strip; child buttons still click. -->
   <header
-    class="flex min-h-12 shrink-0 items-center justify-between border-b border-border bg-secondary/40 px-3 pb-2"
-    style="padding-top:calc(env(safe-area-inset-top) + 0.5rem);"
+    data-tauri-drag-region
+    class="flex shrink-0 items-center justify-between border-b border-border bg-secondary/40 {isMacDesktop
+      ? 'min-h-0 px-2'
+      : 'min-h-12 px-3 pb-2'}"
+    style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
+      ? '0.25rem'
+      : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
+      ? 'padding-left:78px;'
+      : ''}"
   >
-    <div class="flex min-w-0 items-center gap-2">
+    <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
       <button
         type="button"
-        class="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+        class="rounded text-muted-foreground hover:bg-muted hover:text-foreground {isMacDesktop
+          ? 'p-1'
+          : 'p-1.5'}"
         aria-label="Toggle sidebar"
         aria-pressed={sidebarOpen}
         title="Toggle sidebar"
         onclick={() => setSidebar(!sidebarOpen)}
       >
-        <PanelLeft size={16} />
+        <PanelLeft size={chromeIcon} />
       </button>
-      <span class="truncate text-sm font-medium">
+      <span data-tauri-drag-region class="truncate text-sm font-medium">
         {#if activePath}
           {@const parts = activePath.replace(/\.md$/, "").split("/")}
           {#each parts as seg, i}
@@ -256,13 +259,11 @@
                 : "text-muted-foreground/60"}>{seg}</span
             >
           {/each}
-        {:else}
-          <span class="text-muted-foreground">notes</span>
         {/if}
       </span>
     </div>
 
-    <div class="flex items-center gap-1.5">
+    <div data-tauri-drag-region class="flex items-center gap-1.5">
       <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit. -->
       <button
         type="button"
@@ -272,30 +273,34 @@
         onclick={() => setMode(mode === "source" ? "preview" : "source")}
       >
         <span
-          class="flex items-center justify-center rounded-full p-1.5 transition-colors {mode ===
-          'source'
+          class="flex items-center justify-center rounded-full transition-colors {isMacDesktop
+            ? 'p-1'
+            : 'p-1.5'} {mode === 'source'
             ? 'bg-primary text-primary-foreground'
             : 'text-muted-foreground'}"
         >
-          <Code size={16} />
+          <Code size={chromeIcon} />
         </span>
         <span
-          class="flex items-center justify-center rounded-full p-1.5 transition-colors {mode ===
-          'preview'
+          class="flex items-center justify-center rounded-full transition-colors {isMacDesktop
+            ? 'p-1'
+            : 'p-1.5'} {mode === 'preview'
             ? 'bg-primary text-primary-foreground'
             : 'text-muted-foreground'}"
         >
-          <Eye size={16} />
+          <Eye size={chromeIcon} />
         </span>
       </button>
       <button
         type="button"
-        class="flex items-center justify-center rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
+          ? 'p-1'
+          : 'p-2'}"
         aria-label="Settings"
         title="Settings"
         onclick={() => (settingsOpen = true)}
       >
-        <Settings size={16} />
+        <Settings size={chromeIcon} />
       </button>
     </div>
   </header>
