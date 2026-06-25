@@ -95,10 +95,34 @@
     text-decoration: underline;
   }
 
+  /* Tailwind's preflight resets list-style to none, so restore markers. */
   .md-preview :global(ul),
   .md-preview :global(ol) {
     padding-left: 1.5em;
     margin: 0.75em 0;
+  }
+  .md-preview :global(ul) {
+    list-style: disc outside;
+  }
+  .md-preview :global(ol) {
+    list-style: decimal outside;
+  }
+  .md-preview :global(ul ul) {
+    list-style-type: circle;
+  }
+  .md-preview :global(ul ul ul) {
+    list-style-type: square;
+  }
+  .md-preview :global(li) {
+    margin: 0.2em 0;
+  }
+  /* GFM task lists keep their checkboxes, no bullet. */
+  .md-preview :global(li:has(> input[type="checkbox"])) {
+    list-style: none;
+    margin-left: -1.2em;
+  }
+  .md-preview :global(li > input[type="checkbox"]) {
+    margin-right: 0.4em;
   }
 
   .md-preview :global(blockquote) {

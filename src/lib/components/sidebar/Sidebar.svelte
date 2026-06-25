@@ -266,6 +266,11 @@
         await refreshTree();
     }
 
+    // Imperative hooks for global hotkeys (App owns the keydown listener).
+    export function createFolderHotkey() {
+        newRootFolder();
+    }
+
     function openMenu(e: MouseEvent, node: TreeNode) {
         e.preventDefault();
         menu = { x: e.clientX, y: e.clientY, node };
