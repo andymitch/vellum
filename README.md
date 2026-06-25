@@ -26,9 +26,38 @@ A build-and-install script is provided:
 
 This installs JS dependencies, runs `tauri build` to produce a native `.app`, copies it to `/Applications/Vellum.app`, and clears the Gatekeeper quarantine flag so it launches without a right-click. Launch it with `open -a Vellum` or from Spotlight.
 
+Re-run the script any time to **update in place** — it removes the existing `/Applications/Vellum.app` before copying the freshly built one, so a rebuild-and-reinstall is a single command. Your notes are stored separately (see below) and are untouched by reinstalls.
+
 The build also produces a `.dmg` at `src-tauri/target/release/bundle/dmg/` if you'd rather distribute that.
 
 > The app is unsigned. The install script handles Gatekeeper for the local install; distributing it to other machines would require code-signing and notarization.
+
+### Where your notes live
+
+Vellum stores all vault data — the notes database, synced blobs, and this device's stable sync identity — under the app's data directory, keyed by its bundle identifier (`com.andymitch.vellum`):
+
+```
+~/Library/Application Support/com.andymitch.vellum/
+├── docs.redb         # the notes database
+├── blobs/            # synced note content
+├── default-author    # this device's iroh author key
+├── endpoint-secret   # this device's stable node identity
+└── peers.json        # remembered peers
+```
+
+This directory is **not** removed when you reinstall or delete the app, so your notes survive updates. The matching cache lives at `~/Library/Caches/com.andymitch.vellum`.
+
+> Deleting `endpoint-secret` / `default-author` changes this device's identity, so existing peers will no longer recognise it for sync.
+
+### Uninstalling
+
+```sh
+rm -rf /Applications/Vellum.app
+rm -rf ~/Library/Application\ Support/com.andymitch.vellum   # deletes all notes — irreversible
+rm -rf ~/Library/Caches/com.andymitch.vellum
+```
+
+Remove only the first line to uninstall the app while keeping your notes for a later reinstall.
 
 ## Development
 
