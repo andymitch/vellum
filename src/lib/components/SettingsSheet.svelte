@@ -2,12 +2,22 @@
   import { fade, fly } from "svelte/transition";
   import { X, Copy, FolderInput, CopyPlus, Trash2 } from "@lucide/svelte";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
+  import { editorSettings } from "$lib/editor-settings.svelte";
   import { portal } from "$lib/portal";
 
   const MODES: { id: Mode; label: string }[] = [
     { id: "system", label: "System" },
     { id: "light", label: "Light" },
     { id: "dark", label: "Dark" },
+  ];
+
+  // Editor input-assist toggles. `key` indexes into the editorSettings store.
+  const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
+    { key: "autocomplete", label: "Autocomplete" },
+    { key: "autocapitalize", label: "Autocapitalize" },
+    { key: "autocorrect", label: "Autocorrect" },
+    { key: "spellcheck", label: "Spellcheck" },
+    { key: "closeBrackets", label: "Autoclose brackets" },
   ];
 
   let {
@@ -147,6 +157,22 @@
             {/each}
           </select>
         </div>
+
+        <div class="my-4 border-t border-border"></div>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Editor
+        </p>
+        {#each EDITOR_TOGGLES as t (t.key)}
+          <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+            <span class="text-sm">{t.label}</span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 accent-primary"
+              checked={editorSettings[t.key]}
+              onchange={(e) => (editorSettings[t.key] = e.currentTarget.checked)}
+            />
+          </label>
+        {/each}
       </div>
     </div>
   </div>
