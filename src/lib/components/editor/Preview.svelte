@@ -3,7 +3,7 @@
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
 
-  let { value = "" }: { value?: string } = $props();
+  let { value = $bindable("") }: { value?: string } = $props();
 
   // Local Marked instance with highlight.js. We emit hljs token classes and
   // style them via our --code-* vars (same palette as the editor), so no
@@ -20,11 +20,32 @@
   );
 
   // Content is the user's own local notes, rendered in a desktop app — no
-  // untrusted input — so we render marked output directly.
-  const html = $derived(marked.parse(value) as string);
+  // untrusted input — so we render marked output directly. GFM task-list
+  // checkboxes are rendered `disabled` by marked; strip that so they're
+  // interactive (toggling rewrites the source — see onToggle).
+  const html = $derived(
+    (marked.parse(value) as string).replace(/(<input\b[^>]*?)\s+disabled(?:="")?/g, "$1"),
+  );
+
+  // Flip the source marker for the checkbox that changed. Task checkboxes render
+  // in source order, so the Nth checkbox in the DOM maps to the Nth `[ ]`/`[x]`
+  // marker in the markdown. Rewriting `value` re-renders to the new state.
+  function onToggle(e: Event) {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.type !== "checkbox") return;
+    const container = e.currentTarget as HTMLElement;
+    const boxes = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    const index = boxes.indexOf(t);
+    if (index < 0) return;
+    let i = 0;
+    value = value.replace(
+      /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm,
+      (m, pre, mark, post) => (i++ === index ? pre + (mark === " " ? "x" : " ") + post : m),
+    );
+  }
 </script>
 
-<div class="md-preview">
+<div class="md-preview" onchange={onToggle}>
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 </div>
@@ -121,8 +142,14 @@
     list-style: none;
     margin-left: -1.2em;
   }
+  /* Bigger, theme-colored, interactive task checkboxes. */
   .md-preview :global(li > input[type="checkbox"]) {
-    margin-right: 0.4em;
+    width: 1.15em;
+    height: 1.15em;
+    margin-right: 0.45em;
+    accent-color: var(--editor-accent);
+    cursor: pointer;
+    vertical-align: -0.18em;
   }
 
   .md-preview :global(blockquote) {
