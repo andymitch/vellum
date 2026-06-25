@@ -188,12 +188,12 @@
   .md-preview :global(li > input[type="checkbox"]:checked)::after {
     content: "";
     position: absolute;
-    left: 0.33em;
-    top: 0.12em;
-    width: 0.26em;
-    height: 0.52em;
+    left: 0.38em;
+    top: 0.11em;
+    width: 0.3em;
+    height: 0.62em;
     border: solid var(--primary-foreground);
-    border-width: 0 0.16em 0.16em 0;
+    border-width: 0 0.2em 0.2em 0;
     transform: rotate(45deg);
   }
   /* Fade a completed task line (the whole row, checkbox included). */
