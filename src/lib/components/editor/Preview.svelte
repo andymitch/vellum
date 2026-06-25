@@ -2,6 +2,7 @@
   import { Marked } from "marked";
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   let { value = $bindable("") }: { value?: string } = $props();
 
@@ -43,9 +44,24 @@
       (m, pre, mark, post) => (i++ === index ? pre + (mark === " " ? "x" : " ") + post : m),
     );
   }
+
+  // The webview would otherwise navigate the whole app to an external link or
+  // open it in an in-app view. Intercept clicks on absolute/mailto links and
+  // hand them to the OS default browser via the opener plugin instead.
+  function onClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement | null)?.closest("a");
+    const href = a?.getAttribute("href");
+    if (!href || !/^(https?:|mailto:)/i.test(href)) return;
+    e.preventDefault();
+    openUrl(href);
+  }
 </script>
 
-<div class="md-preview" onchange={onToggle}>
+<!-- onclick delegates link handling to the OS browser; the real <a>s inside are
+     keyboard-accessible, so the static-element a11y rules don't apply here. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="md-preview" onchange={onToggle} onclick={onClick}>
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 </div>
