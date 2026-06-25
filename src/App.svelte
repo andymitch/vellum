@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
@@ -22,10 +22,68 @@
 
   type Mode = "source" | "preview";
   let mode = $state<Mode>(session.mode);
-  function setMode(m: Mode) {
+  // The scrollable element differs by mode: CodeMirror scrolls inside its own
+  // `.cm-scroller`, while the preview scrolls the <main> element itself.
+  let mainEl = $state<HTMLElement | undefined>(undefined);
+  function scrollerFor(m: Mode): HTMLElement | null {
+    if (!mainEl) return null;
+    return m === "source" ? mainEl.querySelector<HTMLElement>(".cm-scroller") : mainEl;
+  }
+  // Current scroll as a 0..1 ratio of the active view (so it maps across the
+  // differently-sized source/preview views).
+  function scrollRatio(m: Mode): number {
+    const el = scrollerFor(m);
+    const max = el ? el.scrollHeight - el.clientHeight : 0;
+    return el && max > 0 ? el.scrollTop / max : 0;
+  }
+  function setScroll(m: Mode, ratio: number) {
+    const el = scrollerFor(m);
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max > 0) el.scrollTop = ratio * max;
+  }
+  // Apply a 0..1 ratio to a mode's scroller after it has laid out. Two rAFs:
+  // a freshly-mounted CodeMirror needs a frame to measure a tall document.
+  function applyScroll(m: Mode, ratio: number) {
+    requestAnimationFrame(() => requestAnimationFrame(() => setScroll(m, ratio)));
+  }
+  // Restore variant for cold boot: a freshly-created editor refines a tall
+  // document's height over several frames, so re-apply across a short window
+  // until the layout settles. Used only on launch (not on every toggle, where a
+  // late jump would fight the user).
+  function applyScrollRestore(m: Mode, ratio: number) {
+    if (ratio <= 0) return;
+    for (const d of [0, 80, 200, 400]) setTimeout(() => setScroll(m, ratio), d);
+  }
+  // Toggle source <-> preview, preserving the scroll position. The two views
+  // have different (and recreated) scrollers, so carry the scroll *ratio* across.
+  async function setMode(m: Mode) {
+    if (m === mode) return;
+    const ratio = scrollRatio(mode);
     mode = m;
     session.mode = m;
+    session.scroll = ratio;
+    await tick();
+    applyScroll(m, ratio);
   }
+
+  // Persist the open note's scroll (debounced) so launch can restore it. A
+  // capturing listener catches scroll from either scroller (scroll doesn't
+  // bubble, but it is observable in the capture phase).
+  let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  function onAnyScroll() {
+    clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = setTimeout(() => {
+      if (activePath) session.scroll = scrollRatio(mode);
+    }, 150);
+  }
+  // Captured at init, before the sidebar's launch sequence clears session.path
+  // (via onvaultchange). Used to restore scroll for the note reopened on launch.
+  const initialPath = session.path;
+  const initialScroll = session.scroll;
+  // Set once we've handled the first (launch-restore) note open, so subsequent
+  // opens start at the top instead of inheriting the restored ratio.
+  let didFirstOpen = false;
 
   const mobileInit = window.matchMedia("(max-width: 767px)").matches;
   let mobile = $state(mobileInit);
@@ -86,14 +144,22 @@
 
   async function handleOpen(vault: string, path: string) {
     clearTimeout(saveTimer);
+    // Restore the saved scroll only for the note reopened at launch; any other
+    // open (or switching notes) starts at the top.
+    const restoreRatio =
+      !didFirstOpen && initialPath && path === initialPath ? initialScroll : 0;
+    didFirstOpen = true;
     activeVault = vault;
     activePath = path;
     session.vault = vault;
     session.path = path;
+    session.scroll = restoreRatio;
     content = await readNote(vault, path);
     lastLoaded = content;
     openToken++;
     if (mobile) setSidebar(false);
+    await tick();
+    applyScrollRestore(mode, restoreRatio);
   }
 
   function handleVaultChange(vault: string | null) {
@@ -173,6 +239,7 @@
     const onMq = (e: MediaQueryListEvent) => (mobile = e.matches);
     mq.addEventListener("change", onMq);
     window.addEventListener("keydown", onKeydown);
+    window.addEventListener("scroll", onAnyScroll, true);
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
@@ -184,6 +251,7 @@
     return () => {
       mq.removeEventListener("change", onMq);
       window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("scroll", onAnyScroll, true);
       unlisten?.();
     };
   });
@@ -353,14 +421,14 @@
       </div>
     </aside>
 
-    <main class="min-w-0 flex-1 overflow-auto">
+    <main bind:this={mainEl} class="min-w-0 flex-1 overflow-auto">
       {#if !activePath}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
           <NotebookPen size={40} class="opacity-30" />
           <p class="text-sm">Select or create a note.</p>
         </div>
       {:else if mode === "preview"}
-        <Preview value={content} />
+        <Preview bind:value={content} />
       {:else}
         {#key openToken}
           <Editor
