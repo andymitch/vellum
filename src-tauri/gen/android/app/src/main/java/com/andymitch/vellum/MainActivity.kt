@@ -1,4 +1,4 @@
-package com.andymitch.notes
+package com.andymitch.vellum
 
 import android.content.Context
 import android.net.ConnectivityManager
