@@ -64,6 +64,13 @@
           ]),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
+          // Treat the keyboard+toolbar occlusion (--editor-kb-inset; 0 when no
+          // keyboard) as invisible bottom space, so CM's own scroll-into-view
+          // on each keystroke keeps the caret clear of it.
+          EditorView.scrollMargins.of((v) => {
+            const h = parseInt(getComputedStyle(v.dom).getPropertyValue("--editor-kb-inset"));
+            return h ? { bottom: h } : null;
+          }),
           themeConf.of(thingsTheme(theme.dark)),
           bracketsConf.of(editorSettings.closeBrackets ? closeBrackets() : []),
           attrsConf.of(EditorView.contentAttributes.of(contentAttrs())),

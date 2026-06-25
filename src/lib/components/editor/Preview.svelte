@@ -179,8 +179,11 @@
     cursor: pointer;
     position: relative;
   }
+  /* Checked: solid fill in the primary color (matching the source/preview
+     toggle), with the checkmark drawn in the contrasting foreground. */
   .md-preview :global(li > input[type="checkbox"]:checked) {
-    border-color: var(--editor-accent);
+    background: var(--primary);
+    border-color: var(--primary);
   }
   .md-preview :global(li > input[type="checkbox"]:checked)::after {
     content: "";
@@ -189,7 +192,7 @@
     top: 0.12em;
     width: 0.26em;
     height: 0.52em;
-    border: solid var(--editor-accent);
+    border: solid var(--primary-foreground);
     border-width: 0 0.16em 0.16em 0;
     transform: rotate(45deg);
   }

@@ -26,19 +26,28 @@
 
   let { view }: { view: EditorView | undefined } = $props();
 
+  let barEl: HTMLDivElement;
+
   // Anchor the bar just above the soft keyboard. visualViewport shrinks when the
   // keyboard opens; the occluded height is innerHeight - height - offsetTop.
   let kbInset = $state(0);
   onMount(() => {
     const vv = window.visualViewport;
     if (!vv) return;
+    const root = document.documentElement;
     const update = () => {
       kbInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      // Publish the editor's bottom inset = keyboard occlusion (the editor
+      // scroller extends behind the keyboard) + the toolbar's own height. The
+      // editor reserves this much space so the caret never scrolls behind the
+      // keyboard or the toolbar while typing.
+      root.style.setProperty("--editor-kb-inset", `${kbInset + (barEl?.offsetHeight ?? 44)}px`);
     };
     update();
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
     return () => {
+      root.style.setProperty("--editor-kb-inset", "0px");
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
     };
@@ -61,6 +70,7 @@
 </script>
 
 <div
+  bind:this={barEl}
   class="fixed inset-x-0 z-40 flex items-center gap-0.5 overflow-x-auto border-t border-border bg-background/95 px-1 py-1 backdrop-blur"
   style="bottom: {kbInset}px;"
   role="toolbar"
