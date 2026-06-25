@@ -232,9 +232,9 @@
       e.preventDefault();
       setSidebar(!sidebarOpen);
     } else if (key === ",") {
-      // Open settings.
+      // Toggle settings open/closed.
       e.preventDefault();
-      settingsOpen = true;
+      settingsOpen = !settingsOpen;
     } else if (key === "n" && e.shiftKey) {
       // New folder (at vault root).
       e.preventDefault();
@@ -243,7 +243,7 @@
       // New note (in the current note's folder).
       e.preventDefault();
       newNoteHere();
-    } else if (key === "e" && e.shiftKey) {
+    } else if (key === "p") {
       // Toggle source <-> preview (only meaningful with a note open).
       if (activePath) {
         e.preventDefault();
