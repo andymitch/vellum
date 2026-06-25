@@ -70,6 +70,8 @@
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
   let tree = $state<TreeNode[]>([]);
+  // Sidebar instance — exposes imperative hooks for global hotkeys.
+  let sidebar = $state<Sidebar | undefined>(undefined);
 
   function* walk(nodes: TreeNode[]): Generator<TreeNode> {
     for (const n of nodes) {
@@ -203,6 +205,7 @@
     const mq = window.matchMedia("(max-width: 767px)");
     const onMq = (e: MediaQueryListEvent) => (mobile = e.matches);
     mq.addEventListener("change", onMq);
+    window.addEventListener("keydown", onKeydown);
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
@@ -213,9 +216,41 @@
     }).then((u) => (unlisten = u));
     return () => {
       mq.removeEventListener("change", onMq);
+      window.removeEventListener("keydown", onKeydown);
       unlisten?.();
     };
   });
+
+  // Global hotkeys. Mod = Cmd (macOS) / Ctrl (elsewhere). These complement the
+  // editor's own text-formatting shortcuts, which CodeMirror handles internally.
+  function onKeydown(e: KeyboardEvent) {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    const key = e.key.toLowerCase();
+    if (key === "\\") {
+      // Toggle the sidebar.
+      e.preventDefault();
+      setSidebar(!sidebarOpen);
+    } else if (key === ",") {
+      // Toggle settings open/closed.
+      e.preventDefault();
+      settingsOpen = !settingsOpen;
+    } else if (key === "n" && e.shiftKey) {
+      // New folder (at vault root).
+      e.preventDefault();
+      sidebar?.createFolderHotkey();
+    } else if (key === "n") {
+      // New note (in the current note's folder).
+      e.preventDefault();
+      newNoteHere();
+    } else if (key === "p") {
+      // Toggle source <-> preview (only meaningful with a note open).
+      if (activePath) {
+        e.preventDefault();
+        setMode(mode === "source" ? "preview" : "source");
+      }
+    }
+  }
 </script>
 
 <div
@@ -226,7 +261,7 @@
        Overlay titlebar removes the native drag strip; child buttons still click. -->
   <header
     data-tauri-drag-region
-    class="flex shrink-0 items-center justify-between border-b border-border bg-secondary/40 {isMacDesktop
+    class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'}"
     style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
@@ -248,17 +283,28 @@
       >
         <PanelLeft size={chromeIcon} />
       </button>
-      <span data-tauri-drag-region class="truncate text-sm font-medium">
+      <!-- Tail path rendering: when the path is too long, the ellipsis collapses
+           the *leading* path (left) so the filename stays visible. The container
+           is rtl (so overflow/ellipsis lands on the left); an inner `dir="ltr"`
+           override keeps the path itself reading left-to-right. -->
+      <!-- Base color is the muted/60 of the leading segments so the truncation
+           ellipsis matches them; the active segment overrides with text-foreground. -->
+      <span
+        data-tauri-drag-region
+        class="path-crumb text-sm font-medium text-muted-foreground/60"
+      >
         {#if activePath}
           {@const parts = activePath.replace(/\.md$/, "").split("/")}
-          {#each parts as seg, i}
-            {#if i > 0}<span class="mx-1.5 text-muted-foreground/40">/</span>{/if}
-            <span
-              class={i === parts.length - 1
-                ? "text-foreground"
-                : "text-muted-foreground/60"}>{seg}</span
-            >
-          {/each}
+          <bdo dir="ltr">
+            {#each parts as seg, i}
+              {#if i > 0}<span class="mx-1.5 text-muted-foreground/40">/</span
+                >{/if}<span
+                class={i === parts.length - 1
+                  ? "text-foreground"
+                  : "text-muted-foreground/60"}>{seg}</span
+              >
+            {/each}
+          </bdo>
         {/if}
       </span>
     </div>
@@ -331,6 +377,7 @@
         style="padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);"
       >
         <Sidebar
+          bind:this={sidebar}
           {activePath}
           onopen={handleOpen}
           onvaultchange={handleVaultChange}
@@ -381,3 +428,16 @@
   oncopy={copyContents}
   ondelete={deleteNote}
 />
+
+<style>
+  /* Left-truncate the breadcrumb: the rtl container puts the ellipsis on the
+     left, while the inner `dir="ltr"` <bdo> keeps the path readable. See the
+     markup note above. */
+  .path-crumb {
+    direction: rtl;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+</style>

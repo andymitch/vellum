@@ -45,9 +45,11 @@ try {
 let palette = $state<string>(saved.palette ?? "things");
 let mode = $state<Mode>(saved.mode ?? "system");
 let font = $state<string>(saved.font ?? "basic");
+// Reactive mirror of the OS preference so `dark` recomputes when it flips.
+let systemDark = $state(mql.matches);
 
 function resolvedDark(): boolean {
-  return mode === "dark" || (mode === "system" && mql.matches);
+  return mode === "dark" || (mode === "system" && systemDark);
 }
 
 export function applyTheme() {
@@ -71,11 +73,17 @@ function persist() {
 }
 
 // Follow the OS when in "system" mode.
-mql.addEventListener("change", () => {
+mql.addEventListener("change", (e) => {
+  systemDark = e.matches;
   if (mode === "system") applyTheme();
 });
 
 export const theme = {
+  // Resolved light/dark, reactive — for consumers (e.g. the CodeMirror theme)
+  // that must reconfigure when the mode or OS preference changes.
+  get dark() {
+    return resolvedDark();
+  },
   get palette() {
     return palette;
   },
