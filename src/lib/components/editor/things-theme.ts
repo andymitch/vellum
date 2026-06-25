@@ -21,12 +21,19 @@ const thingsEditorTheme = (dark: boolean) =>
     fontFamily: "var(--font-sans)",
     lineHeight: "1.7",
     padding: "1.5rem 0",
+    // Keep the caret this far above the scrollport bottom when scrolling it into
+    // view. --editor-kb-inset (0 when no keyboard) = soft-keyboard occlusion +
+    // mobile toolbar height; the scroller extends behind both.
+    scrollPaddingBottom: "var(--editor-kb-inset, 0px)",
   },
   ".cm-content": {
     caretColor: "var(--editor-cursor)",
     maxWidth: "48rem",
     margin: "0 auto",
     padding: "0 1.5rem",
+    // Phantom space below the last line so the caret can still scroll clear of
+    // the keyboard/toolbar even on the final line.
+    paddingBottom: "var(--editor-kb-inset, 0px)",
   },
   ".cm-cursor, .cm-dropCursor": {
     borderLeftColor: "var(--editor-cursor)",

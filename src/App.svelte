@@ -121,6 +121,9 @@
   // Editor handle + focus, for the mobile markdown toolbar.
   let editorView = $state<EditorView | undefined>(undefined);
   let editorFocused = $state(false);
+  // Whether the soft keyboard is up. The toolbar is anchored to the keyboard, so
+  // it must hide when the keyboard is dismissed even if the editor keeps focus.
+  let kbOpen = $state(false);
 
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
@@ -240,6 +243,23 @@
     mq.addEventListener("change", onMq);
     window.addEventListener("keydown", onKeydown);
     window.addEventListener("scroll", onAnyScroll, true);
+
+    // Detect the soft keyboard from the visual viewport. It shrinks (relative to
+    // the tallest height we've seen with no keyboard) whenever the keyboard is
+    // up, in both adjustResize and adjustPan modes — so this is layout-agnostic.
+    const vv = window.visualViewport;
+    let maxVvH = vv ? vv.height : window.innerHeight;
+    const onVv = () => {
+      if (!vv) return;
+      maxVvH = Math.max(maxVvH, vv.height);
+      kbOpen = vv.height < maxVvH - 150;
+    };
+    if (vv) {
+      onVv();
+      vv.addEventListener("resize", onVv);
+      vv.addEventListener("scroll", onVv);
+    }
+
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
@@ -252,6 +272,8 @@
       mq.removeEventListener("change", onMq);
       window.removeEventListener("keydown", onKeydown);
       window.removeEventListener("scroll", onAnyScroll, true);
+      vv?.removeEventListener("resize", onVv);
+      vv?.removeEventListener("scroll", onVv);
       unlisten?.();
     };
   });
@@ -448,7 +470,7 @@
 {/if}
 
 <!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->
-{#if mobile && mode === "source" && activePath && editorFocused && editorView}
+{#if mobile && mode === "source" && activePath && editorFocused && editorView && kbOpen}
   <MarkdownToolbar view={editorView} />
 {/if}
 
