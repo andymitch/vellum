@@ -88,8 +88,10 @@ const thingsHighlightStyle = HighlightStyle.define([
     tag: [t.processingInstruction, t.meta, t.contentSeparator],
     color: "var(--editor-muted)",
   },
-  // Lists & quotes
-  { tag: t.list, color: "var(--editor-accent)" },
+  // Lists & quotes. NB: lezer-markdown tags *every* descendant of a list with
+  // t.list ("BulletList/..."), so coloring t.list would tint list text — and
+  // override bold/italic inside lists. Leave list content at the default fg to
+  // match preview; list markers stay muted via processingInstruction above.
   { tag: t.quote, color: "var(--editor-muted)", fontStyle: "italic" },
 
   // Code syntax highlighting (fenced blocks with a language)
