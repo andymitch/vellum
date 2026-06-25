@@ -20,16 +20,10 @@ export const forgetVault = (vault: string) => invoke<void>("forget_vault", { vau
 export const listTree = (vault: string) => invoke<TreeNode[]>("list_tree", { vault });
 export const readNote = (vault: string, path: string) =>
   invoke<string>("read_note", { vault, path });
-// Returns the note's path, which may change when the first H1 renames the file.
-// `allowRename` gates the H1->filename follow: pass false for fast keystroke
-// autosaves (content only) and true only when the title has settled, so typing a
-// title doesn't churn a rename (and a sync tombstone) on every keystroke.
-export const writeNote = (
-  vault: string,
-  path: string,
-  content: string,
-  allowRename = true,
-) => invoke<string>("write_note", { vault, path, content, allowRename });
+// Writes note content. Filename and content are independent — renaming is an
+// explicit file action (rename_path), never derived from the content.
+export const writeNote = (vault: string, path: string, content: string) =>
+  invoke<void>("write_note", { vault, path, content });
 // Returns the actual (possibly de-duplicated) path of the created note.
 export const createNote = (vault: string, path: string) =>
   invoke<string>("create_note", { vault, path });
