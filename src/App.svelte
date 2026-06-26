@@ -7,6 +7,7 @@
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
+  import { checkForUpdate } from "$lib/updater";
   import Fab from "$lib/components/Fab.svelte";
   import {
     readNote,
@@ -94,6 +95,10 @@
   const isMacDesktop = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   const chromeIcon = isMacDesktop ? 14 : 16;
   let fullscreen = $state(false);
+  // Check for an app update on launch (desktop only; no-op on mobile).
+  onMount(() => {
+    if (isMacDesktop) checkForUpdate();
+  });
   onMount(() => {
     if (!isMacDesktop) return;
     const w = getCurrentWindow();
