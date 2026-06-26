@@ -468,6 +468,7 @@
             bind:value={content}
             bind:view={editorView}
             bind:focused={editorFocused}
+            {notePaths}
           />
         {/key}
       {/if}
