@@ -1045,4 +1045,52 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // The real ghost-file scenario is multi-author: A's own live entry for a key
+    // coexists with a peer's newer tombstone. A raw key_exact (FlatQuery) can
+    // surface A's stale live entry, so the name would collide; single_latest_per_key
+    // picks the newest (the tombstone) and treats the name as free (#48).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn deleted_key_free_across_peers() {
+        let base = std::env::temp_dir().join(format!("notes-ghost-p2p-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = init(base.join("a")).await.expect("node A");
+        let b = init(base.join("b")).await.expect("node B");
+
+        let doc_a = a.docs.create().await.expect("create");
+        doc_a
+            .set_bytes(a.author, b"Backlog.md".to_vec(), encode("hi"))
+            .await
+            .expect("A write");
+        let ticket = doc_a
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .expect("share");
+        let doc_b = b
+            .docs
+            .import(DocTicket::from_str(&ticket.to_string()).expect("parse ticket"))
+            .await
+            .expect("import");
+
+        // B receives A's note, then deletes it — B's tombstone is now newer than
+        // A's still-present live entry.
+        let got = await_key(&b, &doc_b, b"Backlog.md", Duration::from_secs(30)).await;
+        assert_eq!(got.as_deref(), Some("hi"), "B did not receive A's note");
+        doc_b.del(b.author, b"Backlog.md".to_vec()).await.expect("B del");
+
+        // Once A sees the deletion, the name must read as free despite A's own
+        // stale live entry for it.
+        let mut freed = false;
+        for _ in 0..60 {
+            if !key_exists(&doc_a, "Backlog.md").await.expect("exists") {
+                freed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(freed, "A never saw the deletion propagate");
+        assert_eq!(free_key(&doc_a, "Backlog.md").await.expect("free"), "Backlog.md");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
