@@ -66,6 +66,38 @@ fn set_dark_mode(dark: bool) {
     let _ = dark;
 }
 
+/// Fetch the device's Material You (Monet) tonal palette as a JSON string of
+/// `#RRGGBB` hex tones, for the frontend's "Dynamic" theme. Returns None off
+/// Android and on Android < 12 (no dynamic colors).
+#[tauri::command]
+fn get_material_you() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+        let mut env = vm.attach_current_thread().ok()?;
+        let result = env
+            .call_static_method(
+                "com/andymitch/vellum/MainActivity",
+                "getDynamicColors",
+                "()Ljava/lang/String;",
+                &[],
+            )
+            .ok()?;
+        let obj = result.l().ok()?;
+        if obj.is_null() {
+            return None;
+        }
+        let s: String = env
+            .get_string(&jni::objects::JString::from(obj))
+            .ok()?
+            .into();
+        Some(s)
+    }
+    #[cfg(not(target_os = "android"))]
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
@@ -115,6 +147,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_dark_mode,
+            get_material_you,
             vault::list_vaults,
             vault::create_vault,
             vault::join_vault,

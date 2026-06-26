@@ -20,6 +20,12 @@ export const PALETTES: Palette[] = [
   { id: "terminal", name: "Terminal" },
 ];
 
+// Android 12+ exposes a Material You (Monet) palette derived from the wallpaper.
+// The "Dynamic" theme below is only meaningful there, so it's appended to
+// PALETTES only on Android and the colors are applied at runtime (see below).
+export const isAndroid = /Android/.test(navigator.userAgent);
+if (isAndroid) PALETTES.push({ id: "dynamic", name: "Dynamic (Material You)" });
+
 // Body/UI typeface. `stack` is assigned to the --font-sans CSS var on <html>.
 // The "Vellum" wordmark keeps Fraunces regardless (it uses --font-vellum).
 export const FONTS: Font[] = [
@@ -59,6 +65,88 @@ function resolvedDark(): boolean {
   return mode === "dark" || (mode === "system" && systemDark);
 }
 
+// --- Material You ("Dynamic" palette) -------------------------------------
+// The native get_material_you command returns the device's Monet tonal palette
+// as { a1_500: "#rrggbb", n1_900: ..., ... } (or null pre-Android-12). We fetch
+// once, then map the tones onto our theme vars as inline styles on <html> (which
+// outrank the [data-theme] CSS blocks). Mid-tone accents stand in for the syntax
+// colors since Monet only exposes three accent ramps.
+type Monet = Record<string, string>;
+let monetPromise: Promise<Monet | null> | null = null;
+function ensureMonet(): Promise<Monet | null> {
+  if (!monetPromise) {
+    monetPromise = invoke<string | null>("get_material_you")
+      .then((s) => (s ? (JSON.parse(s) as Monet) : null))
+      .catch(() => null);
+  }
+  return monetPromise;
+}
+
+// Every var the dynamic theme sets — also the list we clear when leaving it.
+const DYN_VARS = [
+  "--background", "--foreground", "--card", "--card-foreground", "--popover",
+  "--popover-foreground", "--primary", "--primary-foreground", "--secondary",
+  "--secondary-foreground", "--muted", "--muted-foreground", "--accent",
+  "--accent-foreground", "--destructive", "--destructive-foreground", "--border",
+  "--input", "--ring", "--editor-selection", "--editor-cursor", "--editor-code-bg",
+  "--code-keyword", "--code-string", "--code-number", "--code-comment",
+  "--code-function", "--code-type", "--code-variable", "--md-h2", "--md-h3",
+  "--md-h4", "--md-h5", "--md-strong", "--md-em", "--md-quote",
+];
+
+function clearMonetVars(el: HTMLElement) {
+  for (const v of DYN_VARS) el.style.removeProperty(v);
+}
+
+function applyMonetVars(el: HTMLElement, m: Monet | null, dark: boolean) {
+  if (!m) {
+    clearMonetVars(el);
+    return;
+  }
+  const map: Record<string, string> = dark
+    ? {
+        "--background": m.n1_900, "--foreground": m.n1_50,
+        "--card": m.n1_800, "--card-foreground": m.n1_50,
+        "--popover": m.n1_800, "--popover-foreground": m.n1_50,
+        "--primary": m.a1_200, "--primary-foreground": m.n1_900,
+        "--secondary": m.n1_800, "--secondary-foreground": m.n1_50,
+        "--muted": m.n1_800, "--muted-foreground": m.n2_300,
+        "--accent": m.a1_200, "--accent-foreground": m.n1_900,
+        "--destructive": "#ff6b6b", "--destructive-foreground": m.n1_900,
+        "--border": m.n2_700, "--input": m.n2_700, "--ring": m.a1_200,
+        "--editor-selection": m.a1_200 + "38", "--editor-cursor": m.a1_200,
+        "--editor-code-bg": m.n1_800,
+        "--code-keyword": m.a1_200, "--code-string": m.a3_500,
+        "--code-number": m.a2_500, "--code-comment": m.n2_300,
+        "--code-function": m.a1_300, "--code-type": m.a3_500,
+        "--code-variable": m.a2_500,
+        "--md-h2": m.a1_200, "--md-h3": m.a1_300, "--md-h4": m.a2_500,
+        "--md-h5": "#ff6b6b", "--md-strong": m.a3_500, "--md-em": m.a3_500,
+        "--md-quote": m.a2_500,
+      }
+    : {
+        "--background": m.n1_10, "--foreground": m.n1_900,
+        "--card": m.n1_50, "--card-foreground": m.n1_900,
+        "--popover": m.n1_50, "--popover-foreground": m.n1_900,
+        "--primary": m.a1_600, "--primary-foreground": m.n1_10,
+        "--secondary": m.n2_100, "--secondary-foreground": m.n1_900,
+        "--muted": m.n2_100, "--muted-foreground": m.n2_700,
+        "--accent": m.a1_600, "--accent-foreground": m.n1_10,
+        "--destructive": "#c0392b", "--destructive-foreground": "#ffffff",
+        "--border": m.n2_300, "--input": m.n2_300, "--ring": m.a1_600,
+        "--editor-selection": m.a1_600 + "2e", "--editor-cursor": m.a1_600,
+        "--editor-code-bg": m.n1_100,
+        "--code-keyword": m.a1_600, "--code-string": m.a3_500,
+        "--code-number": m.a2_500, "--code-comment": m.n2_700,
+        "--code-function": m.a1_500, "--code-type": m.a3_500,
+        "--code-variable": m.a2_500,
+        "--md-h2": m.a1_600, "--md-h3": m.a1_500, "--md-h4": m.a2_500,
+        "--md-h5": "#c0392b", "--md-strong": m.a3_500, "--md-em": m.a3_500,
+        "--md-quote": m.a2_500,
+      };
+  for (const [k, v] of Object.entries(map)) if (v) el.style.setProperty(k, v);
+}
+
 export function applyTheme() {
   const el = document.documentElement;
   // "things" is the default :root palette — no attribute needed.
@@ -69,6 +157,15 @@ export function applyTheme() {
   // Tell native (Android) to match system-bar icon contrast to the web theme.
   // Fire-and-forget; no-op on desktop and harmless if the backend isn't ready.
   invoke("set_dark_mode", { dark }).catch(() => {});
+  // Dynamic (Material You): apply device tones as inline overrides; otherwise
+  // clear them so the chosen static palette shows through.
+  if (palette === "dynamic") {
+    ensureMonet().then((m) => {
+      if (palette === "dynamic") applyMonetVars(el, m, resolvedDark());
+    });
+  } else {
+    clearMonetVars(el);
+  }
   // Override the body typeface (Tailwind's --font-sans). "basic" clears it.
   const f = FONTS.find((x) => x.id === font);
   if (f && f.id !== "basic") el.style.setProperty("--font-sans", f.stack);

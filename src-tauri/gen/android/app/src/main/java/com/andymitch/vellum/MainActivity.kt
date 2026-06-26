@@ -3,8 +3,10 @@ package com.andymitch.vellum
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 
 class MainActivity : TauriActivity() {
@@ -48,6 +50,43 @@ class MainActivity : TauriActivity() {
     @JvmStatic
     fun setDarkMode(dark: Boolean) {
       instance?.applySystemBarAppearance(!dark)
+    }
+
+    // Called from Rust (get_material_you command) via JNI. Returns the device's
+    // Material You (Monet) tonal palette as a JSON object of #RRGGBB hex strings,
+    // or null on pre-Android-12 (API < 31) where dynamic colors don't exist.
+    // The frontend maps these tones to its theme variables for a "Dynamic" theme.
+    @JvmStatic
+    fun getDynamicColors(): String? {
+      val ctx = instance ?: return null
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+      fun hex(id: Int): String = String.format("#%06X", 0xFFFFFF and ContextCompat.getColor(ctx, id))
+      return buildString {
+        append("{")
+        val parts = listOf(
+          "a1_100" to android.R.color.system_accent1_100,
+          "a1_200" to android.R.color.system_accent1_200,
+          "a1_300" to android.R.color.system_accent1_300,
+          "a1_500" to android.R.color.system_accent1_500,
+          "a1_600" to android.R.color.system_accent1_600,
+          "a2_500" to android.R.color.system_accent2_500,
+          "a3_500" to android.R.color.system_accent3_500,
+          "n1_10" to android.R.color.system_neutral1_10,
+          "n1_50" to android.R.color.system_neutral1_50,
+          "n1_100" to android.R.color.system_neutral1_100,
+          "n1_500" to android.R.color.system_neutral1_500,
+          "n1_800" to android.R.color.system_neutral1_800,
+          "n1_900" to android.R.color.system_neutral1_900,
+          "n2_100" to android.R.color.system_neutral2_100,
+          "n2_300" to android.R.color.system_neutral2_300,
+          "n2_700" to android.R.color.system_neutral2_700,
+        )
+        parts.forEachIndexed { i, (k, id) ->
+          if (i > 0) append(",")
+          append("\"").append(k).append("\":\"").append(hex(id)).append("\"")
+        }
+        append("}")
+      }
     }
   }
 
