@@ -29,6 +29,19 @@ jobs:
 
       - run: bun install
 
+      # The git tag is the single source of truth for the version; the value in
+      # tauri.conf.json is only a local-dev placeholder. Stamp it from the tag
+      # so the bundle + updater report vX.Y.Z.
+      - name: Stamp version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          V="${TAG#v}"
+          tmp=$(mktemp)
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" src-tauri/tauri.conf.json
+          echo "Building version $V"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,6 +87,18 @@ jobs:
           workspaces: src-tauri
 
       - run: bun install
+
+      # Tag is the source of truth (see desktop job). Tauri derives the Android
+      # versionName + versionCode from this on build.
+      - name: Stamp version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          V="${TAG#v}"
+          tmp=$(mktemp)
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" src-tauri/tauri.conf.json
+          echo "Building version $V"
 
       - name: Build unsigned release APK
         run: bun tauri android build --apk --target aarch64
