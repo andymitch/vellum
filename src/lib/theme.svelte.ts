@@ -13,6 +13,11 @@ export const PALETTES: Palette[] = [
   { id: "things", name: "Things" },
   { id: "nord", name: "Nord" },
   { id: "rose-pine", name: "Rosé Pine" },
+  { id: "dracula", name: "Dracula" },
+  { id: "gruvbox", name: "Gruvbox" },
+  { id: "catppuccin", name: "Catppuccin" },
+  { id: "solarized", name: "Solarized" },
+  { id: "tokyo-night", name: "Tokyo Night" },
 ];
 
 // Body/UI typeface. `stack` is assigned to the --font-sans CSS var on <html>.
@@ -30,6 +35,8 @@ export const FONTS: Font[] = [
     name: "Mono",
     stack: '"Space Mono", "JetBrains Mono", ui-monospace, monospace',
   },
+  { id: "inter", name: "Inter", stack: '"Inter", system-ui, sans-serif' },
+  { id: "lora", name: "Lora", stack: '"Lora", Georgia, "Times New Roman", serif' },
 ];
 
 const KEY = "notes-theme";
