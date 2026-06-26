@@ -158,7 +158,7 @@
             (resolve) =>
                 (dialog = {
                     kind: "move",
-                    title: `Move "${node.name}" to…`,
+                    title: `Move "${displayName(node)}" to…`,
                     choices: folderChoices(node),
                     resolve,
                 }),
@@ -195,6 +195,9 @@
 
     const dirOf = (path: string) => path.split("/").slice(0, -1).join("/");
     const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
+    // User-facing name: notes hide their .md extension (matches the tree). The
+    // .md is re-applied on rename.
+    const displayName = (n: TreeNode) => (n.is_dir ? n.name : n.name.replace(/\.md$/, ""));
 
     async function refreshVaults() {
         vaults = await listVaults();
@@ -344,8 +347,10 @@
             await createFolder(activeVault, join(node.path, name));
             expanded[node.path] = true;
         } else if (kind === "rename") {
-            const name = (await askText("Rename to", node.name))?.trim();
-            if (!name || name === node.name) return;
+            // Prefill/compare without the .md (it's hidden from the user); re-add it below.
+            const current = displayName(node);
+            const name = (await askText("Rename to", current))?.trim();
+            if (!name || name === current) return;
             // Keep the .md extension on notes even if the user drops it.
             const final = node.is_dir || name.endsWith(".md") ? name : `${name}.md`;
             const to = join(dirOf(node.path), final);
@@ -367,7 +372,7 @@
             }
             return; // nothing changed on disk
         } else if (kind === "delete") {
-            if (!(await askConfirm(`Delete "${node.name}"?`))) return;
+            if (!(await askConfirm(`Delete "${displayName(node)}"?`))) return;
             await deletePath(activeVault, node.path, node.is_dir);
             if (
                 activePath &&
