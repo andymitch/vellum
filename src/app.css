@@ -572,84 +572,83 @@
   --md-quote: #2aa198;
 }
 
-/* ========================= Terminal ========================= */
-/* Pure-black OLED dark with a green-phosphor accent + ANSI code colors,
-   and a light "paper terminal" complement. */
-[data-theme="terminal"] {
-  --background: #f6f6f2;
-  --foreground: #1b1b1b;
+/* ========================= GitHub ========================= */
+/* GitHub's Primer palette — Light and Dark — including Primer syntax colors. */
+[data-theme="github"] {
+  --background: #ffffff;
+  --foreground: #1f2328;
   --card: #ffffff;
-  --card-foreground: #1b1b1b;
+  --card-foreground: #1f2328;
   --popover: #ffffff;
-  --popover-foreground: #1b1b1b;
-  --primary: #1a7f37;
+  --popover-foreground: #1f2328;
+  --primary: #0969da;
   --primary-foreground: #ffffff;
-  --secondary: #ecece6;
-  --secondary-foreground: #1b1b1b;
-  --muted: #ecece6;
-  --muted-foreground: #595959;
-  --accent: #1a7f37;
+  --secondary: #f6f8fa;
+  --secondary-foreground: #1f2328;
+  --muted: #f6f8fa;
+  --muted-foreground: #656d76;
+  --accent: #0969da;
   --accent-foreground: #ffffff;
-  --destructive: #c0392b;
+  --destructive: #cf222e;
   --destructive-foreground: #ffffff;
-  --border: #dcdcd4;
-  --input: #dcdcd4;
-  --ring: #1a7f37;
-  --editor-selection: rgb(26 127 55 / 0.18);
-  --editor-cursor: #1a7f37;
-  --editor-code-bg: #ecece6;
-  --code-keyword: #9b2393;
-  --code-string: #1a7f37;
-  --code-number: #b06000;
-  --code-comment: #8a8a8a;
-  --code-function: #1a66cc;
-  --code-type: #0d7a7a;
-  --code-variable: #c0392b;
-  --md-h2: #1a7f37;
-  --md-h3: #1a66cc;
-  --md-h4: #b06000;
-  --md-h5: #c0392b;
-  --md-strong: #9b2393;
-  --md-em: #9b2393;
-  --md-quote: #0d7a7a;
+  --border: #d0d7de;
+  --input: #d0d7de;
+  --ring: #0969da;
+  --editor-selection: rgb(9 105 218 / 0.15);
+  --editor-cursor: #0969da;
+  --editor-code-bg: #f6f8fa;
+  --code-keyword: #cf222e;
+  --code-string: #0a3069;
+  --code-number: #0550ae;
+  --code-comment: #6e7781;
+  --code-function: #8250df;
+  --code-type: #116329;
+  --code-variable: #953800;
+  --md-h2: #0969da;
+  --md-h3: #8250df;
+  --md-h4: #953800;
+  --md-h5: #cf222e;
+  --md-strong: #1f883d;
+  --md-em: #8250df;
+  --md-quote: #656d76;
 }
-[data-theme="terminal"].dark {
-  --background: #000000;
-  --foreground: #d0d0d0;
-  --card: #0c0c0c;
-  --card-foreground: #d0d0d0;
-  --popover: #0c0c0c;
-  --popover-foreground: #d0d0d0;
-  --primary: #2ee66b;
-  --primary-foreground: #000000;
-  --secondary: #121212;
-  --secondary-foreground: #d0d0d0;
-  --muted: #121212;
-  --muted-foreground: #7a7a7a;
-  --accent: #2ee66b;
-  --accent-foreground: #000000;
-  --destructive: #ff5f56;
-  --destructive-foreground: #000000;
-  --border: #1e1e1e;
-  --input: #1e1e1e;
-  --ring: #2ee66b;
-  --editor-selection: rgb(46 230 107 / 0.22);
-  --editor-cursor: #2ee66b;
-  --editor-code-bg: #141414;
-  --code-keyword: #ff6ac1;
-  --code-string: #5af78e;
-  --code-number: #f3f99d;
-  --code-comment: #6a6a6a;
-  --code-function: #57c7ff;
-  --code-type: #9aedfe;
-  --code-variable: #ff5f56;
-  --md-h2: #2ee66b;
-  --md-h3: #57c7ff;
-  --md-h4: #f3f99d;
-  --md-h5: #ff5f56;
-  --md-strong: #ff6ac1;
-  --md-em: #ff6ac1;
-  --md-quote: #9aedfe;
+[data-theme="github"].dark {
+  --background: #0d1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --primary: #2f81f7;
+  --primary-foreground: #ffffff;
+  --secondary: #161b22;
+  --secondary-foreground: #e6edf3;
+  --muted: #161b22;
+  --muted-foreground: #8b949e;
+  --accent: #2f81f7;
+  --accent-foreground: #ffffff;
+  --destructive: #da3633;
+  --destructive-foreground: #ffffff;
+  --border: #30363d;
+  --input: #30363d;
+  --ring: #2f81f7;
+  --editor-selection: rgb(56 139 253 / 0.25);
+  --editor-cursor: #58a6ff;
+  --editor-code-bg: #161b22;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-comment: #8b949e;
+  --code-function: #d2a8ff;
+  --code-type: #7ee787;
+  --code-variable: #ffa657;
+  --md-h2: #58a6ff;
+  --md-h3: #d2a8ff;
+  --md-h4: #ffa657;
+  --md-h5: #ff7b72;
+  --md-strong: #3fb950;
+  --md-em: #d2a8ff;
+  --md-quote: #8b949e;
 }
 
 @theme inline {
