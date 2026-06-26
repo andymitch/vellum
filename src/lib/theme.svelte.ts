@@ -72,11 +72,28 @@ function resolvedDark(): boolean {
 // outrank the [data-theme] CSS blocks). Mid-tone accents stand in for the syntax
 // colors since Monet only exposes three accent ramps.
 type Monet = Record<string, string>;
+const MONET_KEY = "notes-monet";
 let monetPromise: Promise<Monet | null> | null = null;
 function ensureMonet(): Promise<Monet | null> {
   if (!monetPromise) {
     monetPromise = invoke<string | null>("get_material_you")
-      .then((s) => (s ? (JSON.parse(s) as Monet) : null))
+      .then((s) => {
+        const m = s ? (JSON.parse(s) as Monet) : null;
+        // Cache the resolved light+dark var maps so index.html's pre-paint
+        // script can apply Dynamic colors before first paint (no flash). Device
+        // tones rarely change; this refresh keeps the cache current.
+        if (m) {
+          try {
+            localStorage.setItem(
+              MONET_KEY,
+              JSON.stringify({ light: monetMap(m, false), dark: monetMap(m, true) }),
+            );
+          } catch {
+            /* ignore quota/serialization */
+          }
+        }
+        return m;
+      })
       .catch(() => null);
   }
   return monetPromise;
@@ -98,12 +115,10 @@ function clearMonetVars(el: HTMLElement) {
   for (const v of DYN_VARS) el.style.removeProperty(v);
 }
 
-function applyMonetVars(el: HTMLElement, m: Monet | null, dark: boolean) {
-  if (!m) {
-    clearMonetVars(el);
-    return;
-  }
-  const map: Record<string, string> = dark
+// Map Monet tones onto our theme vars (light or dark). Pure — also used to
+// build the cached maps that index.html applies pre-paint.
+function monetMap(m: Monet, dark: boolean): Record<string, string> {
+  return dark
     ? {
         "--background": m.n1_900, "--foreground": m.n1_50,
         "--card": m.n1_800, "--card-foreground": m.n1_50,
@@ -144,6 +159,14 @@ function applyMonetVars(el: HTMLElement, m: Monet | null, dark: boolean) {
         "--md-h5": "#c0392b", "--md-strong": m.a3_500, "--md-em": m.a3_500,
         "--md-quote": m.a2_500,
       };
+}
+
+function applyMonetVars(el: HTMLElement, m: Monet | null, dark: boolean) {
+  if (!m) {
+    clearMonetVars(el);
+    return;
+  }
+  const map = monetMap(m, dark);
   for (const [k, v] of Object.entries(map)) if (v) el.style.setProperty(k, v);
 }
 
