@@ -274,7 +274,7 @@
         {/each}
 
         <div class="my-4 border-t border-border"></div>
-        <p class="text-center text-xs text-muted-foreground">
+        <p class="text-xs text-muted-foreground">
           {version}
         </p>
       </div>
