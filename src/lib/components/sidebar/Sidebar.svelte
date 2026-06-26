@@ -29,6 +29,7 @@
         Check,
         X,
         ScanLine,
+        LoaderCircle,
     } from "@lucide/svelte";
     import QRCode from "qrcode";
     import {
@@ -89,10 +90,11 @@
     let menu = $state<{ x: number; y: number; node: TreeNode } | null>(null);
     let vaultSheet = $state(false);
 
-    const activeVaultName = $derived(
-        vaults.find((v) => v.id === activeVault)?.name ??
-            (vaults.length ? "Select vault" : "No vaults"),
-    );
+    const activeVaultName = $derived.by(() => {
+        const v = vaults.find((v) => v.id === activeVault);
+        if (v?.pending) return "Waiting for a peer…";
+        return v?.name ?? (vaults.length ? "Select vault" : "No vaults");
+    });
 
     // In-app dialogs. wry only implements window.prompt/confirm/alert on Android
     // (no macOS WKWebView impl), so those silently no-op on desktop. Use our own.
@@ -511,7 +513,19 @@
                                     ? 'opacity-100'
                                     : 'opacity-0'}"
                             />
-                            <span class="truncate">{v.name}</span>
+                            {#if v.pending}
+                                <span class="flex min-w-0 flex-col">
+                                    <span class="truncate italic">{v.name}</span>
+                                    <span
+                                        class="flex items-center gap-1 text-xs text-muted-foreground"
+                                    >
+                                        <LoaderCircle class="h-3 w-3 shrink-0 animate-spin" />
+                                        Waiting for a peer…
+                                    </span>
+                                </span>
+                            {:else}
+                                <span class="truncate">{v.name}</span>
+                            {/if}
                         </button>
                         <button
                             type="button"

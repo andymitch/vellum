@@ -109,6 +109,10 @@ impl VaultManager {
 pub struct VaultInfo {
     id: String,
     name: String,
+    // True when the vault has no synced meta yet — i.e. it was joined from a
+    // ticket but no peer has come online to sync its contents. The UI shows a
+    // "waiting for a peer" state instead of a misleading generated vault (#4).
+    pending: bool,
 }
 
 #[derive(Serialize)]
@@ -412,13 +416,28 @@ async fn read_key(node: &Node, doc: &iroh_docs::api::Doc, key: &[u8]) -> Result<
     }
 }
 
-async fn vault_name(node: &Node, doc: &iroh_docs::api::Doc) -> String {
+/// The vault's user-visible name from its synced meta, or `None` if the
+/// `\x00meta/name` entry hasn't arrived yet (freshly joined, no peer synced).
+async fn vault_meta_name(node: &Node, doc: &iroh_docs::api::Doc) -> Option<String> {
     match read_key(node, doc, NAME_KEY).await {
-        Ok(Some(name)) if !name.is_empty() => name,
-        _ => {
-            let s = doc.id().to_string();
-            format!("vault-{}", &s[..s.len().min(6)])
-        }
+        Ok(Some(name)) if !name.is_empty() => Some(name),
+        _ => None,
+    }
+}
+
+/// Placeholder name for a vault whose real name hasn't synced yet.
+fn fallback_name(id: &iroh_docs::NamespaceId) -> String {
+    let s = id.to_string();
+    format!("vault-{}", &s[..s.len().min(6)])
+}
+
+/// Build a `VaultInfo`, marking it `pending` (and using a placeholder name)
+/// when the vault's meta name hasn't synced from a peer yet.
+fn vault_info(id: iroh_docs::NamespaceId, meta_name: Option<String>) -> VaultInfo {
+    VaultInfo {
+        id: id.to_string(),
+        pending: meta_name.is_none(),
+        name: meta_name.unwrap_or_else(|| fallback_name(&id)),
     }
 }
 
@@ -533,11 +552,8 @@ pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo
             while let Some(item) = stream.next().await {
                 let (id, _cap) = item?;
                 let doc = node.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
-                let name = vault_name(node, &doc).await;
-                out.push(VaultInfo {
-                    id: id.to_string(),
-                    name,
-                });
+                let meta_name = vault_meta_name(node, &doc).await;
+                out.push(vault_info(id, meta_name));
             }
             Ok(out)
         }
@@ -552,10 +568,8 @@ pub async fn create_vault(state: State<'_, VaultManager>, name: String) -> Resul
         async {
             let doc = node.docs.create().await?;
             doc.set_bytes(node.author, NAME_KEY.to_vec(), encode(&name)).await?;
-            Ok(VaultInfo {
-                id: doc.id().to_string(),
-                name,
-            })
+            // A vault we create has its name immediately, so it's never pending.
+            Ok(vault_info(doc.id(), Some(name)))
         }
         .await,
     )
@@ -584,11 +598,11 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
             // Bootstrap with the ticket's full addresses (relay) for a robust
             // first connect; subsequent syncs re-dial by EndpointId via discovery.
             doc.start_sync(nodes).await?;
-            let name = vault_name(node, &doc).await;
-            Ok(VaultInfo {
-                id: doc.id().to_string(),
-                name,
-            })
+            // start_sync is non-blocking: with no peer online the meta name
+            // isn't here yet, so this comes back pending and the UI shows a
+            // "waiting for a peer" state rather than a generated vault (#4).
+            let meta_name = vault_meta_name(node, &doc).await;
+            Ok(vault_info(doc.id(), meta_name))
         }
         .await,
     )
@@ -996,7 +1010,7 @@ mod tests {
         doc.set_bytes(node.author, NAME_KEY.to_vec(), encode("My Vault"))
             .await
             .expect("set name");
-        assert_eq!(vault_name(&node, &doc).await, "My Vault");
+        assert_eq!(vault_meta_name(&node, &doc).await, Some("My Vault".to_string()));
 
         doc.set_bytes(node.author, b"a/b.md".to_vec(), encode("hello"))
             .await

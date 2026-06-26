@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type VaultInfo = { id: string; name: string };
+export type VaultInfo = { id: string; name: string; pending: boolean };
 export type TreeNode = {
   name: string;
   path: string;
