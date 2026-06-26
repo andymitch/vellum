@@ -191,20 +191,33 @@
       caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
     while (block && block.parentElement && block.parentElement !== root) block = block.parentElement;
     if (!block) return null;
+    const norm1 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const r = document.createRange();
     r.selectNodeContents(block);
     r.setEnd(caret.node, caret.offset);
-    const needle = r.toString().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    if (!needle) return null;
+    const prefix = norm1(r.toString()); // tapped block's text up to the caret
+    if (!prefix) return null;
     const { norm, map } = normalizeWithMap(content);
-    const at = norm.indexOf(needle);
-    if (at < 0) return null;
-    return map[at + needle.length - 1] + 1;
+    // Locate the tapped block in the source by its *full* text (much more unique
+    // than the prefix), then offset within it by the prefix — so a phrase that
+    // repeats elsewhere in the note doesn't drag the caret to the wrong place.
+    const blockText = norm1(block.textContent ?? "");
+    const base = blockText ? norm.indexOf(blockText) : -1;
+    const start = base >= 0 ? base : norm.indexOf(prefix);
+    if (start < 0) return null;
+    const caretNorm = (base >= 0 ? base : start) + prefix.length;
+    if (caretNorm <= 0) return null;
+    return map[Math.min(caretNorm, map.length) - 1] + 1;
   }
 
   function onPreviewPointerDown(e: PointerEvent) {
     if (!(mobile && editorSettings.quickEdit && mode === "preview")) return;
     tapStart = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  }
+  // A recognized scroll/gesture fires pointercancel (not pointerup); clear the
+  // pending tap so the next genuine tap isn't matched against this stale start.
+  function onPreviewPointerCancel() {
+    tapStart = null;
   }
   function onPreviewPointerUp(e: PointerEvent) {
     const s = tapStart;
@@ -577,6 +590,7 @@
       class="min-w-0 flex-1 overflow-auto"
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}
+      onpointercancel={onPreviewPointerCancel}
     >
       {#if !activePath}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
