@@ -4,7 +4,14 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
   import { languages } from "@codemirror/language-data";
-  import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+  import {
+    closeBrackets,
+    closeBracketsKeymap,
+    autocompletion,
+    completionKeymap,
+    type CompletionContext,
+    type CompletionResult,
+  } from "@codemirror/autocomplete";
   import { onMount } from "svelte";
   import { thingsTheme } from "./things-theme";
   import { theme } from "$lib/theme.svelte";
@@ -37,14 +44,54 @@
     value = $bindable(""),
     view = $bindable<EditorView | undefined>(undefined),
     focused = $bindable(false),
+    notePaths = [],
   }: {
     value?: string;
     // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
     view?: EditorView;
     focused?: boolean;
+    // Vault note paths, for [[wiki link]] autocomplete.
+    notePaths?: string[];
   } = $props();
 
   let container: HTMLDivElement;
+
+  // The completion source runs inside the editor (created once in onMount), so
+  // it reads this mutable holder rather than the captured prop — kept current
+  // by the effect below.
+  let paths: string[] = [];
+  $effect(() => {
+    paths = notePaths;
+  });
+
+  // Autocomplete note paths while typing inside `[[ … ]]`. Offers each note's
+  // path; accepting inserts it and the closing `]]` (reusing any the
+  // close-brackets pair already added) and drops the caret after them. Pairs
+  // with the preview-side resolver in Preview.svelte (#16/#43).
+  function wikiLinkCompletions(context: CompletionContext): CompletionResult | null {
+    const token = context.matchBefore(/\[\[[^\]\n]*/);
+    if (!token) return null;
+    if (token.from + 2 === context.pos && !context.explicit) {
+      // Just typed the second `[`; wait for a character (or explicit trigger).
+    }
+    const from = token.from + 2; // after the `[[`
+    return {
+      from,
+      validFor: /^[^\]\n]*$/,
+      options: paths.map((p) => ({
+        label: p,
+        type: "text",
+        apply: (v: EditorView, _c: unknown, a: number, b: number) => {
+          const hasClose = v.state.sliceDoc(b, b + 2) === "]]";
+          const insert = p + (hasClose ? "" : "]]");
+          v.dispatch({
+            changes: { from: a, to: b, insert },
+            selection: { anchor: a + p.length + 2 },
+          });
+        },
+      })),
+    };
+  }
 
   // Create the editor once. onMount is non-reactive, so reading props here
   // does not subscribe the editor to them — keystrokes won't recreate the view.
@@ -58,10 +105,12 @@
           keymap.of([
             ...styleKeymap,
             ...closeBracketsKeymap,
+            ...completionKeymap,
             ...defaultKeymap,
             ...historyKeymap,
             indentWithTab,
           ]),
+          autocompletion({ override: [wikiLinkCompletions], icons: false }),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
           // Treat the keyboard+toolbar occlusion (--editor-kb-inset; 0 when no

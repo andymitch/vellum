@@ -1,10 +1,49 @@
 <script lang="ts">
-  import { Marked } from "marked";
+  import { Marked, type TokenizerAndRendererExtension } from "marked";
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
-  let { value = $bindable("") }: { value?: string } = $props();
+  let {
+    value = $bindable(""),
+    // All note paths in the current vault, used to resolve [[wiki links]].
+    notePaths = [],
+    // Open an internal link's resolved note path.
+    oninternallink,
+  }: {
+    value?: string;
+    notePaths?: string[];
+    oninternallink?: (path: string) => void;
+  } = $props();
+
+  const escHtml = (s: string) =>
+    s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
+  const escAttr = (s: string) => escHtml(s).replace(/"/g, "&quot;");
+
+  // `[[target]]` or `[[target|label]]` → an internal link. Resolution against
+  // the vault's notes happens after render (see the effect below), since the
+  // note list is reactive and lives outside this marked instance.
+  const wikiLink: TokenizerAndRendererExtension = {
+    name: "wikilink",
+    level: "inline",
+    start(src) {
+      return src.indexOf("[[");
+    },
+    tokenizer(src) {
+      const m = /^\[\[([^\]\n]+?)\]\]/.exec(src);
+      if (!m) return;
+      const [target, label] = m[1].split("|");
+      return {
+        type: "wikilink",
+        raw: m[0],
+        target: target.trim(),
+        label: (label ?? target).trim(),
+      };
+    },
+    renderer(token) {
+      return `<a href="#" class="wikilink" data-target="${escAttr(token.target)}">${escHtml(token.label)}</a>`;
+    },
+  };
 
   // Local Marked instance with highlight.js. We emit hljs token classes and
   // style them via our --code-* vars (same palette as the editor), so no
@@ -19,6 +58,7 @@
       },
     }),
   );
+  marked.use({ extensions: [wikiLink] });
 
   // Content is the user's own local notes, rendered in a desktop app — no
   // untrusted input — so we render marked output directly. GFM task-list
@@ -45,12 +85,61 @@
     );
   }
 
+  // ---- Internal links (#16) ----
+  let container: HTMLDivElement;
+
+  const stripExt = (s: string) => s.replace(/\.[a-z0-9]+$/i, "");
+
+  // Resolve a wiki-link target to an actual note path: try the path as-is and
+  // with a .md extension (exact, then case-insensitive), then fall back to a
+  // basename match so `[[todo]]` finds `work/todo.md`.
+  function resolveLink(target: string): string | null {
+    const t = target.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!t) return null;
+    const withMd = /\.[a-z0-9]+$/i.test(t) ? t : `${t}.md`;
+    if (notePaths.includes(t)) return t;
+    if (notePaths.includes(withMd)) return withMd;
+    const lc = withMd.toLowerCase();
+    const ci = notePaths.find((p) => p.toLowerCase() === lc);
+    if (ci) return ci;
+    const base = stripExt(t.split("/").pop() ?? "").toLowerCase();
+    return notePaths.find((p) => stripExt(p.split("/").pop() ?? "").toLowerCase() === base) ?? null;
+  }
+
+  // After each render (or when the note list changes), resolve every wiki link:
+  // attach the matched path, or mark it broken when nothing matches.
+  $effect(() => {
+    html;
+    notePaths;
+    const root = container;
+    if (!root) return;
+    for (const a of root.querySelectorAll<HTMLAnchorElement>("a.wikilink")) {
+      const path = resolveLink(a.dataset.target ?? "");
+      if (path) {
+        a.dataset.path = path;
+        a.classList.remove("broken");
+        a.title = path;
+      } else {
+        delete a.dataset.path;
+        a.classList.add("broken");
+        a.title = `No note matches "${a.dataset.target ?? ""}"`;
+      }
+    }
+  });
+
   // The webview would otherwise navigate the whole app to an external link or
-  // open it in an in-app view. Intercept clicks on absolute/mailto links and
-  // hand them to the OS default browser via the opener plugin instead.
+  // open it in an in-app view. Internal wiki links open another note; external
+  // (absolute/mailto) links go to the OS default browser via the opener plugin.
   function onClick(e: MouseEvent) {
     const a = (e.target as HTMLElement | null)?.closest("a");
-    const href = a?.getAttribute("href");
+    if (!a) return;
+    if (a.classList.contains("wikilink")) {
+      e.preventDefault();
+      const path = a.dataset.path;
+      if (path) oninternallink?.(path);
+      return;
+    }
+    const href = a.getAttribute("href");
     if (!href || !/^(https?:|mailto:)/i.test(href)) return;
     e.preventDefault();
     openUrl(href);
@@ -61,7 +150,7 @@
      keyboard-accessible, so the static-element a11y rules don't apply here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="md-preview" onchange={onToggle} onclick={onClick}>
+<div class="md-preview" bind:this={container} onchange={onToggle} onclick={onClick}>
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 </div>
@@ -130,6 +219,18 @@
   .md-preview :global(a) {
     color: var(--editor-accent);
     text-decoration: underline;
+  }
+
+  /* Internal [[wiki links]]: a subtle pill, dashed + muted when unresolved. */
+  .md-preview :global(a.wikilink) {
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--editor-accent) 45%, transparent);
+    cursor: pointer;
+  }
+  .md-preview :global(a.wikilink.broken) {
+    color: var(--editor-muted);
+    border-bottom-style: dashed;
+    cursor: help;
   }
 
   /* Tailwind's preflight resets list-style to none, so restore markers. */

@@ -149,6 +149,8 @@
   const currentDir = $derived(
     activePath ? activePath.split("/").slice(0, -1).join("/") : "",
   );
+  // All note paths in the open vault, for resolving [[internal links]].
+  const notePaths = $derived([...walk(tree)].filter((n) => !n.is_dir).map((n) => n.path));
 
   async function handleOpen(vault: string, path: string) {
     clearTimeout(saveTimer);
@@ -475,13 +477,18 @@
           <p class="text-sm">Select or create a note.</p>
         </div>
       {:else if mode === "preview"}
-        <Preview bind:value={content} />
+        <Preview
+          bind:value={content}
+          {notePaths}
+          oninternallink={(p) => activeVault && handleOpen(activeVault, p)}
+        />
       {:else}
         {#key openToken}
           <Editor
             bind:value={content}
             bind:view={editorView}
             bind:focused={editorFocused}
+            {notePaths}
           />
         {/key}
       {/if}
