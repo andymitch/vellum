@@ -150,8 +150,11 @@
           <div class="my-4 border-t border-border"></div>
         {/if}
 
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Appearance
+        </p>
         <div class="flex items-center justify-between gap-3 py-1.5">
-          <span class="text-sm">Appearance</span>
+          <span class="text-sm">Mode</span>
           <select
             class="min-w-32 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
             value={theme.mode}
