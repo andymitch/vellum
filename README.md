@@ -8,7 +8,6 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **Vaults** — collections of notes organized in folders. Create as many as you like.
 - **P2P sync** — share a vault to another device by scanning a QR code; edits then flow both ways automatically. Works over the internet (via relays) or directly on the same Wi-Fi (via mDNS).
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
-- **Obsidian-style titles** — a note's filename tracks its first `# Heading`, so renaming is just editing.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
 - **Themes & fonts** — a set of color themes (including a pure-black Terminal theme and, on Android 12+, a Material You theme that follows your wallpaper) and font choices.
 - **Cross-platform** — macOS desktop and Android (iOS targeted), from one codebase.
