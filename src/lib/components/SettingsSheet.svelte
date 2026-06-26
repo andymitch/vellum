@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2 } from "@lucide/svelte";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -58,6 +58,7 @@
     onduplicate,
     oncopy,
     ondelete,
+    onrename,
   }: {
     open?: boolean;
     activePath?: string | null;
@@ -67,6 +68,7 @@
     onduplicate: () => void;
     oncopy: () => void;
     ondelete: () => void;
+    onrename: () => void;
   } = $props();
 
   let movePicker = $state(false);
@@ -105,6 +107,17 @@
           <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             File
           </p>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+            onclick={() => {
+              onrename();
+              open = false;
+            }}
+          >
+            <Pencil class="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Rename</span>
+          </button>
           <button
             type="button"
             class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
