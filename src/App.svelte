@@ -194,6 +194,19 @@
     sidebar?.newNoteHotkey(currentDir);
   }
 
+  // Breadcrumb rename: long-press (mobile) mirrors the double-click (desktop)
+  // path; both open the sidebar's rename prompt for the active note (#52).
+  let crumbPressTimer: ReturnType<typeof setTimeout> | undefined;
+  function crumbPressStart() {
+    crumbPressTimer = setTimeout(() => {
+      crumbPressTimer = undefined;
+      sidebar?.renameActive();
+    }, 500);
+  }
+  function crumbPressEnd() {
+    clearTimeout(crumbPressTimer);
+  }
+
   // File actions (from the settings sheet).
   async function moveNote(dir: string) {
     if (!activeVault || !activePath) return;
@@ -360,11 +373,18 @@
           <bdo dir="ltr">
             {#each parts as seg, i}
               {#if i > 0}<span class="mx-1.5 text-muted-foreground/40">/</span
-                >{/if}<span
-                class={i === parts.length - 1
-                  ? "text-foreground"
-                  : "text-muted-foreground/60"}>{seg}</span
-              >
+                >{/if}{#if i === parts.length - 1}<!-- The filename: double-click
+                (desktop) or long-press (mobile) to rename the open note (#52). -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span
+                  class="cursor-text text-foreground"
+                  title="Double-click or long-press to rename"
+                  ondblclick={() => sidebar?.renameActive()}
+                  onpointerdown={crumbPressStart}
+                  onpointerup={crumbPressEnd}
+                  onpointerleave={crumbPressEnd}
+                  oncontextmenu={(e) => e.preventDefault()}>{seg}</span
+                >{:else}<span class="text-muted-foreground/60">{seg}</span>{/if}
             {/each}
           </bdo>
         {/if}
@@ -488,6 +508,7 @@
   onduplicate={duplicateNote}
   oncopy={copyContents}
   ondelete={deleteNote}
+  onrename={() => sidebar?.renameActive()}
 />
 
 <style>

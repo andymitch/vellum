@@ -268,6 +268,15 @@
         if (activeVault) newNoteIn(activeVault, dir);
     }
 
+    // Rename the currently-open note. Used by the settings sheet and the
+    // breadcrumb (double-click / long-press) so all rename entry points share
+    // the same prompt + path logic.
+    export function renameActive() {
+        if (!activeVault || !activePath) return;
+        const name = activePath.split("/").pop() ?? "";
+        act("rename", { name, path: activePath, is_dir: false, children: [] });
+    }
+
     async function newRootFolder() {
         if (!activeVault) return;
         const name = (await askText("New folder name"))?.trim();
@@ -302,7 +311,9 @@
         } else if (kind === "rename") {
             const name = (await askText("Rename to", node.name))?.trim();
             if (!name || name === node.name) return;
-            const to = join(dirOf(node.path), name);
+            // Keep the .md extension on notes even if the user drops it.
+            const final = node.is_dir || name.endsWith(".md") ? name : `${name}.md`;
+            const to = join(dirOf(node.path), final);
             await renamePath(activeVault, node.path, to, node.is_dir);
             if (activePath === node.path) onopen(activeVault, to);
         } else if (kind === "duplicate") {
@@ -620,12 +631,15 @@ Delete this note whenever you're ready. Happy writing!
                 class="block w-full px-3 py-1 text-left hover:bg-muted"
                 onclick={() => act("new-folder", node)}>New folder</button
             >
-            <!-- Notes have no rename: their name follows the first H1. Folders still do. -->
             <button
                 class="block w-full px-3 py-1 text-left hover:bg-muted"
                 onclick={() => act("rename", node)}>Rename</button
             >
         {:else}
+            <button
+                class="block w-full px-3 py-1 text-left hover:bg-muted"
+                onclick={() => act("rename", node)}>Rename</button
+            >
             <button
                 class="block w-full px-3 py-1 text-left hover:bg-muted"
                 onclick={() => act("duplicate", node)}>Duplicate</button
