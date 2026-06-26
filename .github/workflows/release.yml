@@ -64,6 +64,19 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target aarch64-apple-darwin
+      # tauri-action attaches a version-stamped dmg (Vellum_N.0.0_aarch64.dmg),
+      # whose name changes every release. Attach a stable-named copy too so the
+      # README download button can point at a permanent
+      # releases/latest/download/Vellum_aarch64.dmg URL.
+      - name: Attach stable-named dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -e
+          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          cp "$DMG" "Vellum_aarch64.dmg"
+          gh release upload "$TAG" "Vellum_aarch64.dmg" --clobber
 
   # Android: build the release APK, sign it with the release keystore (apksigner
   # — Tauri regenerates gradle's signingConfig), attach it to the release.

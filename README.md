@@ -23,9 +23,16 @@ Each vault is an [iroh-docs](https://github.com/n0-computer/iroh) document; note
 
 ## Install
 
-Grab the latest build from the [Releases](https://github.com/andymitch/vellum/releases) page.
+[![Download for macOS](https://img.shields.io/badge/Download-macOS%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/andymitch/vellum/releases/latest/download/Vellum_aarch64.dmg)
+[![Download for Android](https://img.shields.io/badge/Download-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/andymitch/vellum/releases/latest/download/vellum-release.apk)
 
-**macOS** — download `Vellum_<version>_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
+These always point at the [latest release](https://github.com/andymitch/vellum/releases). On macOS you can also install in one line:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/andymitch/vellum/main/scripts/install.sh | sh
+```
+
+**macOS** — download `Vellum_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
 
 **Android** — download `vellum-release.apk` and open it to install (you'll need to allow installing from your browser/files app). Tauri's in-app updater is desktop-only, so for automatic Android updates add this repo to **[Komi Store](https://github.com/kurikomi-labs/komi-store)** — an open-source app store for GitHub releases that watches for new versions and updates in place (optionally silently, via Shizuku). Komi verifies the signing key matches, so install the release `.apk` (not a locally built debug one) for updates to flow.
 
