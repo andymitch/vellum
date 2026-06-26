@@ -3,6 +3,8 @@
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { theme } from "$lib/theme.svelte";
+  import type { Mermaid } from "mermaid";
 
   let {
     value = $bindable(""),
@@ -144,6 +146,81 @@
     e.preventDefault();
     openUrl(href);
   }
+
+  // ---- Mermaid diagrams -------------------------------------------------
+  // ```mermaid fences render as a normal code block first (hljs as plaintext),
+  // then this effect swaps each one for an SVG. mermaid is ~1MB, so it's
+  // dynamically imported the first time a diagram actually appears.
+  let container: HTMLDivElement;
+  let mermaidLib: Mermaid | undefined;
+  let mermaidThemeDark: boolean | undefined; // theme mermaid was last initialized for
+  let renderSeq = 0;
+
+  async function renderDiagram(mermaid: Mermaid, src: string, id: string) {
+    try {
+      const { svg } = await mermaid.render(id, src);
+      return svg;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `<pre class="mermaid-error">${msg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!)}</pre>`;
+    }
+  }
+
+  async function renderMermaid() {
+    // Claim a sequence number up front (before any early return or await) so an
+    // in-flight render always sees a newer renderSeq and aborts — even when the
+    // new pass has no diagrams to render.
+    const seq = ++renderSeq;
+    const root = container;
+    if (!root) return;
+    // Unrendered fences from a fresh {@html}, plus already-rendered diagrams
+    // that need re-theming when light/dark flips (their source is on data-src).
+    const fresh = [...root.querySelectorAll<HTMLElement>("pre > code.language-mermaid")];
+    const themed = [...root.querySelectorAll<HTMLElement>(".mermaid-diagram[data-src]")];
+    if (!fresh.length && !themed.length) return;
+
+    if (!mermaidLib) {
+      mermaidLib = (await import("mermaid")).default;
+      if (seq !== renderSeq) return;
+    }
+    const mermaid = mermaidLib;
+    // initialize() resets mermaid's global state, so only call it when the theme
+    // actually changed — calling it on every render can clobber a concurrent
+    // render. securityLevel "strict" sanitizes the SVG; we still own the input.
+    const dark = theme.dark;
+    if (mermaidThemeDark !== dark) {
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+      mermaidThemeDark = dark;
+    }
+
+    let i = 0;
+    // Render to a string first, then re-check seq before touching live DOM, so a
+    // superseded render never flashes stale SVG into an on-screen node.
+    for (const codeEl of fresh) {
+      const pre = codeEl.closest("pre");
+      if (!pre) continue;
+      const svg = await renderDiagram(mermaid, codeEl.textContent ?? "", `mmd-${seq}-${i++}`);
+      if (seq !== renderSeq) return;
+      const wrap = document.createElement("div");
+      wrap.className = "mermaid-diagram";
+      wrap.dataset.src = codeEl.textContent ?? "";
+      wrap.innerHTML = svg;
+      pre.replaceWith(wrap);
+    }
+    for (const wrap of themed) {
+      const svg = await renderDiagram(mermaid, wrap.dataset.src ?? "", `mmd-${seq}-${i++}`);
+      if (seq !== renderSeq) return;
+      wrap.innerHTML = svg;
+    }
+  }
+
+  // Re-run when the rendered HTML changes (new/changed diagrams) or the theme
+  // flips (existing diagrams need recoloring).
+  $effect(() => {
+    html;
+    theme.dark;
+    renderMermaid();
+  });
 </script>
 
 <!-- onclick delegates link handling to the OS browser; the real <a>s inside are
@@ -332,6 +409,22 @@
     border: none;
     border-top: 1px solid var(--editor-border);
     margin: 1.5em 0;
+  }
+
+  /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
+  .md-preview :global(.mermaid-diagram) {
+    margin: 1em 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .md-preview :global(.mermaid-diagram svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  /* A diagram that failed to parse falls back to its error text. */
+  .md-preview :global(.mermaid-error) {
+    color: var(--destructive, #e5484d);
+    white-space: pre-wrap;
   }
 
   /* highlight.js tokens mapped to the editor's --code-* palette */
