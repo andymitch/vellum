@@ -123,10 +123,13 @@ jobs:
 
   # Replace the release body with GitHub's categorized auto-generated notes
   # (per .github/release.yml), once all artifacts are attached.
+  # Build categorized notes from the linked issue's label per merged PR
+  # (fallback: the PR's own label), then set them as the release body.
   notes:
     needs: [prepare, desktop, android]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - name: Generate categorized release notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,11 +137,6 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
           PREV: ${{ needs.prepare.outputs.prev }}
         run: |
-          set -e
-          if [ -n "$PREV" ]; then
-            gh api "repos/$REPO/releases/generate-notes" \
-              -f tag_name="$TAG" -f previous_tag_name="$PREV" --jq .body > notes.md
-          else
-            gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body > notes.md
-          fi
+          node scripts/release-notes.mjs > notes.md
+          cat notes.md
           gh release edit "$TAG" --repo "$REPO" --notes-file notes.md
