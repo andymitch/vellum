@@ -10,29 +10,25 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Obsidian-style titles** — a note's filename tracks its first `# Heading`, so renaming is just editing.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
+- **Themes & fonts** — a set of color themes (including a pure-black Terminal theme and, on Android 12+, a Material You theme that follows your wallpaper) and font choices.
 - **Cross-platform** — macOS desktop and Android (iOS targeted), from one codebase.
+- **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store).
 
 ## How sync works (in brief)
 
 Each vault is an [iroh-docs](https://github.com/n0-computer/iroh) document; notes are entries keyed by their path. Sharing a vault produces a write-capability *ticket* (rendered as a QR code) — any device that joins it gets equal, full read/write access. Peers are remembered by their stable node ID and re-dialed through iroh's discovery, so sync survives IP changes, network switches, and restarts. There is no central authority: every synced device holds a complete copy.
 
-## Install (macOS)
+## Install
 
-A build-and-install script is provided:
+Grab the latest build from the [Releases](https://github.com/andymitch/vellum/releases) page.
 
-```sh
-./scripts/install-macos.sh
-```
+**macOS** — download `Vellum_<version>_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
 
-This installs JS dependencies, runs `tauri build` to produce a native `.app`, copies it to `/Applications/Vellum.app`, and clears the Gatekeeper quarantine flag so it launches without a right-click. Launch it with `open -a Vellum` or from Spotlight.
+**Android** — download `vellum-release.apk` and open it to install (you'll need to allow installing from your browser/files app). Tauri's in-app updater is desktop-only, so for automatic Android updates add this repo to **[Komi Store](https://github.com/kurikomi-labs/komi-store)** — an open-source app store for GitHub releases that watches for new versions and updates in place (optionally silently, via Shizuku). Komi verifies the signing key matches, so install the release `.apk` (not a locally built debug one) for updates to flow.
 
-Re-run the script any time to **update in place** — it removes the existing `/Applications/Vellum.app` before copying the freshly built one, so a rebuild-and-reinstall is a single command. Your notes are stored separately (see below) and are untouched by reinstalls.
+> Prefer to build it yourself? See [Development](#development).
 
-The build also produces a `.dmg` at `src-tauri/target/release/bundle/dmg/` if you'd rather distribute that.
-
-> The app is unsigned. The install script handles Gatekeeper for the local install; distributing it to other machines would require code-signing and notarization.
-
-### Where your notes live
+### Where your notes live (macOS)
 
 Vellum stores all vault data — the notes database, synced blobs, and this device's stable sync identity — under the app's data directory, keyed by its bundle identifier (`com.andymitch.vellum`):
 
@@ -95,6 +91,18 @@ bun run tauri dev          # desktop, with hot reload
 bun run tauri build        # native app + installer for the current desktop OS
 ```
 
+To build and install a local macOS copy in one step (builds, copies to
+`/Applications/Vellum.app`, clears Gatekeeper):
+
+```sh
+./scripts/install-macos.sh   # re-run any time to update in place; notes are untouched
+```
+
+> Updater artifacts are enabled, so a local desktop `tauri build` needs the
+> updater signing key — export `TAURI_SIGNING_PRIVATE_KEY` (and
+> `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) first, or it will fail to bundle. The
+> `dev-*` scripts disable updater artifacts, so they don't need it.
+
 ### Android
 
 ```sh
@@ -113,15 +121,30 @@ The Rust P2P backend has integration tests that spin up real iroh nodes:
 cd src-tauri && cargo test
 ```
 
+### Releases
+
+Releases are cut with one click: **Actions → Release → Run workflow**. It
+auto-increments the version tag (`v1`, `v2`, …), builds the macOS `.dmg` +
+signed updater artifacts and the signed Android `.apk`, publishes a GitHub
+Release, and writes a categorized changelog. Versions are a plain counter; CI
+stamps the build version as `N.0.0` so Tauri and the updater get valid semver.
+
+The changelog groups merged PRs into **Features / Fixes / Maintenance** by the
+label of the **issue each PR closes** (so label issues, not PRs, and reference
+the issue with `Closes #N`). Atomic PRs (one issue each) give the cleanest
+changelog; a PR closing several issues collapses to a single entry.
+
 ## Project layout
 
 | Path | What's there |
 | --- | --- |
 | `src/` | Svelte 5 frontend — editor, sidebar, components |
 | `src/lib/vault.ts` | Typed wrapper over the Tauri commands |
+| `src/lib/theme.svelte.ts` | Theme/font state + Material You (Android) |
 | `src-tauri/src/vault.rs` | The iroh-docs P2P vault backend (the heart of the app) |
 | `src-tauri/src/lib.rs` | Tauri setup, command registration, Android JNI glue |
-| `scripts/` | Build/install helpers |
+| `scripts/` | Build/install helpers + `dev-*` side-by-side builds |
+| `.github/workflows/release.yml` | One-click release CI |
 
 ## License
 
