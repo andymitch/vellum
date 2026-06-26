@@ -136,6 +136,11 @@ pub fn run() {
     // gated to android/ios in Cargo.toml).
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    // In-app auto-update (desktop only; crates gated in Cargo.toml).
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     builder
         .setup(|app| {
             // The iroh node is built lazily on first command (see vault.rs):
