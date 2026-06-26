@@ -63,7 +63,7 @@
         ontree,
     }: {
         activePath?: string | null;
-        onopen: (vault: string, path: string) => void;
+        onopen: (vault: string, path: string, focus?: boolean) => void;
         onvaultchange: (vault: string | null) => void;
         // Notify the parent of the current tree (used to derive the folder list
         // for move/duplicate actions).

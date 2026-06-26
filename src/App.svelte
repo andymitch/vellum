@@ -150,7 +150,11 @@
     activePath ? activePath.split("/").slice(0, -1).join("/") : "",
   );
 
-  async function handleOpen(vault: string, path: string) {
+  // Set true when opening a brand-new note: force source mode and focus the
+  // editor once it mounts (#50).
+  let focusNewNote = false;
+
+  async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
@@ -162,6 +166,12 @@
     session.vault = vault;
     session.path = path;
     session.scroll = restoreRatio;
+    // A new note always opens in source mode so the user can type right away.
+    if (focus && mode !== "source") {
+      mode = "source";
+      session.mode = "source";
+    }
+    focusNewNote = focus;
     content = await readNote(vault, path);
     lastLoaded = content;
     openToken++;
@@ -169,6 +179,15 @@
     await tick();
     applyScrollRestore(mode, restoreRatio);
   }
+
+  // Focus the editor when a new note has just opened (it remounts via openToken,
+  // so this fires once the fresh instance is bound).
+  $effect(() => {
+    if (focusNewNote && mode === "source" && editorView) {
+      focusNewNote = false;
+      editorView.focus();
+    }
+  });
 
   function handleVaultChange(vault: string | null) {
     clearTimeout(saveTimer);
