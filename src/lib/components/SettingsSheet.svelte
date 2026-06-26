@@ -224,7 +224,7 @@
 
         <div class="my-4 border-t border-border"></div>
         <p class="text-center text-xs text-muted-foreground">
-          Vellum{version ? ` ${version}` : ""}
+          {version}
         </p>
       </div>
     </div>
