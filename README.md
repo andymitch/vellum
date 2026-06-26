@@ -1,16 +1,20 @@
 # Vellum
 
+[![Release](https://img.shields.io/github/v/release/andymitch/vellum?sort=semver)](https://github.com/andymitch/vellum/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Android-lightgrey)
+
 A local-first Markdown notes app that syncs **peer-to-peer** — no account, no server, no cloud. Your notes live on your devices and sync directly between them. Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), and [iroh](https://iroh.computer).
 
 ## Features
 
-- **Markdown editor** with live source/preview modes, syntax highlighting, and a formatting toolbar (CodeMirror 6).
+- **Markdown editor** (CodeMirror 6) with live source/preview modes, syntax highlighting, and formatting shortcuts — plus a formatting toolbar on mobile.
 - **Vaults** — collections of notes organized in folders. Create as many as you like.
 - **P2P sync** — share a vault to another device by scanning a QR code; edits then flow both ways automatically. Works over the internet (via relays) or directly on the same Wi-Fi (via mDNS).
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
-- **Themes & fonts** — a set of color themes (including a pure-black Terminal theme and, on Android 12+, a Material You theme that follows your wallpaper) and font choices.
-- **Cross-platform** — macOS desktop and Android (iOS targeted), from one codebase.
+- **Eight themes & several fonts** — including a pure-black Terminal theme, and on Android 12+ a Material You theme that follows your wallpaper.
+- **Cross-platform** — macOS desktop and Android, from one codebase (iOS scaffolded).
 - **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store).
 
 ## How sync works (in brief)
@@ -54,21 +58,6 @@ rm -rf ~/Library/Caches/com.andymitch.vellum
 
 Remove only the first line to uninstall the app while keeping your notes for a later reinstall.
 
-### Side-by-side dev build
-
-To test changes without disturbing your production install, build a separate
-**Vellum Dev** app (`com.andymitch.vellum.dev`, its own data dir):
-
-```sh
-./scripts/dev-macos.sh     # installs "Vellum Dev.app" on macOS
-./scripts/dev-android.sh   # installs com.andymitch.vellum.dev on a connected device
-```
-
-Both sit alongside the production app. The macOS variant uses
-`src-tauri/tauri.dev.conf.json`; the Android one suffixes the applicationId at
-build time (Tauri regenerates the Gradle config, so it can't be committed there)
-and signs with the debug key.
-
 ## Development
 
 ### Prerequisites
@@ -111,6 +100,17 @@ bun run tauri android build      # produce an APK / AAB
 ```
 
 Android needs the SDK and NDK installed, with `ANDROID_HOME` / `NDK_HOME` set. The native side has Android-specific glue (network-change notifications and system-bar theming via JNI) so iroh can sync reliably as the device moves between Wi-Fi and cellular.
+
+### Side-by-side dev build
+
+Test changes without disturbing your production install — these build a separate **Vellum Dev** app (`com.andymitch.vellum.dev`, its own data dir) that sits alongside it:
+
+```sh
+./scripts/dev-macos.sh     # installs "Vellum Dev.app"
+./scripts/dev-android.sh   # installs com.andymitch.vellum.dev on a connected device
+```
+
+The macOS variant uses `src-tauri/tauri.dev.conf.json`; the Android one suffixes the applicationId at build time (Tauri regenerates the Gradle config, so it can't be committed there) and signs with the debug key.
 
 ### Tests
 
