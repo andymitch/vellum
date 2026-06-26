@@ -17,7 +17,7 @@ export const PALETTES: Palette[] = [
   { id: "gruvbox", name: "Gruvbox" },
   { id: "catppuccin", name: "Catppuccin" },
   { id: "solarized", name: "Solarized" },
-  { id: "terminal", name: "Terminal" },
+  { id: "github", name: "GitHub" },
 ];
 
 // Android 12+ exposes a Material You (Monet) palette derived from the wallpaper.

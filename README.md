@@ -13,7 +13,7 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **P2P sync** — share a vault to another device by scanning a QR code; edits then flow both ways automatically. Works over the internet (via relays) or directly on the same Wi-Fi (via mDNS).
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
-- **Eight themes & several fonts** — including a pure-black Terminal theme, and on Android 12+ a Material You theme that follows your wallpaper.
+- **Eight themes & several fonts** — including a GitHub theme, and on Android 12+ a Material You theme that follows your wallpaper.
 - **Cross-platform** — macOS desktop and Android, from one codebase (iOS scaffolded).
 - **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store).
 
