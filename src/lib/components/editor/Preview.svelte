@@ -151,7 +151,7 @@
   // ```mermaid fences render as a normal code block first (hljs as plaintext),
   // then this effect swaps each one for an SVG. mermaid is ~1MB, so it's
   // dynamically imported the first time a diagram actually appears.
-  let container: HTMLDivElement;
+  // (`container` is declared above for internal-link resolution.)
   let mermaidLib: Mermaid | undefined;
   let mermaidThemeDark: boolean | undefined; // theme mermaid was last initialized for
   let renderSeq = 0;
