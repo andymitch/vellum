@@ -108,6 +108,12 @@
         | { kind: "confirm"; title: string; resolve: (v: boolean) => void }
         | { kind: "join"; value: string; resolve: (v: string | null) => void }
         | {
+              kind: "move";
+              title: string;
+              choices: { path: string; label: string }[];
+              resolve: (dir: string | null) => void;
+          }
+        | {
               kind: "share";
               title: string;
               value: string;
@@ -127,6 +133,35 @@
     const askConfirm = (title: string): Promise<boolean> =>
         new Promise(
             (resolve) => (dialog = { kind: "confirm", title, resolve }),
+        );
+    // Folder targets a node can move into: every folder except its current
+    // parent (a no-op) and — for a folder — itself or any descendant. Root is
+    // offered when the node isn't already at root.
+    function folderChoices(node: TreeNode): { path: string; label: string }[] {
+        const cur = dirOf(node.path);
+        const out: { path: string; label: string }[] = [];
+        if (cur !== "") out.push({ path: "", label: "/ (root)" });
+        const walkDirs = (nodes: TreeNode[]) => {
+            for (const n of nodes) {
+                if (!n.is_dir) continue;
+                const selfOrDesc =
+                    node.is_dir && (n.path === node.path || n.path.startsWith(node.path + "/"));
+                if (n.path !== cur && !selfOrDesc) out.push({ path: n.path, label: n.path });
+                walkDirs(n.children);
+            }
+        };
+        walkDirs(tree);
+        return out;
+    }
+    const askMove = (node: TreeNode): Promise<string | null> =>
+        new Promise(
+            (resolve) =>
+                (dialog = {
+                    kind: "move",
+                    title: `Move "${node.name}" to…`,
+                    choices: folderChoices(node),
+                    resolve,
+                }),
         );
     const showShare = async (value: string): Promise<void> => {
         // EC level "L" — the ticket is the only payload and is shown alongside the
@@ -152,7 +187,7 @@
         const d = dialog;
         dialog = null;
         if (!d) return;
-        if (d.kind === "text" || d.kind === "join")
+        if (d.kind === "text" || d.kind === "join" || d.kind === "move")
             d.resolve(result as string | null);
         else if (d.kind === "confirm") d.resolve(result as boolean);
         else d.resolve();
@@ -316,6 +351,11 @@
             const to = join(dirOf(node.path), final);
             await renamePath(activeVault, node.path, to, node.is_dir);
             if (activePath === node.path) onopen(activeVault, to);
+        } else if (kind === "move") {
+            const dir = await askMove(node);
+            if (dir === null) return;
+            await moveTo(node.path, node.is_dir, dir); // refreshes the tree itself
+            return;
         } else if (kind === "duplicate") {
             const finalPath = await duplicateNote(activeVault, node.path, tree);
             onopen(activeVault, finalPath);
@@ -642,6 +682,10 @@ Delete this note whenever you're ready. Happy writing!
             >
             <button
                 class="block w-full px-3 py-1 text-left hover:bg-muted"
+                onclick={() => act("move", node)}>Move to…</button
+            >
+            <button
+                class="block w-full px-3 py-1 text-left hover:bg-muted"
                 onclick={() => act("duplicate", node)}>Duplicate</button
             >
             <button
@@ -748,6 +792,27 @@ Delete this note whenever you're ready. Happy writing!
                     <button
                         class="rounded bg-destructive px-3 py-1 text-sm text-white hover:bg-destructive/90"
                         onclick={() => resolveDialog(true)}>OK</button
+                    >
+                </div>
+            {:else if d.kind === "move"}
+                {#if d.choices.length}
+                    <div class="mb-3 max-h-60 overflow-auto">
+                        {#each d.choices as c (c.path)}
+                            <button
+                                class="block w-full truncate rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                                onclick={() => resolveDialog(c.path)}>{c.label}</button
+                            >
+                        {/each}
+                    </div>
+                {:else}
+                    <p class="mb-3 text-sm text-muted-foreground">
+                        No other folders to move into.
+                    </p>
+                {/if}
+                <div class="flex justify-end">
+                    <button
+                        class="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-muted"
+                        onclick={() => resolveDialog(null)}>Cancel</button
                     >
                 </div>
             {:else}
