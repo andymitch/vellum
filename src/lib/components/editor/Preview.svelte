@@ -3,6 +3,8 @@
   import { markedHighlight } from "marked-highlight";
   import hljs from "highlight.js/lib/common";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { theme } from "$lib/theme.svelte";
+  import type { Mermaid } from "mermaid";
 
   let { value = $bindable("") }: { value?: string } = $props();
 
@@ -55,13 +57,80 @@
     e.preventDefault();
     openUrl(href);
   }
+
+  // ---- Mermaid diagrams -------------------------------------------------
+  // ```mermaid fences render as a normal code block first (hljs as plaintext),
+  // then this effect swaps each one for an SVG. mermaid is ~1MB, so it's
+  // dynamically imported the first time a diagram actually appears.
+  let container: HTMLDivElement;
+  let mermaidLib: Mermaid | undefined;
+  let renderSeq = 0;
+
+  async function renderDiagram(mermaid: Mermaid, src: string, id: string) {
+    try {
+      const { svg } = await mermaid.render(id, src);
+      return svg;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `<pre class="mermaid-error">${msg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!)}</pre>`;
+    }
+  }
+
+  async function renderMermaid() {
+    const root = container;
+    if (!root) return;
+    // Unrendered fences from a fresh {@html}, plus already-rendered diagrams
+    // that need re-theming when light/dark flips (their source is on data-src).
+    const fresh = [...root.querySelectorAll<HTMLElement>("pre > code.language-mermaid")];
+    const themed = [...root.querySelectorAll<HTMLElement>(".mermaid-diagram[data-src]")];
+    if (!fresh.length && !themed.length) return;
+
+    const seq = ++renderSeq;
+    if (!mermaidLib) {
+      mermaidLib = (await import("mermaid")).default;
+    }
+    const mermaid = mermaidLib;
+    // securityLevel "strict" sanitizes the rendered SVG; we still own the input.
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: theme.dark ? "dark" : "default",
+    });
+    if (seq !== renderSeq) return; // a newer render superseded this one
+
+    let i = 0;
+    for (const codeEl of fresh) {
+      const pre = codeEl.closest("pre");
+      if (!pre) continue;
+      const src = codeEl.textContent ?? "";
+      const wrap = document.createElement("div");
+      wrap.className = "mermaid-diagram";
+      wrap.dataset.src = src;
+      wrap.innerHTML = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
+      if (seq !== renderSeq) return;
+      pre.replaceWith(wrap);
+    }
+    for (const wrap of themed) {
+      const src = wrap.dataset.src ?? "";
+      wrap.innerHTML = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
+      if (seq !== renderSeq) return;
+    }
+  }
+
+  // Re-run when the rendered HTML changes (new/changed diagrams) or the theme
+  // flips (existing diagrams need recoloring).
+  $effect(() => {
+    html;
+    theme.dark;
+    renderMermaid();
+  });
 </script>
 
 <!-- onclick delegates link handling to the OS browser; the real <a>s inside are
      keyboard-accessible, so the static-element a11y rules don't apply here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="md-preview" onchange={onToggle} onclick={onClick}>
+<div class="md-preview" bind:this={container} onchange={onToggle} onclick={onClick}>
   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
   {@html html}
 </div>
@@ -231,6 +300,22 @@
     border: none;
     border-top: 1px solid var(--editor-border);
     margin: 1.5em 0;
+  }
+
+  /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
+  .md-preview :global(.mermaid-diagram) {
+    margin: 1em 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .md-preview :global(.mermaid-diagram svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  /* A diagram that failed to parse falls back to its error text. */
+  .md-preview :global(.mermaid-error) {
+    color: var(--destructive, #e5484d);
+    white-space: pre-wrap;
   }
 
   /* highlight.js tokens mapped to the editor's --code-* palette */
