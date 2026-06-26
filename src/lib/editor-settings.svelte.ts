@@ -9,6 +9,9 @@ export type EditorSettings = {
   autocorrect: boolean;
   spellcheck: boolean;
   closeBrackets: boolean;
+  // Mobile only: tapping a previewed note jumps into source view + keyboard,
+  // and hiding the keyboard returns to preview (#33).
+  quickEdit: boolean;
 };
 
 const KEY = "notes-editor";
@@ -19,6 +22,7 @@ const DEFAULTS: EditorSettings = {
   autocorrect: false,
   spellcheck: true,
   closeBrackets: true,
+  quickEdit: false,
 };
 
 let saved: Partial<EditorSettings> = {};
@@ -79,6 +83,13 @@ export const editorSettings = {
   },
   set closeBrackets(v: boolean) {
     state.closeBrackets = v;
+    persist();
+  },
+  get quickEdit() {
+    return state.quickEdit;
+  },
+  set quickEdit(v: boolean) {
+    state.quickEdit = v;
     persist();
   },
 };

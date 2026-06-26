@@ -6,6 +6,10 @@
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { portal } from "$lib/portal";
 
+  // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
+  // only surface its toggle on a touch device — matching the Scan button gate.
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
   const MODES: { id: Mode; label: string }[] = [
     { id: "system", label: "System" },
     { id: "light", label: "Light" },
@@ -218,6 +222,22 @@
             />
           </label>
         {/each}
+        {#if isMobile}
+          <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+            <span class="flex flex-col">
+              <span class="text-sm">Quick edit</span>
+              <span class="text-xs text-muted-foreground">
+                Tap a preview to edit; hide the keyboard to return.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 shrink-0 accent-primary"
+              checked={editorSettings.quickEdit}
+              onchange={(e) => (editorSettings.quickEdit = e.currentTarget.checked)}
+            />
+          </label>
+        {/if}
 
         <div class="my-4 border-t border-border"></div>
         <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

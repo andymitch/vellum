@@ -19,6 +19,7 @@
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
+  import { editorSettings } from "$lib/editor-settings.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -129,6 +130,142 @@
   // Whether the soft keyboard is up. The toolbar is anchored to the keyboard, so
   // it must hide when the keyboard is dismissed even if the editor keeps focus.
   let kbOpen = $state(false);
+
+  // ---- Quick edit (mobile, opt-in) — issue #33 ----
+  // When on, tapping a previewed note jumps to source + keyboard, and hiding the
+  // keyboard returns to preview. quickEditActive marks a source view we entered
+  // via such a tap (so we only auto-return for those, not manual toggles).
+  let quickEditActive = $state(false);
+  let kbWasOpen = false; // the keyboard has been up since this quick edit began
+  let focusOnMount = false; // focus the editor once it mounts after the tap
+  let quickEditCaret: number | null = null; // source offset for the tapped point
+  let tapStart: { x: number; y: number; t: number } | null = null;
+
+  // Caret position under a viewport point, across engines (Chromium/WebKit).
+  function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
+    type DocWithCaret = Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    };
+    const d = document as DocWithCaret;
+    const p = d.caretPositionFromPoint?.(x, y);
+    if (p) return { node: p.offsetNode, offset: p.offset };
+    const r = document.caretRangeFromPoint?.(x, y);
+    return r ? { node: r.startContainer, offset: r.startOffset } : null;
+  }
+
+  // Reduce text to a lowercase alphanumeric stream, mapping every run of other
+  // characters (whitespace, punctuation, and — for the source — markdown markers)
+  // to a single space. Returns the stream plus a map back to source offsets, so a
+  // match in the stream can be translated to a caret position in `content`.
+  function normalizeWithMap(src: string): { norm: string; map: number[] } {
+    const map: number[] = [];
+    let norm = "";
+    let pendingSpace = false;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (/[a-z0-9]/i.test(c)) {
+        if (pendingSpace && norm.length) {
+          norm += " ";
+          map.push(i);
+        }
+        pendingSpace = false;
+        norm += c.toLowerCase();
+        map.push(i);
+      } else {
+        pendingSpace = true;
+      }
+    }
+    return { norm, map };
+  }
+
+  // Map a tapped point in the preview to a caret offset in the markdown source.
+  // The preview's text has markdown stripped, so we normalize both to a plain
+  // alphanumeric stream and find the tapped block's visible text-up-to-caret in
+  // the source, landing the caret just after the matched run. Returns null when
+  // it can't map (caller then just focuses at the existing position).
+  function sourceOffsetFromPoint(x: number, y: number): number | null {
+    const root = mainEl?.querySelector<HTMLElement>(".md-preview");
+    const caret = caretFromPoint(x, y);
+    if (!root || !caret || !root.contains(caret.node)) return null;
+    let block: HTMLElement | null =
+      caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
+    while (block && block.parentElement && block.parentElement !== root) block = block.parentElement;
+    if (!block) return null;
+    const norm1 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const r = document.createRange();
+    r.selectNodeContents(block);
+    r.setEnd(caret.node, caret.offset);
+    const prefix = norm1(r.toString()); // tapped block's text up to the caret
+    if (!prefix) return null;
+    const { norm, map } = normalizeWithMap(content);
+    // Locate the tapped block in the source by its *full* text (much more unique
+    // than the prefix), then offset within it by the prefix — so a phrase that
+    // repeats elsewhere in the note doesn't drag the caret to the wrong place.
+    const blockText = norm1(block.textContent ?? "");
+    const base = blockText ? norm.indexOf(blockText) : -1;
+    const start = base >= 0 ? base : norm.indexOf(prefix);
+    if (start < 0) return null;
+    const caretNorm = (base >= 0 ? base : start) + prefix.length;
+    if (caretNorm <= 0) return null;
+    return map[Math.min(caretNorm, map.length) - 1] + 1;
+  }
+
+  function onPreviewPointerDown(e: PointerEvent) {
+    if (!(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    tapStart = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  }
+  // A recognized scroll/gesture fires pointercancel (not pointerup); clear the
+  // pending tap so the next genuine tap isn't matched against this stale start.
+  function onPreviewPointerCancel() {
+    tapStart = null;
+  }
+  function onPreviewPointerUp(e: PointerEvent) {
+    const s = tapStart;
+    tapStart = null;
+    if (!s || !(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    // A drag (selection/scroll) or long-press isn't a "tap" — leave it in preview.
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || e.timeStamp - s.t > 500) return;
+    // Links and task checkboxes have their own tap behavior; don't hijack them.
+    if ((e.target as HTMLElement | null)?.closest("a, input")) return;
+    // Map the tap to a source caret before we leave preview (DOM is still here).
+    quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
+    quickEditActive = true;
+    kbWasOpen = false;
+    focusOnMount = true;
+    setMode("source");
+  }
+
+  // Focus the editor once it has mounted from the quick-edit tap, which raises
+  // the soft keyboard. (The Editor only exists in source mode, so this can't run
+  // inside the tap handler.)
+  $effect(() => {
+    if (focusOnMount && mode === "source" && editorView) {
+      focusOnMount = false;
+      const v = editorView;
+      v.focus();
+      // Place the caret where the user tapped in the preview (#41). Falls back
+      // to the editor's existing position when the tap couldn't be mapped.
+      if (quickEditCaret != null) {
+        const pos = Math.max(0, Math.min(quickEditCaret, v.state.doc.length));
+        v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+      }
+      quickEditCaret = null;
+    }
+  });
+
+  // While a quick edit is active, returning the keyboard to hidden returns to
+  // preview — but only after it was actually raised, so we don't bounce back
+  // before it appears.
+  $effect(() => {
+    if (!quickEditActive) return;
+    if (kbOpen) {
+      kbWasOpen = true;
+    } else if (kbWasOpen) {
+      quickEditActive = false;
+      kbWasOpen = false;
+      if (mode === "source") setMode("preview");
+    }
+  });
 
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
@@ -470,7 +607,13 @@
       </div>
     </aside>
 
-    <main bind:this={mainEl} class="min-w-0 flex-1 overflow-auto">
+    <main
+      bind:this={mainEl}
+      class="min-w-0 flex-1 overflow-auto"
+      onpointerdown={onPreviewPointerDown}
+      onpointerup={onPreviewPointerUp}
+      onpointercancel={onPreviewPointerCancel}
+    >
       {#if !activePath}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
           <NotebookPen size={40} class="opacity-30" />
