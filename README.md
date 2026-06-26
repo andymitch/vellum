@@ -59,6 +59,21 @@ rm -rf ~/Library/Caches/com.andymitch.vellum
 
 Remove only the first line to uninstall the app while keeping your notes for a later reinstall.
 
+### Side-by-side dev build
+
+To test changes without disturbing your production install, build a separate
+**Vellum Dev** app (`com.andymitch.vellum.dev`, its own data dir):
+
+```sh
+./scripts/dev-macos.sh     # installs "Vellum Dev.app" on macOS
+./scripts/dev-android.sh   # installs com.andymitch.vellum.dev on a connected device
+```
+
+Both sit alongside the production app. The macOS variant uses
+`src-tauri/tauri.dev.conf.json`; the Android one suffixes the applicationId at
+build time (Tauri regenerates the Gradle config, so it can't be committed there)
+and signs with the debug key.
+
 ## Development
 
 ### Prerequisites
