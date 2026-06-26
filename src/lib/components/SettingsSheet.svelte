@@ -76,12 +76,25 @@
   } = $props();
 
   let movePicker = $state(false);
+
+  // Settings is a bottom sheet on mobile (slides up) and a right-side drawer on
+  // desktop (slides in from the right). The layout switches via Tailwind md:
+  // classes, but the fly transition axis can't be expressed in CSS, so track the
+  // breakpoint at runtime to pick y- vs x-slide.
+  let isDesktop = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    isDesktop = mq.matches;
+    const onChange = (e: MediaQueryListEvent) => (isDesktop = e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  });
 </script>
 
 {#if open}
   <div
     use:portal
-    class="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-center"
+    class="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-stretch md:justify-end"
     role="presentation"
     transition:fade={{ duration: 150 }}
     onclick={(e) => {
@@ -89,9 +102,11 @@
     }}
   >
     <div
-      class="flex max-h-[80vh] w-full flex-col rounded-t-2xl border border-border bg-popover md:max-w-md md:rounded-2xl"
+      class="flex max-h-[80vh] w-full flex-col rounded-t-2xl border border-border bg-popover md:h-full md:max-h-none md:max-w-md md:rounded-none md:border-0 md:border-l"
       style="padding-bottom:env(safe-area-inset-bottom);"
-      transition:fly={{ y: 320, duration: 220, opacity: 1 }}
+      transition:fly={isDesktop
+        ? { x: 400, duration: 220, opacity: 1 }
+        : { y: 320, duration: 220, opacity: 1 }}
     >
       <div class="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 class="text-base font-semibold">Settings</h2>
