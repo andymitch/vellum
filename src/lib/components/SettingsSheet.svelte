@@ -35,8 +35,10 @@
     return k.length === 1 ? k.toUpperCase() : k;
   }
 
+  // Show "vN": our release scheme stamps the tag's integer as the semver major
+  // (vN -> N.0.0), so the major component is the release number.
   let version = $state("");
-  getVersion().then((v) => (version = v));
+  getVersion().then((v) => (version = "v" + v.split(".")[0]));
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
   const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
@@ -222,7 +224,7 @@
 
         <div class="my-4 border-t border-border"></div>
         <p class="text-center text-xs text-muted-foreground">
-          Vellum{version ? ` v${version}` : ""}
+          Vellum{version ? ` ${version}` : ""}
         </p>
       </div>
     </div>
