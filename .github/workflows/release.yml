@@ -1,0 +1,144 @@
+name: Release
+
+# One-click release: Actions → Release → "Run workflow". Auto-increments the
+# vN tag, builds macOS + Android, publishes a GitHub Release with categorized
+# notes (see .github/release.yml). Versions are a plain counter (v1, v2, …);
+# CI stamps the build version as N.0.0 so Tauri/the updater get valid semver.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prev: ${{ steps.v.outputs.prev }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        run: |
+          LATEST=$(git tag -l 'v*' | grep -E '^v[0-9]+$' | sed 's/^v//' | sort -n | tail -1)
+          N=$(( ${LATEST:-0} + 1 ))
+          echo "version=${N}.0.0" >> "$GITHUB_OUTPUT"
+          echo "tag=v${N}" >> "$GITHUB_OUTPUT"
+          [ -n "$LATEST" ] && echo "prev=v${LATEST}" >> "$GITHUB_OUTPUT" || echo "prev=" >> "$GITHUB_OUTPUT"
+          echo "Next release: v${N} (version ${N}.0.0)"
+
+  # macOS desktop: .app/.dmg + signed updater artifacts + latest.json, via
+  # tauri-action (which also creates the GitHub Release for the tag).
+  desktop:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install
+      - name: Stamp version
+        env:
+          V: ${{ needs.prepare.outputs.version }}
+        run: |
+          tmp=$(mktemp)
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" src-tauri/tauri.conf.json
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Vellum ${{ needs.prepare.outputs.tag }}"
+          releaseBody: "Building…"
+          releaseDraft: false
+          prerelease: false
+          args: --target aarch64-apple-darwin
+
+  # Android: build the release APK, sign it with the release keystore (apksigner
+  # — Tauri regenerates gradle's signingConfig), attach it to the release.
+  android:
+    needs: [prepare, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;27.1.12297006"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install
+      - name: Stamp version
+        env:
+          V: ${{ needs.prepare.outputs.version }}
+        run: |
+          tmp=$(mktemp)
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" src-tauri/tauri.conf.json
+      - name: Build unsigned release APK
+        run: bun tauri android build --apk --target aarch64
+      - name: Sign APK
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          IN=src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+          echo "$KS_B64" | base64 -d > release.jks
+          "$BT/zipalign" -f -p 4 "$IN" vellum-release.apk
+          "$BT/apksigner" sign --ks release.jks \
+            --ks-pass "pass:$KS_PASS" --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" \
+            vellum-release.apk
+          "$BT/apksigner" verify vellum-release.apk
+          rm -f release.jks
+      - name: Upload APK to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" vellum-release.apk --clobber
+
+  # Replace the release body with GitHub's categorized auto-generated notes
+  # (per .github/release.yml), once all artifacts are attached.
+  notes:
+    needs: [prepare, desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate categorized release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PREV: ${{ needs.prepare.outputs.prev }}
+        run: |
+          set -e
+          if [ -n "$PREV" ]; then
+            gh api "repos/$REPO/releases/generate-notes" \
+              -f tag_name="$TAG" -f previous_tag_name="$PREV" --jq .body > notes.md
+          else
+            gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq .body > notes.md
+          fi
+          gh release edit "$TAG" --repo "$REPO" --notes-file notes.md

@@ -44,6 +44,12 @@ paranoid-android = "0.2"
 [target.'cfg(any(target_os="android",target_os="ios"))'.dependencies]
 tauri-plugin-barcode-scanner = "2.4.5"
 
+# Desktop-only: in-app auto-update (Tauri's updater is desktop-only; mobile
+# updates ship via the APK/stores). process is used to relaunch after update.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
