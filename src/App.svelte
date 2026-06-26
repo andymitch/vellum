@@ -19,6 +19,7 @@
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
+  import { editorSettings } from "$lib/editor-settings.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -129,6 +130,57 @@
   // Whether the soft keyboard is up. The toolbar is anchored to the keyboard, so
   // it must hide when the keyboard is dismissed even if the editor keeps focus.
   let kbOpen = $state(false);
+
+  // ---- Quick edit (mobile, opt-in) — issue #33 ----
+  // When on, tapping a previewed note jumps to source + keyboard, and hiding the
+  // keyboard returns to preview. quickEditActive marks a source view we entered
+  // via such a tap (so we only auto-return for those, not manual toggles).
+  let quickEditActive = $state(false);
+  let kbWasOpen = false; // the keyboard has been up since this quick edit began
+  let focusOnMount = false; // focus the editor once it mounts after the tap
+  let tapStart: { x: number; y: number; t: number } | null = null;
+
+  function onPreviewPointerDown(e: PointerEvent) {
+    if (!(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    tapStart = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  }
+  function onPreviewPointerUp(e: PointerEvent) {
+    const s = tapStart;
+    tapStart = null;
+    if (!s || !(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    // A drag (selection/scroll) or long-press isn't a "tap" — leave it in preview.
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || e.timeStamp - s.t > 500) return;
+    // Links and task checkboxes have their own tap behavior; don't hijack them.
+    if ((e.target as HTMLElement | null)?.closest("a, input")) return;
+    quickEditActive = true;
+    kbWasOpen = false;
+    focusOnMount = true;
+    setMode("source");
+  }
+
+  // Focus the editor once it has mounted from the quick-edit tap, which raises
+  // the soft keyboard. (The Editor only exists in source mode, so this can't run
+  // inside the tap handler.)
+  $effect(() => {
+    if (focusOnMount && mode === "source" && editorView) {
+      focusOnMount = false;
+      editorView.focus();
+    }
+  });
+
+  // While a quick edit is active, returning the keyboard to hidden returns to
+  // preview — but only after it was actually raised, so we don't bounce back
+  // before it appears.
+  $effect(() => {
+    if (!quickEditActive) return;
+    if (kbOpen) {
+      kbWasOpen = true;
+    } else if (kbWasOpen) {
+      quickEditActive = false;
+      kbWasOpen = false;
+      if (mode === "source") setMode("preview");
+    }
+  });
 
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
@@ -448,7 +500,12 @@
       </div>
     </aside>
 
-    <main bind:this={mainEl} class="min-w-0 flex-1 overflow-auto">
+    <main
+      bind:this={mainEl}
+      class="min-w-0 flex-1 overflow-auto"
+      onpointerdown={onPreviewPointerDown}
+      onpointerup={onPreviewPointerUp}
+    >
       {#if !activePath}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
           <NotebookPen size={40} class="opacity-30" />
