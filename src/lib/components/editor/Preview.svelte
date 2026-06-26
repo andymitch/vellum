@@ -64,6 +64,7 @@
   // dynamically imported the first time a diagram actually appears.
   let container: HTMLDivElement;
   let mermaidLib: Mermaid | undefined;
+  let mermaidThemeDark: boolean | undefined; // theme mermaid was last initialized for
   let renderSeq = 0;
 
   async function renderDiagram(mermaid: Mermaid, src: string, id: string) {
@@ -77,6 +78,10 @@
   }
 
   async function renderMermaid() {
+    // Claim a sequence number up front (before any early return or await) so an
+    // in-flight render always sees a newer renderSeq and aborts — even when the
+    // new pass has no diagrams to render.
+    const seq = ++renderSeq;
     const root = container;
     if (!root) return;
     // Unrendered fences from a fresh {@html}, plus already-rendered diagrams
@@ -85,35 +90,38 @@
     const themed = [...root.querySelectorAll<HTMLElement>(".mermaid-diagram[data-src]")];
     if (!fresh.length && !themed.length) return;
 
-    const seq = ++renderSeq;
     if (!mermaidLib) {
       mermaidLib = (await import("mermaid")).default;
+      if (seq !== renderSeq) return;
     }
     const mermaid = mermaidLib;
-    // securityLevel "strict" sanitizes the rendered SVG; we still own the input.
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      theme: theme.dark ? "dark" : "default",
-    });
-    if (seq !== renderSeq) return; // a newer render superseded this one
+    // initialize() resets mermaid's global state, so only call it when the theme
+    // actually changed — calling it on every render can clobber a concurrent
+    // render. securityLevel "strict" sanitizes the SVG; we still own the input.
+    const dark = theme.dark;
+    if (mermaidThemeDark !== dark) {
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+      mermaidThemeDark = dark;
+    }
 
     let i = 0;
+    // Render to a string first, then re-check seq before touching live DOM, so a
+    // superseded render never flashes stale SVG into an on-screen node.
     for (const codeEl of fresh) {
       const pre = codeEl.closest("pre");
       if (!pre) continue;
-      const src = codeEl.textContent ?? "";
+      const svg = await renderDiagram(mermaid, codeEl.textContent ?? "", `mmd-${seq}-${i++}`);
+      if (seq !== renderSeq) return;
       const wrap = document.createElement("div");
       wrap.className = "mermaid-diagram";
-      wrap.dataset.src = src;
-      wrap.innerHTML = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
-      if (seq !== renderSeq) return;
+      wrap.dataset.src = codeEl.textContent ?? "";
+      wrap.innerHTML = svg;
       pre.replaceWith(wrap);
     }
     for (const wrap of themed) {
-      const src = wrap.dataset.src ?? "";
-      wrap.innerHTML = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
+      const svg = await renderDiagram(mermaid, wrap.dataset.src ?? "", `mmd-${seq}-${i++}`);
       if (seq !== renderSeq) return;
+      wrap.innerHTML = svg;
     }
   }
 
