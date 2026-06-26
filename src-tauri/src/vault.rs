@@ -440,7 +440,12 @@ async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
 }
 
 async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
-    Ok(doc.get_one(Query::key_exact(key.as_bytes())).await?.is_some())
+    // single_latest_per_key drops tombstones, and content_len 0 catches any
+    // residual empty record — so a *deleted* note's key counts as free. A raw
+    // key_exact (no single_latest_per_key) would still see the tombstone and
+    // make free_key append " 1" to a recreated name (#48 ghost file).
+    let query = Query::single_latest_per_key().key_exact(key.as_bytes());
+    Ok(doc.get_one(query).await?.is_some_and(|e| e.content_len() > 0))
 }
 
 /// Find a free key by inserting/incrementing a numeric suffix before the
@@ -1015,6 +1020,28 @@ mod tests {
         doc.del(node.author, b"a/b.md".to_vec()).await.expect("del");
         let keys2 = list_keys(&doc).await.expect("list2");
         assert!(!keys2.contains(&"a/b.md".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A deleted note's name is free again: recreating it reuses the name rather
+    // than appending " 1" against the tombstone (#48).
+    #[tokio::test]
+    async fn deleted_key_is_free() {
+        let dir = std::env::temp_dir().join(format!("notes-ghost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+
+        doc.set_bytes(node.author, b"Backlog.md".to_vec(), encode("x"))
+            .await
+            .expect("set");
+        assert!(key_exists(&doc, "Backlog.md").await.expect("exists"));
+
+        doc.del(node.author, b"Backlog.md".to_vec()).await.expect("del");
+        assert!(!key_exists(&doc, "Backlog.md").await.expect("exists2"));
+        // The recreated note reuses the original name, no " 1" suffix.
+        assert_eq!(free_key(&doc, "Backlog.md").await.expect("free"), "Backlog.md");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
