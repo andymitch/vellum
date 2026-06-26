@@ -138,7 +138,69 @@
   let quickEditActive = $state(false);
   let kbWasOpen = false; // the keyboard has been up since this quick edit began
   let focusOnMount = false; // focus the editor once it mounts after the tap
+  let quickEditCaret: number | null = null; // source offset for the tapped point
   let tapStart: { x: number; y: number; t: number } | null = null;
+
+  // Caret position under a viewport point, across engines (Chromium/WebKit).
+  function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
+    type DocWithCaret = Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    };
+    const d = document as DocWithCaret;
+    const p = d.caretPositionFromPoint?.(x, y);
+    if (p) return { node: p.offsetNode, offset: p.offset };
+    const r = document.caretRangeFromPoint?.(x, y);
+    return r ? { node: r.startContainer, offset: r.startOffset } : null;
+  }
+
+  // Reduce text to a lowercase alphanumeric stream, mapping every run of other
+  // characters (whitespace, punctuation, and — for the source — markdown markers)
+  // to a single space. Returns the stream plus a map back to source offsets, so a
+  // match in the stream can be translated to a caret position in `content`.
+  function normalizeWithMap(src: string): { norm: string; map: number[] } {
+    const map: number[] = [];
+    let norm = "";
+    let pendingSpace = false;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      if (/[a-z0-9]/i.test(c)) {
+        if (pendingSpace && norm.length) {
+          norm += " ";
+          map.push(i);
+        }
+        pendingSpace = false;
+        norm += c.toLowerCase();
+        map.push(i);
+      } else {
+        pendingSpace = true;
+      }
+    }
+    return { norm, map };
+  }
+
+  // Map a tapped point in the preview to a caret offset in the markdown source.
+  // The preview's text has markdown stripped, so we normalize both to a plain
+  // alphanumeric stream and find the tapped block's visible text-up-to-caret in
+  // the source, landing the caret just after the matched run. Returns null when
+  // it can't map (caller then just focuses at the existing position).
+  function sourceOffsetFromPoint(x: number, y: number): number | null {
+    const root = mainEl?.querySelector<HTMLElement>(".md-preview");
+    const caret = caretFromPoint(x, y);
+    if (!root || !caret || !root.contains(caret.node)) return null;
+    let block: HTMLElement | null =
+      caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
+    while (block && block.parentElement && block.parentElement !== root) block = block.parentElement;
+    if (!block) return null;
+    const r = document.createRange();
+    r.selectNodeContents(block);
+    r.setEnd(caret.node, caret.offset);
+    const needle = r.toString().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (!needle) return null;
+    const { norm, map } = normalizeWithMap(content);
+    const at = norm.indexOf(needle);
+    if (at < 0) return null;
+    return map[at + needle.length - 1] + 1;
+  }
 
   function onPreviewPointerDown(e: PointerEvent) {
     if (!(mobile && editorSettings.quickEdit && mode === "preview")) return;
@@ -152,6 +214,8 @@
     if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || e.timeStamp - s.t > 500) return;
     // Links and task checkboxes have their own tap behavior; don't hijack them.
     if ((e.target as HTMLElement | null)?.closest("a, input")) return;
+    // Map the tap to a source caret before we leave preview (DOM is still here).
+    quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
     quickEditActive = true;
     kbWasOpen = false;
     focusOnMount = true;
@@ -164,7 +228,15 @@
   $effect(() => {
     if (focusOnMount && mode === "source" && editorView) {
       focusOnMount = false;
-      editorView.focus();
+      const v = editorView;
+      v.focus();
+      // Place the caret where the user tapped in the preview (#41). Falls back
+      // to the editor's existing position when the tap couldn't be mapped.
+      if (quickEditCaret != null) {
+        const pos = Math.max(0, Math.min(quickEditCaret, v.state.doc.length));
+        v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+      }
+      quickEditCaret = null;
     }
   });
 
