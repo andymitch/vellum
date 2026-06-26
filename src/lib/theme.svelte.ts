@@ -17,7 +17,7 @@ export const PALETTES: Palette[] = [
   { id: "gruvbox", name: "Gruvbox" },
   { id: "catppuccin", name: "Catppuccin" },
   { id: "solarized", name: "Solarized" },
-  { id: "tokyo-night", name: "Tokyo Night" },
+  { id: "terminal", name: "Terminal" },
 ];
 
 // Body/UI typeface. `stack` is assigned to the --font-sans CSS var on <html>.
