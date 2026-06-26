@@ -301,6 +301,11 @@
     session.vault = vault;
     session.path = path;
     session.scroll = restoreRatio;
+    // Clear the previous note's text before the (async) read so the new note
+    // never briefly shows the old content while readNote resolves (#44). Set
+    // lastLoaded too so the autosave effect doesn't treat this as an edit.
+    content = "";
+    lastLoaded = "";
     content = await readNote(vault, path);
     lastLoaded = content;
     openToken++;
