@@ -8,6 +8,8 @@
         forgetVault,
         listTree,
         readNote,
+        createNote,
+        writeNote,
         createFolder,
         renamePath,
         deletePath,
@@ -345,6 +347,39 @@
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+    // First-run starter pack (#51): seed a "My Vault" with a welcome note so a
+    // brand-new install isn't an empty void. Gated by a localStorage flag so it
+    // runs once — deleting everything later won't regenerate it.
+    const SEEDED_KEY = "notes-seeded";
+    const WELCOME_NOTE = `# Hello Vellum 👋
+
+Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.
+
+## The basics
+- Notes are **Markdown**. Toggle **source ⟷ preview** with the buttons in the top bar.
+- Organize notes into folders inside a **vault** — make as many vaults as you like.
+- Everything saves automatically as you type.
+
+## Sync across devices
+Tap **Share** on a vault to show a QR code, then **Join** it from another device. Edits flow both ways automatically — over the internet or the same Wi-Fi.
+
+## Markdown quick reference
+- \`**bold**\`, \`*italic*\`, \`\\\`code\\\`\`
+- \`- [ ]\` task list
+- \`> quote\`, \`# headings\`
+
+Delete this note whenever you're ready. Happy writing!
+`;
+
+    async function seedStarterPack() {
+        const v = await createVault("My Vault");
+        const path = await createNote(v.id, "Hello Vellum.md");
+        await writeNote(v.id, path, WELCOME_NOTE);
+        await refreshVaults();
+        await setActive(v.id);
+        onopen(v.id, path);
+    }
+
     onMount(() => {
         let unlisten: (() => void) | undefined;
         (async () => {
@@ -356,12 +391,22 @@
                     await sleep(250);
                 }
             }
-            // Restore the last-used vault if it still exists, else the first.
-            const want =
-                (session.vault && vaults.some((v) => v.id === session.vault)
-                    ? session.vault
-                    : vaults[0]?.id) ?? null;
-            if (want) await setActive(want);
+            // First run with no vaults: seed the starter pack once (#51).
+            if (!vaults.length && !localStorage.getItem(SEEDED_KEY)) {
+                localStorage.setItem(SEEDED_KEY, "1");
+                try {
+                    await seedStarterPack();
+                } catch {
+                    /* seeding is best-effort; don't block startup */
+                }
+            } else {
+                // Restore the last-used vault if it still exists, else the first.
+                const want =
+                    (session.vault && vaults.some((v) => v.id === session.vault)
+                        ? session.vault
+                        : vaults[0]?.id) ?? null;
+                if (want) await setActive(want);
+            }
             restoring = false;
             unlisten = await onVaultChanged((id) => {
                 if (id !== activeVault) return;
