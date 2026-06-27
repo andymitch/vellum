@@ -66,7 +66,7 @@
         ontree,
     }: {
         activePath?: string | null;
-        onopen: (vault: string, path: string) => void;
+        onopen: (vault: string, path: string, focus?: boolean) => void;
         onvaultchange: (vault: string | null) => void;
         // Notify the parent of the current tree (used to derive the folder list
         // for move/duplicate actions).
@@ -105,6 +105,10 @@
               kind: "text";
               title: string;
               value: string;
+              // Hold the soft keyboard open across the post-resolve async work
+              // (create + open) by handing focus to the keyboard-keeper input on
+              // submit, so a new note's editor inherits an already-open keyboard.
+              keep?: boolean;
               resolve: (v: string | null) => void;
           }
         | { kind: "confirm"; title: string; resolve: (v: boolean) => void }
@@ -123,10 +127,13 @@
               resolve: () => void;
           };
     let dialog = $state<Dialog | null>(null);
+    // Off-screen input that holds the soft keyboard open between a name dialog's
+    // submit and the new note's editor mounting (see resolveDialog).
+    let kbKeeper: HTMLInputElement | undefined;
 
-    const askText = (title: string, value = ""): Promise<string | null> =>
+    const askText = (title: string, value = "", keep = false): Promise<string | null> =>
         new Promise(
-            (resolve) => (dialog = { kind: "text", title, value, resolve }),
+            (resolve) => (dialog = { kind: "text", title, value, keep, resolve }),
         );
     const askJoin = (): Promise<string | null> =>
         new Promise(
@@ -187,6 +194,14 @@
 
     function resolveDialog(result: string | boolean | null) {
         const d = dialog;
+        // Before tearing the dialog input out of the DOM (which would blur it and
+        // let the soft keyboard start closing), hand focus to the off-screen
+        // keyboard-keeper. This runs inside the submit gesture, so the keyboard
+        // stays up through the async create/open that follows; the new note's
+        // editor then inherits it. Without this, Android drops the keyboard and
+        // the later editor.focus() can't reopen it (outside user activation).
+        if (d?.kind === "text" && d.keep && result && kbKeeper)
+            kbKeeper.focus({ preventScroll: true });
         dialog = null;
         if (!d) return;
         if (d.kind === "text" || d.kind === "join" || d.kind === "move")
@@ -290,7 +305,9 @@
     // Create a note in `dir` ("" = vault root). Filename and content are
     // independent, so we prompt for a name up front (createNote de-dupes).
     async function newNoteIn(vault: string, dir: string) {
-        const name = (await askText("New note name"))?.trim();
+        // keep=true: hold the keyboard open so the new note's editor gets focus
+        // with the keyboard already up (#50).
+        const name = (await askText("New note name", "", true))?.trim();
         if (!name) return;
         if (dir) expanded[dir] = true;
         await createAndOpenNote(vault, dir, name, onopen);
@@ -480,6 +497,20 @@ Delete this note whenever you're ready. Happy writing!
 </script>
 
 <svelte:window onclick={closeMenu} />
+
+<!-- Keyboard-keeper: focused on a name-dialog submit to hold the soft keyboard
+     open until the new note's editor mounts (see resolveDialog / #50). Off-screen
+     and out of the tab order; never receives real input. -->
+<input
+    bind:this={kbKeeper}
+    tabindex="-1"
+    aria-hidden="true"
+    autocapitalize="off"
+    autocorrect="off"
+    autocomplete="off"
+    spellcheck="false"
+    style="position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0;"
+/>
 
 <div class="flex h-full flex-col">
     <!-- Vault selector + new note/folder -->

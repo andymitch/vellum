@@ -289,7 +289,11 @@
   // All note paths in the open vault, for resolving [[internal links]].
   const notePaths = $derived([...walk(tree)].filter((n) => !n.is_dir).map((n) => n.path));
 
-  async function handleOpen(vault: string, path: string) {
+  // Set true when opening a brand-new note: force source mode and focus the
+  // editor once it mounts (#50).
+  let focusNewNote = false;
+
+  async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
@@ -301,6 +305,12 @@
     session.vault = vault;
     session.path = path;
     session.scroll = restoreRatio;
+    // A new note always opens in source mode so the user can type right away.
+    if (focus && mode !== "source") {
+      mode = "source";
+      session.mode = "source";
+    }
+    focusNewNote = focus;
     // Clear the previous note's text before the (async) read so the new note
     // never briefly shows the old content while readNote resolves (#44). Set
     // lastLoaded too so the autosave effect doesn't treat this as an edit.
@@ -311,6 +321,9 @@
     openToken++;
     if (mobile) setSidebar(false);
     await tick();
+    // The remounted Editor read focusNewNote via its focusOnMount prop and
+    // focused itself; clear the flag so the next (non-new) open doesn't.
+    focusNewNote = false;
     applyScrollRestore(mode, restoreRatio);
   }
 
@@ -425,10 +438,15 @@
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
-      if (fresh !== lastLoaded) {
-        content = fresh;
-        lastLoaded = fresh;
-      }
+      if (fresh === lastLoaded) return;
+      // A remote key update can arrive before its content blob finishes
+      // downloading; read_note then returns empty (unwrap_or_default). Don't
+      // wipe a non-empty note on that transient — the blob-complete event fires
+      // next with the real content. Without this, the open editor is cleared and
+      // refilled, collapsing the caret/scroll to the top (issue #25).
+      if (fresh === "" && lastLoaded !== "") return;
+      content = fresh;
+      lastLoaded = fresh;
     }).then((u) => (unlisten = u));
     return () => {
       mq.removeEventListener("change", onMq);
@@ -637,6 +655,7 @@
             bind:view={editorView}
             bind:focused={editorFocused}
             {notePaths}
+            focusOnMount={focusNewNote}
           />
         {/key}
       {/if}

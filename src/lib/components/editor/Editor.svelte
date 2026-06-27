@@ -45,6 +45,7 @@
     view = $bindable<EditorView | undefined>(undefined),
     focused = $bindable(false),
     notePaths = [],
+    focusOnMount = false,
   }: {
     value?: string;
     // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
@@ -52,6 +53,10 @@
     focused?: boolean;
     // Vault note paths, for [[wiki link]] autocomplete.
     notePaths?: string[];
+    // Focus the editor as soon as it mounts (a new note opened — #50). Done here
+    // (not via an effect in the parent) so it targets this fresh instance at the
+    // right moment, transferring the soft keyboard the name dialog held open.
+    focusOnMount?: boolean;
   } = $props();
 
   let container: HTMLDivElement;
@@ -143,6 +148,10 @@
       }),
     });
 
+    // New note: focus now, on this fresh instance — the keyboard is already up
+    // (held by the name dialog's keeper) and transfers here.
+    if (focusOnMount) view.focus();
+
     return () => {
       view?.destroy();
       view = undefined;
@@ -176,12 +185,34 @@
 
   // Push external `value` changes into the editor. Guarded against the echo
   // from our own updateListener so it never dispatches mid-typing.
+  //
+  // An external change here is an incoming P2P sync update to the open note, so
+  // apply it as a *minimal* edit — keep the common prefix/suffix and replace
+  // only the differing middle. CodeMirror then maps the caret, selection, and
+  // scroll position through the change instead of resetting them, so a peer
+  // who is actively editing isn't disrupted (issue #25). Replacing the whole
+  // doc (from 0 to length) collapsed the caret to the top and reset scroll.
   $effect(() => {
-    if (view && value !== view.state.doc.toString()) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: value },
-      });
+    const next = value ?? "";
+    if (!view) return;
+    const cur = view.state.doc.toString();
+    if (next === cur) return;
+
+    let start = 0;
+    const max = Math.min(cur.length, next.length);
+    while (start < max && cur[start] === next[start]) start++;
+    let endCur = cur.length;
+    let endNext = next.length;
+    while (endCur > start && endNext > start && cur[endCur - 1] === next[endNext - 1]) {
+      endCur--;
+      endNext--;
     }
+
+    view.dispatch({
+      changes: { from: start, to: endCur, insert: next.slice(start, endNext) },
+      // A remote edit shouldn't yank the viewport to the changed region.
+      scrollIntoView: false,
+    });
   });
 </script>
 
