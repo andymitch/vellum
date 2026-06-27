@@ -10,7 +10,7 @@ use tauri::Manager;
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext(
-    mut env: jni::JNIEnv,
+    env: jni::JNIEnv,
     _class: jni::objects::JClass,
     context: jni::objects::JObject,
 ) {
@@ -38,6 +38,18 @@ pub extern "system" fn Java_com_andymitch_vellum_MainActivity_notifyNetworkChang
     _class: jni::objects::JClass,
 ) {
     vault::notify_network_change();
+}
+
+/// Called from MainActivity.onResume. The OS freezes the process while
+/// backgrounded, leaving iroh's sockets/relay connections stale with no native
+/// signal. Re-arm sync so it recovers on foreground without a restart.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_andymitch_vellum_MainActivity_notifyResume(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) {
+    vault::on_resume();
 }
 
 /// Sync the native system-bar icon contrast to the web theme. The bars are

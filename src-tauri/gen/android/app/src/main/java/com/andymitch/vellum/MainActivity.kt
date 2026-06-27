@@ -18,12 +18,21 @@ class MainActivity : TauriActivity() {
   // it re-probes and migrates connections on wifi <-> cellular handoff.
   private external fun notifyNetworkChange()
 
+  // Tells iroh to re-arm sync after returning from the background, where the OS
+  // froze the process and its sockets/relay connections went stale (issues #49, #5).
+  private external fun notifyResume()
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     instance = this
     initAndroidContext(applicationContext)
     watchNetworkChanges()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    notifyResume()
   }
 
   override fun onDestroy() {
