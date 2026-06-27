@@ -425,10 +425,15 @@
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
       const fresh = await readNote(activeVault, activePath);
-      if (fresh !== lastLoaded) {
-        content = fresh;
-        lastLoaded = fresh;
-      }
+      if (fresh === lastLoaded) return;
+      // A remote key update can arrive before its content blob finishes
+      // downloading; read_note then returns empty (unwrap_or_default). Don't
+      // wipe a non-empty note on that transient — the blob-complete event fires
+      // next with the real content. Without this, the open editor is cleared and
+      // refilled, collapsing the caret/scroll to the top (issue #25).
+      if (fresh === "" && lastLoaded !== "") return;
+      content = fresh;
+      lastLoaded = fresh;
     }).then((u) => (unlisten = u));
     return () => {
       mq.removeEventListener("change", onMq);
