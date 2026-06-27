@@ -28,24 +28,39 @@ const OTHER = "Other";
 const categoryFor = (labels) =>
   CATEGORIES.find((c) => labels.some((l) => c.labels.includes(l)))?.title ?? OTHER;
 
-// Collect PR numbers merged in PREV..TAG (or all history for the first release)
-// by parsing commit messages — robust to history rewrites (which break GitHub's
-// commit↔PR association). Matches merge commits ("Merge pull request #N") and
-// squash commits ("… (#N)" on the first line).
+// Collect merged work in PREV..TAG (or all history for the first release) by
+// parsing commit messages — robust to history rewrites (which break GitHub's
+// commit↔PR association). Three merge shapes are recognized:
+//   - "Merge pull request #N …"  → PR #N (GitHub PR)
+//   - "… (#N)" on the first line → PR #N (squash merge)
+//   - "Merge branch 'feat/N-…'"  → issue #N (local branch merge, no PR)
+// The last one matters because branches are often merged locally, with no PR —
+// those carry no PR number, so we fall back to the issue the branch name names.
 const messages = PREV
   ? ghJson(["api", `repos/${REPO}/compare/${PREV}...${TAG}`, "--jq", "[.commits[].commit.message]"])
   : ghJson(["api", `repos/${REPO}/commits`, "--paginate", "--jq", "[.[].commit.message]"]);
 
 const prNums = new Set();
+const issueNums = new Set();
 for (const msg of messages) {
   const firstLine = msg.split("\n")[0];
-  const m = firstLine.match(/Merge pull request #(\d+)/) || firstLine.match(/\(#(\d+)\)\s*$/);
-  if (m) prNums.add(Number(m[1]));
+  const pr = firstLine.match(/Merge pull request #(\d+)/) || firstLine.match(/\(#(\d+)\)\s*$/);
+  if (pr) {
+    prNums.add(Number(pr[1]));
+    continue;
+  }
+  // Local branch merge, e.g. "Merge branch 'feat/16-internal-links'" — the
+  // leading number is the issue the branch addresses.
+  const br = firstLine.match(/Merge branch '[a-z]+\/(\d+)-/);
+  if (br) issueNums.add(Number(br[1]));
 }
 
 const sections = {};
+// Issues a PR already closes — so the same work merged via both a PR and a
+// later local branch merge isn't listed twice.
+const coveredByPr = new Set();
 for (const n of [...prNums].sort((a, b) => a - b)) {
-  const query = `query{repository(owner:"${OWNER}",name:"${NAME}"){pullRequest(number:${n}){title author{login} labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{labels(first:20){nodes{name}}}}}}}`;
+  const query = `query{repository(owner:"${OWNER}",name:"${NAME}"){pullRequest(number:${n}){title author{login} labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number labels(first:20){nodes{name}}}}}}}`;
   let pr;
   try {
     pr = ghJson(["api", "graphql", "-f", `query=${query}`]).data.repository.pullRequest;
@@ -53,6 +68,7 @@ for (const n of [...prNums].sort((a, b) => a - b)) {
     continue;
   }
   if (!pr) continue;
+  for (const i of pr.closingIssuesReferences.nodes) coveredByPr.add(i.number);
   const prLabels = pr.labels.nodes.map((x) => x.name);
   const issueLabels = pr.closingIssuesReferences.nodes.flatMap((i) =>
     i.labels.nodes.map((x) => x.name),
@@ -62,6 +78,21 @@ for (const n of [...prNums].sort((a, b) => a - b)) {
   if (cat === OTHER) cat = categoryFor(prLabels);
   const author = pr.author?.login ? ` @${pr.author.login}` : "";
   (sections[cat] ??= []).push(`- ${pr.title} (#${n})${author}`);
+}
+
+// Branch-merge issues: categorize and title straight from the issue.
+for (const n of [...issueNums].sort((a, b) => a - b)) {
+  if (coveredByPr.has(n)) continue;
+  const query = `query{repository(owner:"${OWNER}",name:"${NAME}"){issue(number:${n}){title labels(first:20){nodes{name}}}}}`;
+  let issue;
+  try {
+    issue = ghJson(["api", "graphql", "-f", `query=${query}`]).data.repository.issue;
+  } catch {
+    continue;
+  }
+  if (!issue) continue;
+  const cat = categoryFor(issue.labels.nodes.map((x) => x.name));
+  (sections[cat] ??= []).push(`- ${issue.title} (#${n})`);
 }
 
 let md = "";
