@@ -20,6 +20,7 @@
   import { session } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import { editorSettings } from "$lib/editor-settings.svelte";
+  import { initLiveSync } from "$lib/live-sync.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -100,6 +101,9 @@
   onMount(() => {
     if (isMacDesktop) checkForUpdate();
   });
+  // Re-apply the Background sync setting on launch (re-arm the hub + restart the
+  // platform keep-alive if it was left enabled).
+  onMount(() => initLiveSync());
   onMount(() => {
     if (!isMacDesktop) return;
     const w = getCurrentWindow();

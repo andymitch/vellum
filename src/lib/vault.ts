@@ -35,5 +35,11 @@ export const deletePath = (vault: string, path: string, isDir: boolean) =>
   invoke<void>("delete_path", { vault, path, isDir });
 export const watchVault = (vault: string) => invoke<void>("watch_vault", { vault });
 
+// Toggle background "live sync": arm every vault as an always-on hub and flip
+// the platform keep-alive (desktop tray + launch-at-login / Android foreground
+// service) so syncing continues with no window open / while backgrounded.
+export const setBackgroundSync = (enabled: boolean) =>
+  invoke<void>("set_background_sync", { enabled });
+
 export const onVaultChanged = (cb: (vaultId: string) => void): Promise<UnlistenFn> =>
   listen<string>("vault-changed", (e) => cb(e.payload));

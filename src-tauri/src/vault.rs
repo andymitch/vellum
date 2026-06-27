@@ -833,32 +833,35 @@ pub async fn delete_path(
     )
 }
 
-/// Start emitting `vault-changed` events when a vault's document mutates.
-#[tauri::command]
-pub async fn watch_vault(
-    app: AppHandle,
-    state: State<'_, VaultManager>,
-    vault: String,
-) -> Result<(), String> {
-    let node = state.node().await?;
-    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
+/// Begin live-syncing a vault and emitting `vault-changed` on every mutation:
+/// dial its known peers, subscribe to the doc, and spawn a task that re-emits
+/// changes and learns new peers. Idempotent — a vault already armed is a no-op,
+/// so it's safe to call from both `watch_vault` (the open vault) and
+/// `set_live_sync` (every vault).
+async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<(), String> {
     {
         let mut watched = node.watched.lock().unwrap();
         if !watched.insert(nsid) {
-            return Ok(()); // already watching
+            return Ok(()); // already armed
         }
     }
-    let doc = open(node, &vault).await.map_err(|e| e.to_string())?;
+    let doc = node
+        .docs
+        .open(nsid)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "vault not found".to_string())?;
     // Resume live sync by actively dialing the vault's known peers by EndpointId.
     // (start_sync with an empty peer list only listens — it doesn't re-initiate,
     // which is why sync didn't recover after a restart.) Discovery resolves each
     // peer's current relay + addresses, so this works across network changes.
     let _ = doc.start_sync(peer_addrs(&node.peers, nsid)).await;
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
-    let vault_id = vault.clone();
+    let vault_id = nsid.to_string();
     let peers = node.peers.clone();
     let dir = node.dir.clone();
     let our_id = node.our_id;
+    let app = app.clone();
     // Initial nudge: on join the vault name (and other meta) can finish syncing
     // in the gap between join reading it and this subscription starting, so that
     // ContentReady event is missed. Emit once now so the UI re-reads whatever
@@ -882,6 +885,46 @@ pub async fn watch_vault(
             let _ = app.emit("vault-changed", &vault_id);
         }
     });
+    Ok(())
+}
+
+/// Start emitting `vault-changed` events when a vault's document mutates.
+#[tauri::command]
+pub async fn watch_vault(
+    app: AppHandle,
+    state: State<'_, VaultManager>,
+    vault: String,
+) -> Result<(), String> {
+    let node = state.node().await?;
+    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
+    arm_vault(&app, node, nsid).await
+}
+
+/// Background "live sync" hub mode: arm *every* vault (not just the currently-
+/// open one) so this device carries all vaults for peers that are only
+/// intermittently online. An always-on device (typically a desktop) thus becomes
+/// the rendezvous through which intermittent peers converge without ever
+/// overlapping each other.
+///
+/// Called by the `set_background_sync` command (see lib.rs) when the user enables
+/// Background sync, and once on launch if it was left on. This is only the iroh
+/// side — keeping the process alive in the background is the platform layer's job
+/// (Android foreground service / desktop tray + autostart), driven by the same
+/// toggle. Sync stops naturally when the process exits, so disabling needs no
+/// teardown here: already-armed vaults keep running harmlessly until exit, and
+/// nothing dials out once the process is gone.
+pub async fn arm_all_vaults(app: &AppHandle, mgr: &VaultManager) -> Result<(), String> {
+    let node = mgr.node().await?;
+    let mut stream = node.docs.list().await.map_err(|e| e.to_string())?;
+    let mut ids = Vec::new();
+    while let Some(item) = stream.next().await {
+        if let Ok((id, _cap)) = item {
+            ids.push(id);
+        }
+    }
+    for id in ids {
+        let _ = arm_vault(app, node, id).await;
+    }
     Ok(())
 }
 

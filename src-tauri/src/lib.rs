@@ -2,6 +2,15 @@ mod vault;
 
 use tauri::Manager;
 
+// The app class loader, cached on the Android UI thread during initAndroidContext.
+// Worker threads (async Tauri commands run on tokio) JNI-attach with the *system*
+// class loader, which can't resolve app classes by name — so we resolve them via
+// this loader's loadClass() instead. (Sync commands run on the UI thread and can
+// FindClass directly, which is why set_dark_mode works by name.)
+#[cfg(target_os = "android")]
+static APP_CLASS_LOADER: std::sync::OnceLock<jni::objects::GlobalRef> =
+    std::sync::OnceLock::new();
+
 /// Called from MainActivity.onCreate (Kotlin `external fun`). Tauri's Android
 /// runtime never populates the `ndk-context` crate global, so libraries that
 /// read it (iroh's network monitor) panic with "android context was not
@@ -10,13 +19,27 @@ use tauri::Manager;
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext(
-    env: jni::JNIEnv,
+    mut env: jni::JNIEnv,
     _class: jni::objects::JClass,
     context: jni::objects::JObject,
 ) {
     use jni::objects::JObject;
     let Ok(vm) = env.get_java_vm() else { return };
     let Ok(global) = env.new_global_ref(&context) else { return };
+    // Cache the app class loader (we're on the UI thread here) so worker threads
+    // can resolve app classes by name via loadClass — see APP_CLASS_LOADER.
+    if let Ok(loader) = env.call_method(
+        &context,
+        "getClassLoader",
+        "()Ljava/lang/ClassLoader;",
+        &[],
+    ) {
+        if let Ok(obj) = loader.l() {
+            if let Ok(g) = env.new_global_ref(&obj) {
+                let _ = APP_CLASS_LOADER.set(g);
+            }
+        }
+    }
     // SAFETY: vm pointer is valid for the process; the context global ref is
     // leaked below so it outlives all readers.
     unsafe {
@@ -110,6 +133,89 @@ fn get_material_you() -> Option<String> {
     None
 }
 
+// Desktop: whether closing the window should hide to the tray (keep syncing)
+// instead of quitting. Mirrors the Background sync setting; see set_background_sync.
+#[cfg(desktop)]
+static LIVE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Android: ask MainActivity to start/stop the foreground service that keeps the
+// process (and thus the iroh node) alive while the app is backgrounded.
+#[cfg(target_os = "android")]
+// Start/stop the Android foreground service via MainActivity.setBackgroundSync.
+// Resolves the class through the cached app class loader so it works from any
+// thread (async commands run on tokio workers whose system class loader can't
+// find app classes by name).
+#[cfg(target_os = "android")]
+fn set_android_background_service(enabled: bool) {
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let Some(loader) = APP_CLASS_LOADER.get() else {
+        tracing::warn!("no cached app classloader");
+        return;
+    };
+    let res = (|| -> jni::errors::Result<()> {
+        let name = env.new_string("com.andymitch.vellum.MainActivity")?;
+        let class = env
+            .call_method(
+                loader.as_obj(),
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[jni::objects::JValue::Object(name.as_ref())],
+            )?
+            .l()?;
+        let class = jni::objects::JClass::from(class);
+        env.call_static_method(
+            &class,
+            "setBackgroundSync",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(enabled as u8)],
+        )?;
+        Ok(())
+    })();
+    // Clear any pending Java exception so it doesn't crash on return to the JVM.
+    if res.is_err() {
+        let _ = env.exception_clear();
+    }
+}
+
+/// Toggle background "live sync" (the Background sync setting). Arms every vault
+/// so this device is an always-on hub, then flips the platform keep-alive that
+/// lets it keep syncing with no window open / while backgrounded:
+///   - desktop: closing the window hides to the tray instead of quitting, and
+///     Vellum is registered to launch at login (so a desktop hub survives reboots).
+///   - Android: a foreground service holds the process alive in the background.
+/// The frontend calls this on toggle and once on launch if it was left enabled.
+#[tauri::command]
+async fn set_background_sync(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, vault::VaultManager>,
+    enabled: bool,
+) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        use std::sync::atomic::Ordering;
+        use tauri_plugin_autostart::ManagerExt;
+        LIVE_SYNC.store(enabled, Ordering::Relaxed);
+        let autostart = app.autolaunch();
+        let _ = if enabled {
+            autostart.enable()
+        } else {
+            autostart.disable()
+        };
+    }
+    #[cfg(target_os = "android")]
+    set_android_background_service(enabled);
+    if enabled {
+        vault::arm_all_vaults(&app, state.inner()).await?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
@@ -152,7 +258,25 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        // Launch at login (toggled by Background sync) so an always-on desktop
+        // stays a sync hub across reboots. The "--autostart" arg lets us start
+        // hidden to the tray on a login launch (handled in setup).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ));
+    // Closing the window quits by default. With Background sync on, hide to the
+    // tray instead so the iroh node keeps syncing in the background.
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        }
+    });
     builder
         .setup(|app| {
             // The iroh node is built lazily on first command (see vault.rs):
@@ -160,6 +284,15 @@ pub fn run() {
             // which happens once the event loop runs — after setup.
             let dir = app.path().app_data_dir()?;
             app.manage(vault::VaultManager::new(dir));
+            #[cfg(desktop)]
+            setup_tray(app)?;
+            // Started at login → stay hidden in the tray (don't pop a window).
+            #[cfg(desktop)]
+            if std::env::args().any(|a| a == "--autostart") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -178,7 +311,55 @@ pub fn run() {
             vault::rename_path,
             vault::delete_path,
             vault::watch_vault,
+            set_background_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// System-tray icon (desktop). Left-click shows the window; the menu offers
+// Open / Quit. Lets the app keep running headless with Background sync on.
+#[cfg(desktop)]
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "Open Vellum", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Vellum", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let show_main = |app: &tauri::AppHandle| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    };
+
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("Vellum")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(move |app, ev| match ev.id.as_ref() {
+            "show" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(w) = tray.app_handle().get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+    Ok(())
 }

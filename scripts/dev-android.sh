@@ -63,6 +63,12 @@ OUT="$(mktemp -d)/vellum-dev.apk"
 "$BT/zipalign" -f -p 4 "$UNSIGNED" "$OUT"
 "$BT/apksigner" sign --ks "$HOME/.android/debug.keystore" \
   --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android "$OUT"
-"$ANDROID_HOME/platform-tools/adb" install -r "$OUT"
+ADB="$ANDROID_HOME/platform-tools/adb"
+# `adb install` needs an explicit serial when more than one target is attached
+# (a wireless device can even show up twice via mDNS). Honor ANDROID_SERIAL if
+# set, else pick the first online device.
+SERIAL="${ANDROID_SERIAL:-$("$ADB" devices | awk '/\tdevice$/{print $1; exit}')}"
+[[ -n "$SERIAL" ]] || { echo "No connected device/emulator found." >&2; exit 1; }
+"$ADB" -s "$SERIAL" install -r "$OUT"
 
 echo "==> Done. 'Vellum Dev' installed alongside production Vellum."

@@ -43,6 +43,18 @@ class MainActivity : TauriActivity() {
   // Set system-bar icon contrast (light icons for dark UI, dark for light).
   // Bars are transparent and draw behind the web header, so contrast must
   // follow the in-app (web) theme, which Android can't see — JS pushes it here.
+  // Android 13+ gates the foreground-service notification behind a runtime
+  // permission. The service still runs if denied, but the user wouldn't see it,
+  // so request it when Background sync is first turned on.
+  private fun ensureNotificationPermission() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+          android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+      }
+    }
+  }
+
   private fun applySystemBarAppearance(lightIcons: Boolean) {
     runOnUiThread {
       val c = WindowCompat.getInsetsController(window, window.decorView)
@@ -59,6 +71,19 @@ class MainActivity : TauriActivity() {
     @JvmStatic
     fun setDarkMode(dark: Boolean) {
       instance?.applySystemBarAppearance(!dark)
+    }
+
+    // Called from Rust (set_background_sync command) via JNI. Starts/stops the
+    // foreground service that keeps the iroh node alive while backgrounded.
+    @JvmStatic
+    fun setBackgroundSync(enabled: Boolean) {
+      val ctx = instance ?: return
+      if (enabled) {
+        ctx.ensureNotificationPermission()
+        SyncService.start(ctx)
+      } else {
+        SyncService.stop(ctx)
+      }
     }
 
     // Called from Rust (get_material_you command) via JNI. Returns the device's
