@@ -118,13 +118,11 @@
           autocompletion({ override: [wikiLinkCompletions], icons: false }),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
           EditorView.lineWrapping,
-          // Treat the keyboard+toolbar occlusion (--editor-kb-inset; 0 when no
-          // keyboard) as invisible bottom space, so CM's own scroll-into-view
-          // on each keystroke keeps the caret clear of it.
-          EditorView.scrollMargins.of((v) => {
-            const h = parseInt(getComputedStyle(v.dom).getPropertyValue("--editor-kb-inset"));
-            return h ? { bottom: h } : null;
-          }),
+          // NB: no keyboard-inset scrollMargin here. The editor container is
+          // shrunk by --editor-kb-inset (Editor's wrapper) so the scroller sits
+          // entirely above the keyboard; a bottom scrollMargin on top of that
+          // would over-scroll scroll-into-view (e.g. tapping a line yanked the
+          // viewport toward the top — #66).
           themeConf.of(thingsTheme(theme.dark)),
           bracketsConf.of(editorSettings.closeBrackets ? closeBrackets() : []),
           attrsConf.of(EditorView.contentAttributes.of(contentAttrs())),
@@ -135,6 +133,20 @@
           }),
           // Track focus so the mobile toolbar only shows while editing.
           EditorView.domEventHandlers({
+            // Preserve scroll across a tap. The scroller sits entirely above the
+            // keyboard (the wrapper is shrunk by --editor-kb-inset), so tapping a
+            // visible line never needs a scroll — but on mobile the tap's
+            // selection transaction was resetting scrollTop to 0 (caret correct,
+            // viewport yanked to the top — #66). Snap scroll back to where it was.
+            pointerdown: (_e, v) => {
+              const top = v.scrollDOM.scrollTop;
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  if (v.scrollDOM.scrollTop !== top) v.scrollDOM.scrollTop = top;
+                }),
+              );
+              return false;
+            },
             focus: () => {
               focused = true;
               return false;
