@@ -185,4 +185,11 @@
   });
 </script>
 
-<div bind:this={container} class="h-full w-full overflow-hidden"></div>
+<!-- The bottom inset (soft keyboard + mobile toolbar; 0 otherwise) shrinks the
+     editor box so the scroller sits *above* the keyboard, instead of padding the
+     content (which created a tall empty region you could scroll/tap into, #66). -->
+<div
+  bind:this={container}
+  class="h-full w-full overflow-hidden"
+  style="padding-bottom: var(--editor-kb-inset, 0px);"
+></div>
