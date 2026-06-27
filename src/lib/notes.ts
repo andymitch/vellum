@@ -7,11 +7,13 @@ export async function createAndOpenNote(
   vault: string,
   dir: string,
   name: string,
-  open: (vault: string, path: string) => void,
+  open: (vault: string, path: string, focus?: boolean) => void,
 ): Promise<string> {
   const file = name.endsWith(".md") ? name : `${name}.md`;
   const path = await createNote(vault, dir ? `${dir}/${file}` : file);
-  open(vault, path);
+  // A brand-new note opens in source mode with the editor focused so the user
+  // can type immediately (#50).
+  open(vault, path, true);
   return path;
 }
 

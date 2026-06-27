@@ -45,6 +45,7 @@
     view = $bindable<EditorView | undefined>(undefined),
     focused = $bindable(false),
     notePaths = [],
+    focusOnMount = false,
   }: {
     value?: string;
     // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
@@ -52,6 +53,10 @@
     focused?: boolean;
     // Vault note paths, for [[wiki link]] autocomplete.
     notePaths?: string[];
+    // Focus the editor as soon as it mounts (a new note opened — #50). Done here
+    // (not via an effect in the parent) so it targets this fresh instance at the
+    // right moment, transferring the soft keyboard the name dialog held open.
+    focusOnMount?: boolean;
   } = $props();
 
   let container: HTMLDivElement;
@@ -142,6 +147,10 @@
         ],
       }),
     });
+
+    // New note: focus now, on this fresh instance — the keyboard is already up
+    // (held by the name dialog's keeper) and transfers here.
+    if (focusOnMount) view.focus();
 
     return () => {
       view?.destroy();
