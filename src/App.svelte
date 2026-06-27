@@ -290,8 +290,8 @@
   const notePaths = $derived([...walk(tree)].filter((n) => !n.is_dir).map((n) => n.path));
 
   // Set true when opening a brand-new note: force source mode and focus the
-  // editor once it mounts (#50).
-  let focusNewNote = false;
+  // editor once it mounts (#50). $state so the `focusOnMount` prop binding tracks it.
+  let focusNewNote = $state(false);
 
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
