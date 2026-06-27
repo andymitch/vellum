@@ -3832,6 +3832,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 

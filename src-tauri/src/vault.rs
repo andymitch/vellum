@@ -274,18 +274,22 @@ struct NetHandle {
 #[cfg(target_os = "android")]
 static NET: std::sync::OnceLock<NetHandle> = std::sync::OnceLock::new();
 
+// Re-probe the endpoint and re-dial every watched vault's peers. Shared by the
+// network-change and app-resume hooks: both leave iroh with stale sockets/paths
+// it can't detect on Android, and the recovery action is identical.
 #[cfg(target_os = "android")]
-pub fn notify_network_change() {
+fn rearm_sync() {
     let Some(net) = NET.get() else { return };
     let endpoint = net.endpoint.clone();
     let docs = net.docs.clone();
     let peers = net.peers.clone();
     let nsids: Vec<NamespaceId> = net.watched.lock().unwrap().iter().copied().collect();
     tauri::async_runtime::spawn(async move {
-        // Tell iroh the network changed so it re-probes (Android doesn't surface
-        // this natively). Discovery + relay then do the heavy lifting: re-dial
-        // each open vault's peers by EndpointId and let iroh resolve the new
-        // transport (relay after a wifi drop, direct addrs after holepunch).
+        tracing::info!(vaults = nsids.len(), "re-arming sync");
+        // Tell iroh to re-probe (Android doesn't surface this natively).
+        // Discovery + relay then do the heavy lifting: re-dial each open vault's
+        // peers by EndpointId and let iroh resolve the new transport (relay
+        // after a wifi drop, direct addrs after holepunch).
         endpoint.network_change().await;
         for nsid in nsids {
             if let Ok(Some(doc)) = docs.open(nsid).await {
@@ -293,6 +297,22 @@ pub fn notify_network_change() {
             }
         }
     });
+}
+
+/// Fired from Kotlin's ConnectivityManager callback on a default-network change
+/// (e.g. wifi <-> cellular handoff).
+#[cfg(target_os = "android")]
+pub fn notify_network_change() {
+    rearm_sync();
+}
+
+/// Fired from MainActivity.onResume. Android freezes the process while
+/// backgrounded; its UDP sockets and relay connections can go stale with no
+/// native signal to iroh, so sync stays dead until a full restart. Re-arm on
+/// foreground so it recovers without a kill+relaunch. (Issues #49, #5.)
+#[cfg(target_os = "android")]
+pub fn on_resume() {
+    rearm_sync();
 }
 
 /// Build the persistent iroh node (endpoint + blobs + gossip + docs on a router).
