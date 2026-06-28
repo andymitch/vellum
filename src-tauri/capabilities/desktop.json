@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop",
-  "description": "Desktop-only permissions: in-app auto-update.",
+  "description": "Desktop-only permissions: in-app auto-update + update prompt dialog.",
   "platforms": ["macOS", "windows", "linux"],
   "windows": ["main"],
-  "permissions": ["updater:default", "process:allow-restart"]
+  "permissions": ["updater:default", "process:allow-restart", "dialog:default"]
 }
