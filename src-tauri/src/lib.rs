@@ -138,13 +138,10 @@ fn get_material_you() -> Option<String> {
 #[cfg(desktop)]
 static LIVE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-// Android: ask MainActivity to start/stop the foreground service that keeps the
-// process (and thus the iroh node) alive while the app is backgrounded.
-#[cfg(target_os = "android")]
-// Start/stop the Android foreground service via MainActivity.setBackgroundSync.
-// Resolves the class through the cached app class loader so it works from any
-// thread (async commands run on tokio workers whose system class loader can't
-// find app classes by name).
+// Start/stop the Android foreground service (keeps the process + iroh node alive
+// while backgrounded) via MainActivity.setBackgroundSync. Resolves the class
+// through the cached app class loader so it works from any thread (async commands
+// run on tokio workers whose system class loader can't find app classes by name).
 #[cfg(target_os = "android")]
 fn set_android_background_service(enabled: bool) {
     let ctx = ndk_context::android_context();
@@ -269,6 +266,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         // Launch at login (toggled by Background sync) so an always-on desktop
         // stays a sync hub across reboots. The "--autostart" arg lets us start
         // hidden to the tray on a login launch (handled in setup).

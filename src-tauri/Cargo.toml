@@ -58,6 +58,9 @@ tauri-plugin-barcode-scanner = "2.4.5"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Native dialogs for the update prompt — window.confirm() is a no-op in the
+# Tauri v2 webview, so the updater needs this to actually ask the user.
+tauri-plugin-dialog = "2"
 # Launch Vellum at login so an always-on desktop stays a sync hub across reboots
 # (toggled with the Background sync setting).
 tauri-plugin-autostart = "2"
