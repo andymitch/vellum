@@ -8,6 +8,8 @@ import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
   // Implemented in Rust (libnotes_lib.so). Hands the JNI VM + app context to
@@ -79,6 +81,18 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  // Hide/show the status bar to follow the web chrome auto-hide on scroll (#85).
+  // Hidden bars return transiently on an edge swipe (BEHAVIOR_SHOW_TRANSIENT...).
+  private fun applyImmersive(hide: Boolean) {
+    runOnUiThread {
+      val c = WindowCompat.getInsetsController(window, window.decorView)
+      c.systemBarsBehavior =
+        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+      if (hide) c.hide(WindowInsetsCompat.Type.statusBars())
+      else c.show(WindowInsetsCompat.Type.statusBars())
+    }
+  }
+
   companion object {
     @Volatile private var instance: MainActivity? = null
 
@@ -87,6 +101,13 @@ class MainActivity : TauriActivity() {
     @JvmStatic
     fun setDarkMode(dark: Boolean) {
       instance?.applySystemBarAppearance(!dark)
+    }
+
+    // Called from Rust (set_immersive command) via JNI. `hidden` = hide the
+    // status bar (web chrome scrolled away).
+    @JvmStatic
+    fun setImmersive(hidden: Boolean) {
+      instance?.applyImmersive(hidden)
     }
 
     // Called from Rust (set_background_sync command) via JNI. Starts/stops the

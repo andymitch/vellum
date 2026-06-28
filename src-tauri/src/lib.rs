@@ -135,6 +135,32 @@ fn set_dark_mode(dark: bool) {
     let _ = dark;
 }
 
+/// Toggle Android immersive mode (hide/show the status bar) to follow the web
+/// chrome auto-hide on scroll (#85). When hidden, bars reappear transiently on a
+/// swipe from the edge. No-op off Android. Sync command → runs on the Android
+/// main thread, so the app class can be resolved by name (see set_dark_mode).
+#[tauri::command]
+fn set_immersive(hidden: bool) {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return;
+        };
+        let _ = env.call_static_method(
+            "com/andymitch/vellum/MainActivity",
+            "setImmersive",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(hidden as u8)],
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = hidden;
+}
+
 /// Fetch the device's Material You (Monet) tonal palette as a JSON string of
 /// `#RRGGBB` hex tones, for the frontend's "Dynamic" theme. Returns None off
 /// Android and on Android < 12 (no dynamic colors).
@@ -364,6 +390,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_dark_mode,
+            set_immersive,
             get_material_you,
             vault::list_vaults,
             vault::create_vault,

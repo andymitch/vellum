@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
@@ -84,6 +85,13 @@
     chromeHidden = false;
     lastChromeTop = 0;
   }
+  // Android: mirror the web chrome auto-hide to the system status bar so the
+  // reading surface is fully unobstructed (#85). No-op off Android (the command
+  // is gated there too); bars return on an edge swipe.
+  const isAndroidUA = /Android/.test(navigator.userAgent);
+  $effect(() => {
+    if (isAndroidUA) invoke("set_immersive", { hidden: chromeHidden }).catch(() => {});
+  });
 
   // Persist the open note's scroll (debounced) so launch can restore it. A
   // capturing listener catches scroll from either scroller (scroll doesn't
