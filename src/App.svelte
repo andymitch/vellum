@@ -218,7 +218,7 @@
     panLocked = false;
   }
   function onSwipeMove(e: TouchEvent) {
-    if (!panStart) return;
+    if (!panStart || e.touches.length !== 1) return;
     const t = e.touches[0];
     const dx = t.clientX - panStart.x;
     const dy = t.clientY - panStart.y;

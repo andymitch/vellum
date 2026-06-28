@@ -114,9 +114,10 @@
     sheetY = Math.max(0, dy);
   }
   function onSheetPointerUp() {
-    if (sheetDragging && sheetY > 120) {
-      open = false; // committed dismiss; fly-out plays from here
-    }
+    if (sheetDragging && sheetY > 120) open = false;
+    onSheetPointerCancel();
+  }
+  function onSheetPointerCancel() {
     sheetStart = null;
     sheetDragging = false;
     sheetY = 0;
@@ -151,7 +152,7 @@
         onpointerdown={onSheetPointerDown}
         onpointermove={onSheetPointerMove}
         onpointerup={onSheetPointerUp}
-        onpointercancel={onSheetPointerUp}
+        onpointercancel={onSheetPointerCancel}
       >
         <div class="mx-auto mt-2 h-1 w-9 rounded-full bg-muted-foreground/30 md:hidden"></div>
         <div class="flex items-center justify-between px-4 py-3">
