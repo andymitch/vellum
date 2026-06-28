@@ -201,6 +201,12 @@ async fn set_background_sync(
         use std::sync::atomic::Ordering;
         use tauri_plugin_autostart::ManagerExt;
         LIVE_SYNC.store(enabled, Ordering::Relaxed);
+        // Show the tray icon only while Background sync is on — it's the only
+        // time the app runs without a window, so an always-present icon would
+        // just be menu-bar clutter.
+        if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+            let _ = tray.set_visible(enabled);
+        }
         let autostart = app.autolaunch();
         let _ = if enabled {
             autostart.enable()
@@ -318,7 +324,9 @@ pub fn run() {
 }
 
 // System-tray icon (desktop). Left-click shows the window; the menu offers
-// Open / Quit. Lets the app keep running headless with Background sync on.
+// Open / Quit. Lets the app keep running headless with Background sync on. Built
+// hidden at startup and managed as app state; set_background_sync toggles its
+// visibility so the icon only appears while Background sync is enabled.
 #[cfg(desktop)]
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
@@ -336,7 +344,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         }
     };
 
-    TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("Vellum")
         .menu(&menu)
@@ -361,5 +369,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    // Hidden until Background sync turns it on (see set_background_sync).
+    let _ = tray.set_visible(false);
+    app.manage(tray);
     Ok(())
 }
