@@ -6,7 +6,7 @@
 
 import { setBackgroundSync } from "./vault";
 
-const KEY = "notes-live-sync";
+const KEY = "vellum-live-sync";
 
 let enabled = $state<boolean>(localStorage.getItem(KEY) === "1");
 

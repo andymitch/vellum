@@ -14,7 +14,7 @@ export type EditorSettings = {
   quickEdit: boolean;
 };
 
-const KEY = "notes-editor";
+const KEY = "vellum-editor";
 
 const DEFAULTS: EditorSettings = {
   autocomplete: false,

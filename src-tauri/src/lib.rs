@@ -269,9 +269,9 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Log filter. Desktop honors RUST_LOG (e.g. `iroh_gossip=debug` to debug
-    // cross-network sync); Android logs to logcat tag `noteslog` at a quiet
+    // cross-network sync); Android logs to logcat tag `vellum` at a quiet
     // default. Both fall back to warn + our own info.
-    const DEFAULT_LOG: &str = "warn,notes_lib=info";
+    const DEFAULT_LOG: &str = "warn,vellum_lib=info";
     #[cfg(target_os = "android")]
     let filter = tracing_subscriber::EnvFilter::new(DEFAULT_LOG);
     #[cfg(not(target_os = "android"))]
@@ -284,7 +284,7 @@ pub fn run() {
         use tracing_subscriber::util::SubscriberInitExt;
         let _ = tracing_subscriber::registry()
             .with(filter)
-            .with(paranoid_android::layer("noteslog"))
+            .with(paranoid_android::layer("vellum"))
             .try_init();
     }
     #[cfg(not(target_os = "android"))]

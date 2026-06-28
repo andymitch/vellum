@@ -1,6 +1,6 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Theme.notes" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.vellum" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <!-- Edge-to-edge: let the themed web header draw behind the system bars.
              Transparent bars + no auto contrast scrim, so the bar background is
              whatever the web app paints (respects the in-app theme).
