@@ -412,6 +412,7 @@
 
   function handleVaultChange(vault: string | null) {
     clearTimeout(saveTimer);
+    resetChrome();
     activeVault = vault;
     activePath = null;
     content = "";
@@ -422,6 +423,7 @@
 
   function closeNote() {
     clearTimeout(saveTimer);
+    resetChrome();
     activePath = null;
     content = "";
     lastLoaded = "";
