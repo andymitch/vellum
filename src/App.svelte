@@ -87,6 +87,7 @@
   let chromeHidden = $state(false);
   let headerH = $state(0);
   let lastChromeTop = 0;
+  let lastScroller: HTMLElement | null = null;
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -113,11 +114,18 @@
     const el = scrollerFor(mode);
     if (el) {
       const top = el.scrollTop;
-      const delta = top - lastChromeTop;
-      if (top < 8) chromeHidden = false;
-      else if (delta > 6) chromeHidden = true;
-      else if (delta < -6) chromeHidden = false;
-      lastChromeTop = top;
+      if (el !== lastScroller) {
+        // Scroller swapped (mode toggle / note remount): re-baseline so the
+        // position jump isn't read as a user scroll and hide the chrome.
+        lastScroller = el;
+        lastChromeTop = top;
+      } else {
+        const delta = top - lastChromeTop;
+        if (top < 8) chromeHidden = false;
+        else if (delta > 6) chromeHidden = true;
+        else if (delta < -6) chromeHidden = false;
+        lastChromeTop = top;
+      }
     }
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = setTimeout(() => {
