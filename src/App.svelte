@@ -198,49 +198,43 @@
   }
 
   // ---- Mobile swipe gestures (#46) ----
-  // Interactive drawer drag: a horizontal swipe anywhere in the middle of the
-  // screen opens (swipe right, when closed) or dismisses (swipe left, when open)
-  // the drawer. Touches starting in the reserved screen edges are left alone so
-  // they don't fight Android's system back/navigation gestures. The drawer
-  // tracks the finger; on release it commits past the halfway point or snaps
-  // back. `drawerPan` is the live translateX (px) while dragging — null means
-  // not dragging, so the drawer follows its open/closed class instead.
-  const DRAWER_W = 256; // matches the aside's w-64 (16rem)
-  const EDGE = 24; // ignore swipes starting this close to L/R edge (system gesture zone)
-  const SLOP = 8; // movement (px) before we lock horizontal vs. vertical intent
-  let panStart: { x: number; y: number; id: number; opening: boolean } | null = null;
+  // A horizontal swipe in the middle of the screen opens (right, when closed) or
+  // dismisses (left, when open) the drawer. Window-level touch listeners in the
+  // capture phase (see onMount) so we see the touch before CodeMirror/scrollers
+  // grab it; once a horizontal drag is locked we preventDefault to stop their
+  // scroll/selection. `drawerPan` is the live translateX (px), null when idle.
+  const DRAWER_W = 256;
+  const EDGE = 24;
+  const SLOP = 8;
+  let panStart: { x: number; y: number; opening: boolean } | null = null;
   let panLocked = false;
   let drawerPan = $state<number | null>(null);
 
-  function onSwipePointerDown(e: PointerEvent) {
-    // Touch/pen only; never while settings is up (it has its own gesture).
-    if (!mobile || e.pointerType === "mouse" || settingsOpen) return;
-    // Leave the reserved edges to the system back/nav gestures — only handle
-    // swipes that start in the middle of the screen.
-    if (e.clientX <= EDGE || e.clientX >= window.innerWidth - EDGE) return;
-    panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: !sidebarOpen };
+  function onSwipeStart(e: TouchEvent) {
+    if (!mobile || settingsOpen || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
+    panStart = { x: t.clientX, y: t.clientY, opening: !sidebarOpen };
     panLocked = false;
   }
-  function onSwipePointerMove(e: PointerEvent) {
+  function onSwipeMove(e: TouchEvent) {
     if (!panStart) return;
-    const dx = e.clientX - panStart.x;
-    const dy = e.clientY - panStart.y;
+    const t = e.touches[0];
+    const dx = t.clientX - panStart.x;
+    const dy = t.clientY - panStart.y;
     if (!panLocked) {
       if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
-      // A mostly-vertical move is a scroll, not a drawer drag — bow out.
-      if (Math.abs(dy) > Math.abs(dx)) {
+      if (Math.abs(dy) >= Math.abs(dx)) {
         panStart = null;
         return;
       }
       panLocked = true;
-      // Capture so the editor/scroller underneath stops getting the moves (no
-      // stray text selection or scroll while we drive the drawer).
-      (e.currentTarget as HTMLElement).setPointerCapture(panStart.id);
     }
+    e.preventDefault();
     const base = panStart.opening ? -DRAWER_W : 0;
     drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
   }
-  function onSwipePointerUp() {
+  function onSwipeEnd() {
     if (panStart && panLocked && drawerPan !== null) setSidebar(drawerPan > -DRAWER_W / 2);
     panStart = null;
     panLocked = false;
@@ -554,6 +548,10 @@
     mq.addEventListener("change", onMq);
     window.addEventListener("keydown", onKeydown);
     window.addEventListener("scroll", onAnyScroll, true);
+    window.addEventListener("touchstart", onSwipeStart, { capture: true, passive: true });
+    window.addEventListener("touchmove", onSwipeMove, { capture: true, passive: false });
+    window.addEventListener("touchend", onSwipeEnd, { capture: true });
+    window.addEventListener("touchcancel", onSwipeEnd, { capture: true });
 
     // Detect the soft keyboard from the visual viewport. It shrinks (relative to
     // the tallest height we've seen with no keyboard) whenever the keyboard is
@@ -588,6 +586,10 @@
       mq.removeEventListener("change", onMq);
       window.removeEventListener("keydown", onKeydown);
       window.removeEventListener("scroll", onAnyScroll, true);
+      window.removeEventListener("touchstart", onSwipeStart, { capture: true });
+      window.removeEventListener("touchmove", onSwipeMove, { capture: true });
+      window.removeEventListener("touchend", onSwipeEnd, { capture: true });
+      window.removeEventListener("touchcancel", onSwipeEnd, { capture: true });
       vv?.removeEventListener("resize", onVv);
       vv?.removeEventListener("scroll", onVv);
       unlisten?.();
@@ -626,14 +628,9 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
-  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);touch-action:pan-y;"
-  onpointerdown={onSwipePointerDown}
-  onpointermove={onSwipePointerMove}
-  onpointerup={onSwipePointerUp}
-  onpointercancel={onSwipePointerUp}
+  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
 >
   <!-- Top bar. data-tauri-drag-region lets the window drag by the header, since the
        Overlay titlebar removes the native drag strip; child buttons still click. -->
