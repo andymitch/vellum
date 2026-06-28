@@ -285,6 +285,25 @@ pub fn run() {
             }
         }
     });
+    // macOS Cmd+Q is the other "implicit quit" path. The native Quit menu item
+    // calls -[NSApplication terminate:], which tao delivers straight as
+    // RunEvent::Exit with NO RunEvent::ExitRequested first — so prevent_exit()
+    // can't catch it. We replace the app menu's Quit with our own item (id
+    // "menu_quit") so Cmd+Q routes through on_menu_event, where (like the close
+    // button) we hide to the tray while Background sync is on. The tray's "Quit
+    // Vellum" still hard-quits via app.exit(0). See setup_macos_menu.
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_menu_event(|app, ev| {
+        if ev.id().as_ref() == "menu_quit" {
+            if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            } else {
+                app.exit(0);
+            }
+        }
+    });
     builder
         .setup(|app| {
             // The iroh node is built lazily on first command (see vault.rs):
@@ -294,6 +313,8 @@ pub fn run() {
             app.manage(vault::VaultManager::new(dir));
             #[cfg(desktop)]
             setup_tray(app)?;
+            #[cfg(target_os = "macos")]
+            setup_macos_menu(app)?;
             // Started at login → stay hidden in the tray (don't pop a window).
             #[cfg(desktop)]
             if std::env::args().any(|a| a == "--autostart") {
@@ -389,5 +410,63 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     // Hidden until Background sync turns it on (see apply_desktop_background_sync).
     let _ = tray.set_visible(false);
     app.manage(tray);
+    Ok(())
+}
+
+// Build the macOS app menu. This mirrors Tauri's default menu but swaps the
+// native Quit (a PredefinedMenuItem that calls -[NSApplication terminate:],
+// which can't be intercepted — see the on_menu_event note in run()) for a custom
+// "menu_quit" item carrying the Cmd+Q accelerator, so Background sync can hide to
+// the tray on Cmd+Q instead of dying. The Edit/Window submenus are re-added so
+// text-editing shortcuts (copy/paste/undo/select-all) and window controls keep
+// working once we take over the menu.
+#[cfg(target_os = "macos")]
+fn setup_macos_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let quit = MenuItem::with_id(app, "menu_quit", "Quit Vellum", true, Some("Cmd+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Vellum",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+        ],
+    )?;
+    let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])?;
+    app.set_menu(menu)?;
     Ok(())
 }
