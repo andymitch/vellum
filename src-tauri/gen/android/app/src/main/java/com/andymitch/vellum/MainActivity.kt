@@ -104,9 +104,10 @@ class MainActivity : TauriActivity() {
     }
 
     // Called from Rust (set_immersive command) via JNI. `hidden` = hide the
-    // status bar (web chrome scrolled away).
+    // status bar (web chrome scrolled away). Named setStatusBarHidden, not
+    // setImmersive, to avoid clashing with TauriActivity's inherited setImmersive.
     @JvmStatic
-    fun setImmersive(hidden: Boolean) {
+    fun setStatusBarHidden(hidden: Boolean) {
       instance?.applyImmersive(hidden)
     }
 

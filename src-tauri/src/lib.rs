@@ -152,7 +152,7 @@ fn set_immersive(hidden: bool) {
         };
         let _ = env.call_static_method(
             "com/andymitch/vellum/MainActivity",
-            "setImmersive",
+            "setStatusBarHidden",
             "(Z)V",
             &[jni::objects::JValue::Bool(hidden as u8)],
         );
