@@ -4,6 +4,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
+  import { liveSync } from "$lib/live-sync.svelte";
   import { portal } from "$lib/portal";
 
   // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
@@ -253,6 +254,27 @@
             />
           </label>
         {/if}
+
+        <div class="my-4 border-t border-border"></div>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Sync
+        </p>
+        <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+          <span class="flex flex-col">
+            <span class="text-sm">Background sync</span>
+            <span class="text-xs text-muted-foreground">
+              {isMobile
+                ? "Keep syncing while Vellum is in the background (shows an ongoing notification)."
+                : "Keep syncing when the window is closed (stays in the menu bar) and start at login."}
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            class="h-4 w-4 shrink-0 accent-primary"
+            checked={liveSync.enabled}
+            onchange={(e) => (liveSync.enabled = e.currentTarget.checked)}
+          />
+        </label>
 
         <div class="my-4 border-t border-border"></div>
         <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
