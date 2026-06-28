@@ -197,6 +197,52 @@
     sidebarOpen = open;
   }
 
+  // ---- Mobile swipe gestures (#46) ----
+  // A horizontal swipe in the middle of the screen opens (right, when closed) or
+  // dismisses (left, when open) the drawer. Window-level touch listeners in the
+  // capture phase (see onMount) so we see the touch before CodeMirror/scrollers
+  // grab it; once a horizontal drag is locked we preventDefault to stop their
+  // scroll/selection. `drawerPan` is the live translateX (px), null when idle.
+  const DRAWER_W = 256;
+  const EDGE = 24;
+  const SLOP = 8;
+  let panStart: { x: number; y: number; opening: boolean } | null = null;
+  let panLocked = false;
+  let drawerPan = $state<number | null>(null);
+
+  function onSwipeStart(e: TouchEvent) {
+    if (!mobile || settingsOpen || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
+    panStart = { x: t.clientX, y: t.clientY, opening: !sidebarOpen };
+    panLocked = false;
+  }
+  function onSwipeMove(e: TouchEvent) {
+    if (!panStart || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - panStart.x;
+    const dy = t.clientY - panStart.y;
+    if (!panLocked) {
+      if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
+      if (Math.abs(dy) >= Math.abs(dx)) {
+        panStart = null;
+        return;
+      }
+      panLocked = true;
+    }
+    e.preventDefault();
+    const base = panStart.opening ? -DRAWER_W : 0;
+    drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
+  }
+  const COMMIT = 64;
+  function onSwipeEnd() {
+    if (panStart && panLocked && drawerPan !== null)
+      setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
+    panStart = null;
+    panLocked = false;
+    drawerPan = null;
+  }
+
   let activeVault = $state<string | null>(null);
   let activePath = $state<string | null>(null);
   let content = $state("");
@@ -504,6 +550,10 @@
     mq.addEventListener("change", onMq);
     window.addEventListener("keydown", onKeydown);
     window.addEventListener("scroll", onAnyScroll, true);
+    window.addEventListener("touchstart", onSwipeStart, { capture: true, passive: true });
+    window.addEventListener("touchmove", onSwipeMove, { capture: true, passive: false });
+    window.addEventListener("touchend", onSwipeEnd, { capture: true });
+    window.addEventListener("touchcancel", onSwipeEnd, { capture: true });
 
     // Detect the soft keyboard from the visual viewport. It shrinks (relative to
     // the tallest height we've seen with no keyboard) whenever the keyboard is
@@ -538,6 +588,10 @@
       mq.removeEventListener("change", onMq);
       window.removeEventListener("keydown", onKeydown);
       window.removeEventListener("scroll", onAnyScroll, true);
+      window.removeEventListener("touchstart", onSwipeStart, { capture: true });
+      window.removeEventListener("touchmove", onSwipeMove, { capture: true });
+      window.removeEventListener("touchend", onSwipeEnd, { capture: true });
+      window.removeEventListener("touchcancel", onSwipeEnd, { capture: true });
       vv?.removeEventListener("resize", onVv);
       vv?.removeEventListener("scroll", onVv);
       unlisten?.();
@@ -686,21 +740,30 @@
 
   <!-- Body -->
   <div class="relative flex min-h-0 flex-1">
-    <!-- Mobile backdrop -->
-    {#if sidebarOpen}
+    <!-- Mobile backdrop. Shown while open or mid-drag; its opacity tracks the
+         drawer position during an interactive swipe (#46). -->
+    {#if sidebarOpen || drawerPan !== null}
       <button
         type="button"
         class="fixed inset-0 z-20 bg-black/50 md:hidden"
+        style={drawerPan !== null
+          ? `opacity:${(drawerPan + DRAWER_W) / DRAWER_W}`
+          : ""}
         aria-label="Close sidebar"
         onclick={() => setSidebar(false)}
       ></button>
     {/if}
 
-    <!-- Collapsible on desktop, drawer on mobile -->
+    <!-- Collapsible on desktop, drawer on mobile. While dragging (drawerPan set)
+         we drive translateX inline with no transition so it tracks the finger;
+         on release drawerPan clears and the class transition snaps it home. -->
     <aside
       class="z-30 shrink-0 overflow-hidden border-border bg-secondary transition-all duration-200 ease-out fixed inset-y-0 left-0 w-64 md:static md:z-auto md:bg-secondary/40 {sidebarOpen
         ? 'translate-x-0 border-r md:w-64'
         : '-translate-x-full border-r-0 md:translate-x-0 md:w-0'}"
+      style={drawerPan !== null
+        ? `transform:translateX(${drawerPan}px);transition:none`
+        : ""}
     >
       <!-- Drawer is fixed on mobile, so it escapes the root's safe-area padding;
            re-apply top/bottom insets here so content clears the status/nav bars.
