@@ -20,6 +20,7 @@
     type TreeNode,
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
+  import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
@@ -421,6 +422,21 @@
   // editor once it mounts (#50). $state so the `focusOnMount` prop binding tracks it.
   let focusNewNote = $state(false);
 
+  // A `[[note#heading]]` link: open the note (unless already open) and scroll
+  // the preview to the heading. Headings get their slug ids after Preview
+  // renders, so retry across a few frames until the anchor exists (#45).
+  function openInternalLink(path: string, fragment?: string) {
+    if (!activeVault) return;
+    if (path !== activePath) handleOpen(activeVault, path);
+    if (!fragment) return;
+    const sel = `#${CSS.escape(slugify(fragment))}`;
+    for (const d of [0, 60, 150, 300])
+      setTimeout(
+        () => mainEl?.querySelector(sel)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        d,
+      );
+  }
+
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
     resetChrome();
@@ -798,7 +814,7 @@
         <Preview
           bind:value={content}
           {notePaths}
-          oninternallink={(p) => activeVault && handleOpen(activeVault, p)}
+          oninternallink={openInternalLink}
         />
       {:else}
         {#key openToken}

@@ -6,25 +6,28 @@
   import { theme } from "$lib/theme.svelte";
   import type { Mermaid } from "mermaid";
 
+  import { slugify } from "$lib/slug";
+
   let {
     value = $bindable(""),
-    // All note paths in the current vault, used to resolve [[wiki links]].
     notePaths = [],
-    // Open an internal link's resolved note path.
+    // Open an internal link's resolved note path, optionally scrolling to a
+    // heading anchor (#45). A same-note `[[#heading]]` link is handled here.
     oninternallink,
   }: {
     value?: string;
     notePaths?: string[];
-    oninternallink?: (path: string) => void;
+    oninternallink?: (path: string, fragment?: string) => void;
   } = $props();
 
   const escHtml = (s: string) =>
     s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
   const escAttr = (s: string) => escHtml(s).replace(/"/g, "&quot;");
 
-  // `[[target]]` or `[[target|label]]` → an internal link. Resolution against
-  // the vault's notes happens after render (see the effect below), since the
-  // note list is reactive and lives outside this marked instance.
+  // `[[target]]`, `[[target|label]]`, `[[target#heading]]`, or `[[#heading]]`
+  // (same note) → an internal link. Resolution against the vault's notes happens
+  // after render (see the effect below), since the note list is reactive and
+  // lives outside this marked instance.
   const wikiLink: TokenizerAndRendererExtension = {
     name: "wikilink",
     level: "inline",
@@ -34,16 +37,20 @@
     tokenizer(src) {
       const m = /^\[\[([^\]\n]+?)\]\]/.exec(src);
       if (!m) return;
-      const [target, label] = m[1].split("|");
+      const [link, label] = m[1].split("|");
+      const hash = link.indexOf("#");
+      const target = (hash >= 0 ? link.slice(0, hash) : link).trim();
+      const fragment = hash >= 0 ? link.slice(hash + 1).trim() : "";
       return {
         type: "wikilink",
         raw: m[0],
-        target: target.trim(),
-        label: (label ?? target).trim(),
+        target,
+        fragment,
+        label: (label ?? link).trim(),
       };
     },
     renderer(token) {
-      return `<a href="#" class="wikilink" data-target="${escAttr(token.target)}">${escHtml(token.label)}</a>`;
+      return `<a href="#" class="wikilink" data-target="${escAttr(token.target)}" data-fragment="${escAttr(token.fragment)}">${escHtml(token.label)}</a>`;
     },
   };
 
@@ -108,24 +115,45 @@
     return notePaths.find((p) => stripExt(p.split("/").pop() ?? "").toLowerCase() === base) ?? null;
   }
 
-  // After each render (or when the note list changes), resolve every wiki link:
-  // attach the matched path, or mark it broken when nothing matches.
+  // After each render (or when the note list changes): give headings stable slug
+  // ids (deduped), then resolve every wiki link — a note target, a same-note
+  // #heading, or both — attaching the matched path or marking it broken.
   $effect(() => {
     html;
     notePaths;
     const root = container;
     if (!root) return;
+    const seen = new Map<string, number>();
+    for (const h of root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")) {
+      const base = slugify(h.textContent ?? "");
+      if (!base) continue;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      h.id = n ? `${base}-${n}` : base;
+    }
     for (const a of root.querySelectorAll<HTMLAnchorElement>("a.wikilink")) {
-      const path = resolveLink(a.dataset.target ?? "");
-      if (path) {
-        a.dataset.path = path;
-        a.classList.remove("broken");
-        a.title = path;
-      } else {
+      const target = a.dataset.target ?? "";
+      const fragment = a.dataset.fragment ?? "";
+      let ok = false;
+      if (target) {
+        const path = resolveLink(target);
+        if (path) {
+          a.dataset.path = path;
+          ok = true;
+        } else delete a.dataset.path;
+      } else if (fragment) {
+        // Same-note anchor — valid when the heading exists in this render.
         delete a.dataset.path;
-        a.classList.add("broken");
-        a.title = `No note matches "${a.dataset.target ?? ""}"`;
+        ok = !!root.querySelector(`#${CSS.escape(slugify(fragment))}`);
       }
+      a.classList.toggle("broken", !ok);
+      a.title = ok
+        ? fragment
+          ? `${a.dataset.path ?? ""}#${fragment}`
+          : (a.dataset.path ?? "")
+        : target
+          ? `No note matches "${target}"`
+          : `No section "${fragment}"`;
     }
   });
 
@@ -138,7 +166,12 @@
     if (a.classList.contains("wikilink")) {
       e.preventDefault();
       const path = a.dataset.path;
-      if (path) oninternallink?.(path);
+      const fragment = a.dataset.fragment || undefined;
+      if (path) oninternallink?.(path, fragment);
+      else if (fragment)
+        container
+          ?.querySelector(`#${CSS.escape(slugify(fragment))}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
     const href = a.getAttribute("href");
