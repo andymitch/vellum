@@ -127,6 +127,54 @@
     sidebarOpen = open;
   }
 
+  // ---- Mobile swipe gestures (#46) ----
+  // Interactive drawer drag: swipe right from the left edge to open, swipe left
+  // on the open drawer to dismiss. The drawer tracks the finger; on release it
+  // commits past the halfway point or snaps back. `drawerPan` is the live
+  // translateX (px) while dragging — null means not dragging, so the drawer
+  // follows its open/closed class instead.
+  const DRAWER_W = 256; // matches the aside's w-64 (16rem)
+  const EDGE = 28; // left-edge zone (px) that can start an open-swipe
+  const SLOP = 8; // movement (px) before we lock horizontal vs. vertical intent
+  let panStart: { x: number; y: number; id: number; opening: boolean } | null = null;
+  let panLocked = false;
+  let drawerPan = $state<number | null>(null);
+
+  function onSwipePointerDown(e: PointerEvent) {
+    // Touch/pen only; never while settings is up (it has its own gesture).
+    if (!mobile || e.pointerType === "mouse" || settingsOpen) return;
+    if (sidebarOpen) panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: false };
+    else if (e.clientX <= EDGE)
+      panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: true };
+    else return;
+    panLocked = false;
+  }
+  function onSwipePointerMove(e: PointerEvent) {
+    if (!panStart) return;
+    const dx = e.clientX - panStart.x;
+    const dy = e.clientY - panStart.y;
+    if (!panLocked) {
+      if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
+      // A mostly-vertical move is a scroll, not a drawer drag — bow out.
+      if (Math.abs(dy) > Math.abs(dx)) {
+        panStart = null;
+        return;
+      }
+      panLocked = true;
+      // Capture so the editor/scroller underneath stops getting the moves (no
+      // stray text selection or scroll while we drive the drawer).
+      (e.currentTarget as HTMLElement).setPointerCapture(panStart.id);
+    }
+    const base = panStart.opening ? -DRAWER_W : 0;
+    drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
+  }
+  function onSwipePointerUp() {
+    if (panStart && panLocked && drawerPan !== null) setSidebar(drawerPan > -DRAWER_W / 2);
+    panStart = null;
+    panLocked = false;
+    drawerPan = null;
+  }
+
   let activeVault = $state<string | null>(null);
   let activePath = $state<string | null>(null);
   let content = $state("");
@@ -502,9 +550,14 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
+  onpointerdown={onSwipePointerDown}
+  onpointermove={onSwipePointerMove}
+  onpointerup={onSwipePointerUp}
+  onpointercancel={onSwipePointerUp}
 >
   <!-- Top bar. data-tauri-drag-region lets the window drag by the header, since the
        Overlay titlebar removes the native drag strip; child buttons still click. -->
@@ -609,21 +662,30 @@
 
   <!-- Body -->
   <div class="relative flex min-h-0 flex-1">
-    <!-- Mobile backdrop -->
-    {#if sidebarOpen}
+    <!-- Mobile backdrop. Shown while open or mid-drag; its opacity tracks the
+         drawer position during an interactive swipe (#46). -->
+    {#if sidebarOpen || drawerPan !== null}
       <button
         type="button"
         class="fixed inset-0 z-20 bg-black/50 md:hidden"
+        style={drawerPan !== null
+          ? `opacity:${(drawerPan + DRAWER_W) / DRAWER_W}`
+          : ""}
         aria-label="Close sidebar"
         onclick={() => setSidebar(false)}
       ></button>
     {/if}
 
-    <!-- Collapsible on desktop, drawer on mobile -->
+    <!-- Collapsible on desktop, drawer on mobile. While dragging (drawerPan set)
+         we drive translateX inline with no transition so it tracks the finger;
+         on release drawerPan clears and the class transition snaps it home. -->
     <aside
       class="z-30 shrink-0 overflow-hidden border-border bg-secondary transition-all duration-200 ease-out fixed inset-y-0 left-0 w-64 md:static md:z-auto md:bg-secondary/40 {sidebarOpen
         ? 'translate-x-0 border-r md:w-64'
         : '-translate-x-full border-r-0 md:translate-x-0 md:w-0'}"
+      style={drawerPan !== null
+        ? `transform:translateX(${drawerPan}px);transition:none`
+        : ""}
     >
       <!-- Drawer is fixed on mobile, so it escapes the root's safe-area padding;
            re-apply top/bottom insets here so content clears the status/nav bars.

@@ -90,6 +90,37 @@
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   });
+
+  // Swipe-down-to-dismiss on mobile (#46). Driven from the header/grab-handle
+  // (not the scrollable body, so it never fights content scroll). The panel
+  // tracks the finger downward; release past a threshold closes it, else it
+  // snaps back. `sheetY` is the live translateY (px); `sheetDragging` disables
+  // the snap transition while the finger is down.
+  let sheetY = $state(0);
+  let sheetDragging = $state(false);
+  let sheetStart: { y: number; id: number } | null = null;
+  function onSheetPointerDown(e: PointerEvent) {
+    if (isDesktop || e.pointerType === "mouse") return;
+    sheetStart = { y: e.clientY, id: e.pointerId };
+  }
+  function onSheetPointerMove(e: PointerEvent) {
+    if (!sheetStart) return;
+    const dy = e.clientY - sheetStart.y;
+    if (!sheetDragging) {
+      if (dy < 8) return; // only engage on a downward drag
+      sheetDragging = true;
+      (e.currentTarget as HTMLElement).setPointerCapture(sheetStart.id);
+    }
+    sheetY = Math.max(0, dy);
+  }
+  function onSheetPointerUp() {
+    if (sheetDragging && sheetY > 120) {
+      open = false; // committed dismiss; fly-out plays from here
+    }
+    sheetStart = null;
+    sheetDragging = false;
+    sheetY = 0;
+  }
 </script>
 
 {#if open}
@@ -104,13 +135,27 @@
   >
     <div
       class="flex max-h-[80vh] w-full flex-col rounded-t-2xl border border-border bg-popover md:h-full md:max-h-none md:max-w-md md:rounded-none md:border-0 md:border-l"
-      style="padding-bottom:env(safe-area-inset-bottom);"
+      style="padding-bottom:env(safe-area-inset-bottom);{!isDesktop
+        ? `transform:translateY(${sheetY}px);transition:${sheetDragging ? 'none' : 'transform 200ms ease'};`
+        : ''}"
       transition:fly={isDesktop
         ? { x: 400, duration: 220, opacity: 1 }
         : { y: 320, duration: 220, opacity: 1 }}
     >
-      <div class="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 class="text-base font-semibold">Settings</h2>
+      <!-- Header doubles as the swipe-down-to-dismiss grab handle on mobile (#46);
+           touch-action:none so the drag isn't stolen by the browser as a scroll. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="flex flex-col border-b border-border"
+        style="touch-action:none;"
+        onpointerdown={onSheetPointerDown}
+        onpointermove={onSheetPointerMove}
+        onpointerup={onSheetPointerUp}
+        onpointercancel={onSheetPointerUp}
+      >
+        <div class="mx-auto mt-2 h-1 w-9 rounded-full bg-muted-foreground/30 md:hidden"></div>
+        <div class="flex items-center justify-between px-4 py-3">
+          <h2 class="text-base font-semibold">Settings</h2>
         <button
           type="button"
           class="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -119,6 +164,7 @@
         >
           <X class="h-5 w-5" />
         </button>
+        </div>
       </div>
 
       <div class="min-h-0 flex-1 overflow-auto p-4">
