@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
@@ -44,7 +45,13 @@
     const el = scrollerFor(m);
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
-    if (max > 0) el.scrollTop = ratio * max;
+    if (max > 0) {
+      el.scrollTop = ratio * max;
+      // Keep the auto-hide baseline in sync: a programmatic jump (mode toggle /
+      // launch restore) must not read as the user scrolling down and hide the
+      // chrome (#85).
+      lastChromeTop = el.scrollTop;
+    }
   }
   // Apply a 0..1 ratio to a mode's scroller after it has laid out. Two rAFs:
   // a freshly-mounted CodeMirror needs a frame to measure a tall document.
@@ -64,6 +71,7 @@
   async function setMode(m: Mode) {
     if (m === mode) return;
     const ratio = scrollRatio(mode);
+    resetChrome();
     mode = m;
     session.mode = m;
     session.scroll = ratio;
@@ -71,11 +79,73 @@
     applyScroll(m, ratio);
   }
 
+  // Auto-hide the editor chrome (top bar + FAB) on scroll-down, reveal on
+  // scroll-up, so the reading/writing surface is unobstructed on small screens
+  // while the controls stay one gesture away (#85). Driven off the same scroll
+  // events as the save below — direction is computed synchronously (not
+  // debounced) so the chrome responds immediately.
+  let chromeHidden = $state(false);
+  let headerH = $state(0);
+  let lastChromeTop = 0;
+  let lastScroller: HTMLElement | null = null;
+  function resetChrome() {
+    chromeHidden = false;
+    lastChromeTop = 0;
+  }
+  // Android: mirror the web chrome auto-hide to the system status bar so the
+  // reading surface is fully unobstructed (#85). No-op off Android (the command
+  // is gated there too); the bar returns on a top-edge swipe.
+  //
+  // The status bar is sequenced relative to the chrome: REVEAL immediately (so
+  // it's never left stuck hidden), but HIDE only after the chrome's slide-out
+  // would have finished, and only if it's still hidden. That avoids thrashing
+  // the (system-animated, janky) status bar when chromeHidden toggles rapidly.
+  const isAndroidUA = /Android/.test(navigator.userAgent);
+  let immersiveTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastImmersive: boolean | undefined;
+  function pushImmersive(hidden: boolean) {
+    if (hidden === lastImmersive) return;
+    lastImmersive = hidden;
+    invoke("set_immersive", { hidden }).catch(() => {});
+  }
+  $effect(() => {
+    const hidden = chromeHidden;
+    if (!isAndroidUA) return;
+    clearTimeout(immersiveTimer);
+    if (!hidden) pushImmersive(false);
+    else immersiveTimer = setTimeout(() => pushImmersive(true), 260);
+    return () => clearTimeout(immersiveTimer);
+  });
+
   // Persist the open note's scroll (debounced) so launch can restore it. A
   // capturing listener catches scroll from either scroller (scroll doesn't
   // bubble, but it is observable in the capture phase).
   let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
   function onAnyScroll() {
+    // Show/hide chrome by scroll direction (small threshold to ignore jitter).
+    const el = scrollerFor(mode);
+    if (el) {
+      const top = el.scrollTop;
+      const scrollable = el.scrollHeight - el.clientHeight;
+      if (el !== lastScroller) {
+        // Scroller swapped (mode toggle / note remount): re-baseline so the
+        // position jump isn't read as a user scroll and hide the chrome.
+        lastScroller = el;
+        lastChromeTop = top;
+      } else if (scrollable < 120) {
+        // Too little scroll room to bother hiding the chrome — keep it shown.
+        // Hiding to reveal a sliver just flickers the bars on a note that barely
+        // overflows (#85).
+        chromeHidden = false;
+        lastChromeTop = top;
+      } else {
+        const delta = top - lastChromeTop;
+        if (top < 8) chromeHidden = false;
+        else if (delta > 6) chromeHidden = true;
+        else if (delta < -6) chromeHidden = false;
+        lastChromeTop = top;
+      }
+    }
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = setTimeout(() => {
       if (activePath) session.scroll = scrollRatio(mode);
@@ -307,6 +377,7 @@
 
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
+    resetChrome();
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
     const restoreRatio =
@@ -341,6 +412,7 @@
 
   function handleVaultChange(vault: string | null) {
     clearTimeout(saveTimer);
+    resetChrome();
     activeVault = vault;
     activePath = null;
     content = "";
@@ -351,16 +423,18 @@
 
   function closeNote() {
     clearTimeout(saveTimer);
+    resetChrome();
     activePath = null;
     content = "";
     lastLoaded = "";
     session.path = null;
   }
 
-  // FAB / Cmd+N: new note in the current note's folder (root if none). The name
-  // prompt + creation live in the sidebar (alongside its other dialogs).
+  // FAB / Cmd+N: one tap creates and opens an "Untitled" note in the current
+  // note's folder (root if none) — no name prompt — so the user can type right
+  // away (#85). Creation lives in the sidebar alongside its other dialogs.
   function newNoteHere() {
-    sidebar?.newNoteHotkey(currentDir);
+    sidebar?.newUntitledNote(currentDir);
   }
 
   // Breadcrumb rename: long-press (mobile) mirrors the double-click (desktop)
@@ -510,6 +584,7 @@
        Overlay titlebar removes the native drag strip; child buttons still click. -->
   <header
     data-tauri-drag-region
+    bind:offsetHeight={headerH}
     class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'}"
@@ -517,6 +592,8 @@
       ? '0.25rem'
       : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
       ? 'padding-left:78px;'
+      : ''}{mobile
+      ? `transition:margin-top 200ms ease;margin-top:${chromeHidden ? -headerH : 0}px;`
       : ''}"
   >
     <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
@@ -675,9 +752,10 @@
   </div>
 </div>
 
-<!-- Mobile: floating new-note button (hidden while previewing) -->
-{#if mobile && mode !== "preview" && activeVault}
-  <Fab onclick={newNoteHere} />
+<!-- Mobile: floating new-note button. Always available while a vault is open
+     (#85); auto-hides on scroll-down, slides back in on scroll-up. -->
+{#if mobile && activeVault}
+  <Fab onclick={newNoteHere} hidden={chromeHidden} />
 {/if}
 
 <!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->
