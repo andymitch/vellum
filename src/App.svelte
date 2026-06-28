@@ -198,13 +198,15 @@
   }
 
   // ---- Mobile swipe gestures (#46) ----
-  // Interactive drawer drag: swipe right from the left edge to open, swipe left
-  // on the open drawer to dismiss. The drawer tracks the finger; on release it
-  // commits past the halfway point or snaps back. `drawerPan` is the live
-  // translateX (px) while dragging — null means not dragging, so the drawer
-  // follows its open/closed class instead.
+  // Interactive drawer drag: a horizontal swipe anywhere in the middle of the
+  // screen opens (swipe right, when closed) or dismisses (swipe left, when open)
+  // the drawer. Touches starting in the reserved screen edges are left alone so
+  // they don't fight Android's system back/navigation gestures. The drawer
+  // tracks the finger; on release it commits past the halfway point or snaps
+  // back. `drawerPan` is the live translateX (px) while dragging — null means
+  // not dragging, so the drawer follows its open/closed class instead.
   const DRAWER_W = 256; // matches the aside's w-64 (16rem)
-  const EDGE = 28; // left-edge zone (px) that can start an open-swipe
+  const EDGE = 24; // ignore swipes starting this close to L/R edge (system gesture zone)
   const SLOP = 8; // movement (px) before we lock horizontal vs. vertical intent
   let panStart: { x: number; y: number; id: number; opening: boolean } | null = null;
   let panLocked = false;
@@ -213,10 +215,10 @@
   function onSwipePointerDown(e: PointerEvent) {
     // Touch/pen only; never while settings is up (it has its own gesture).
     if (!mobile || e.pointerType === "mouse" || settingsOpen) return;
-    if (sidebarOpen) panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: false };
-    else if (e.clientX <= EDGE)
-      panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: true };
-    else return;
+    // Leave the reserved edges to the system back/nav gestures — only handle
+    // swipes that start in the middle of the screen.
+    if (e.clientX <= EDGE || e.clientX >= window.innerWidth - EDGE) return;
+    panStart = { x: e.clientX, y: e.clientY, id: e.pointerId, opening: !sidebarOpen };
     panLocked = false;
   }
   function onSwipePointerMove(e: PointerEvent) {
