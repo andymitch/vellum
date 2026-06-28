@@ -1,6 +1,6 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Theme.notes" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.vellum" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <!-- Edge-to-edge, dark mode: transparent bars, no scrim, light icons. -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

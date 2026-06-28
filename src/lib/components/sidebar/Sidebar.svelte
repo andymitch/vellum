@@ -425,7 +425,7 @@
     // First-run starter pack (#51): seed a "My Vault" with a welcome note so a
     // brand-new install isn't an empty void. Gated by a localStorage flag so it
     // runs once — deleting everything later won't regenerate it.
-    const SEEDED_KEY = "notes-seeded";
+    const SEEDED_KEY = "vellum-seeded";
     const WELCOME_NOTE = `# Hello Vellum 👋
 
 Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.

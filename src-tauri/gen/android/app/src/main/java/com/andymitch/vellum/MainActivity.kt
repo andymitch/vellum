@@ -10,7 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 
 class MainActivity : TauriActivity() {
-  // Implemented in Rust (libnotes_lib.so). Hands the JNI VM + app context to
+  // Implemented in Rust (libvellum_lib.so). Hands the JNI VM + app context to
   // ndk_context so iroh's network monitor doesn't panic on Android.
   private external fun initAndroidContext(context: Context)
 

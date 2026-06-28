@@ -2,7 +2,7 @@
 // sidebar/drawer was open. Restored on launch so the app reopens where you left
 // off. Mirrors theme.svelte.ts (localStorage + $state + getters/setters).
 
-const KEY = "notes-session";
+const KEY = "vellum-session";
 
 type Mode = "source" | "preview";
 let saved: {
