@@ -45,7 +45,13 @@
     const el = scrollerFor(m);
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
-    if (max > 0) el.scrollTop = ratio * max;
+    if (max > 0) {
+      el.scrollTop = ratio * max;
+      // Keep the auto-hide baseline in sync: a programmatic jump (mode toggle /
+      // launch restore) must not read as the user scrolling down and hide the
+      // chrome (#85).
+      lastChromeTop = el.scrollTop;
+    }
   }
   // Apply a 0..1 ratio to a mode's scroller after it has laid out. Two rAFs:
   // a freshly-mounted CodeMirror needs a frame to measure a tall document.
@@ -89,8 +95,13 @@
   // reading surface is fully unobstructed (#85). No-op off Android (the command
   // is gated there too); bars return on an edge swipe.
   const isAndroidUA = /Android/.test(navigator.userAgent);
+  let lastImmersive: boolean | undefined;
   $effect(() => {
-    if (isAndroidUA) invoke("set_immersive", { hidden: chromeHidden }).catch(() => {});
+    // Only push on an actual change (not the initial mount, where it's false).
+    if (isAndroidUA && chromeHidden !== lastImmersive) {
+      lastImmersive = chromeHidden;
+      invoke("set_immersive", { hidden: chromeHidden }).catch(() => {});
+    }
   });
 
   // Persist the open note's scroll (debounced) so launch can restore it. A

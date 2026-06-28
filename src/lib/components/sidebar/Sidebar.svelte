@@ -319,11 +319,6 @@
         await newNoteIn(activeVault, "");
     }
 
-    // Imperative hook for the App's FAB / Cmd+N (it owns those, but the name
-    // prompt + creation live here alongside the other dialogs).
-    export function newNoteHotkey(dir = "") {
-        if (activeVault) newNoteIn(activeVault, dir);
-    }
 
     // One-tap new note (#85): create + open "Untitled" in `dir` with no name
     // prompt — createNote de-dupes to "Untitled 1", "Untitled 2", … The user
