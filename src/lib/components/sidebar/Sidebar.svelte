@@ -325,6 +325,17 @@
         if (activeVault) newNoteIn(activeVault, dir);
     }
 
+    // One-tap new note (#85): create + open "Untitled" in `dir` with no name
+    // prompt — createNote de-dupes to "Untitled 1", "Untitled 2", … The user
+    // starts typing immediately and renames later (breadcrumb / settings) if
+    // they want.
+    export async function newUntitledNote(dir = "") {
+        if (!activeVault) return;
+        if (dir) expanded[dir] = true;
+        await createAndOpenNote(activeVault, dir, "Untitled", onopen);
+        await refreshTree();
+    }
+
     // Rename the currently-open note. Used by the settings sheet and the
     // breadcrumb (double-click / long-press) so all rename entry points share
     // the same prompt + path logic.

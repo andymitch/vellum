@@ -64,6 +64,7 @@
   async function setMode(m: Mode) {
     if (m === mode) return;
     const ratio = scrollRatio(mode);
+    resetChrome();
     mode = m;
     session.mode = m;
     session.scroll = ratio;
@@ -71,11 +72,34 @@
     applyScroll(m, ratio);
   }
 
+  // Auto-hide the editor chrome (top bar + FAB) on scroll-down, reveal on
+  // scroll-up, so the reading/writing surface is unobstructed on small screens
+  // while the controls stay one gesture away (#85). Driven off the same scroll
+  // events as the save below — direction is computed synchronously (not
+  // debounced) so the chrome responds immediately.
+  let chromeHidden = $state(false);
+  let headerH = $state(0);
+  let lastChromeTop = 0;
+  function resetChrome() {
+    chromeHidden = false;
+    lastChromeTop = 0;
+  }
+
   // Persist the open note's scroll (debounced) so launch can restore it. A
   // capturing listener catches scroll from either scroller (scroll doesn't
   // bubble, but it is observable in the capture phase).
   let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
   function onAnyScroll() {
+    // Show/hide chrome by scroll direction (small threshold to ignore jitter).
+    const el = scrollerFor(mode);
+    if (el) {
+      const top = el.scrollTop;
+      const delta = top - lastChromeTop;
+      if (top < 8) chromeHidden = false;
+      else if (delta > 6) chromeHidden = true;
+      else if (delta < -6) chromeHidden = false;
+      lastChromeTop = top;
+    }
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = setTimeout(() => {
       if (activePath) session.scroll = scrollRatio(mode);
@@ -307,6 +331,7 @@
 
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
+    resetChrome();
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
     const restoreRatio =
@@ -357,10 +382,11 @@
     session.path = null;
   }
 
-  // FAB / Cmd+N: new note in the current note's folder (root if none). The name
-  // prompt + creation live in the sidebar (alongside its other dialogs).
+  // FAB / Cmd+N: one tap creates and opens an "Untitled" note in the current
+  // note's folder (root if none) — no name prompt — so the user can type right
+  // away (#85). Creation lives in the sidebar alongside its other dialogs.
   function newNoteHere() {
-    sidebar?.newNoteHotkey(currentDir);
+    sidebar?.newUntitledNote(currentDir);
   }
 
   // Breadcrumb rename: long-press (mobile) mirrors the double-click (desktop)
@@ -510,6 +536,7 @@
        Overlay titlebar removes the native drag strip; child buttons still click. -->
   <header
     data-tauri-drag-region
+    bind:offsetHeight={headerH}
     class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'}"
@@ -517,6 +544,8 @@
       ? '0.25rem'
       : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
       ? 'padding-left:78px;'
+      : ''}{mobile
+      ? `transition:margin-top 200ms ease;margin-top:${chromeHidden ? -headerH : 0}px;`
       : ''}"
   >
     <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
@@ -675,9 +704,10 @@
   </div>
 </div>
 
-<!-- Mobile: floating new-note button (hidden while previewing) -->
-{#if mobile && mode !== "preview" && activeVault}
-  <Fab onclick={newNoteHere} />
+<!-- Mobile: floating new-note button. Always available while a vault is open
+     (#85); auto-hides on scroll-down, slides back in on scroll-up. -->
+{#if mobile && activeVault}
+  <Fab onclick={newNoteHere} hidden={chromeHidden} />
 {/if}
 
 <!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->
