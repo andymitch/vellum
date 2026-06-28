@@ -14,6 +14,14 @@ edition = "2021"
 name = "notes_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Name the desktop binary "Vellum" (the package is still "notes" — and the lib
+# stays "notes_lib", which the Android gradle/jniLibs expect). Without this the
+# `tauri dev` binary is "notes", which leaks into macOS prompts like "notes can
+# run in the background". Matches mainBinaryName in tauri.conf.json.
+[[bin]]
+name = "Vellum"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
