@@ -627,7 +627,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
-  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
+  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);touch-action:pan-y;"
   onpointerdown={onSwipePointerDown}
   onpointermove={onSwipePointerMove}
   onpointerup={onSwipePointerUp}
