@@ -234,8 +234,10 @@
     const base = panStart.opening ? -DRAWER_W : 0;
     drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
   }
+  const COMMIT = 64;
   function onSwipeEnd() {
-    if (panStart && panLocked && drawerPan !== null) setSidebar(drawerPan > -DRAWER_W / 2);
+    if (panStart && panLocked && drawerPan !== null)
+      setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
     panLocked = false;
     drawerPan = null;
