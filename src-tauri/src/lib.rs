@@ -11,6 +11,35 @@ use tauri::Manager;
 static APP_CLASS_LOADER: std::sync::OnceLock<jni::objects::GlobalRef> =
     std::sync::OnceLock::new();
 
+// Guards one-time Android context init. With Background sync on, the process can
+// outlive its Activity (we prevent the exit on swipe-away so the iroh node keeps
+// running). A relaunched Activity calls initAndroidContext again, but
+// ndk_context::initialize_android_context panics if called twice — and the cached
+// VM/context/loader are still valid for the (same) process — so we init only once.
+#[cfg(target_os = "android")]
+static ANDROID_CTX_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Set when we prevent the process exit on Activity destroy (Background sync on,
+// swipe-away). The WebView is gone but the process + iroh node live on. Tauri
+// can't rebuild the WebView in this process, so a relaunched Activity would show
+// a blank screen — MainActivity checks this (survivedBackgroundExit) and restarts
+// the app fresh for a working UI. See the run() exit handler.
+#[cfg(target_os = "android")]
+static EXIT_PREVENTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Called from MainActivity.onCreate. True if this process kept itself alive
+// through a prior Activity destroy for background sync (see EXIT_PREVENTED), i.e.
+// the Activity is being recreated into a process whose WebView can't be rebuilt —
+// the caller should relaunch fresh.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_andymitch_vellum_MainActivity_survivedBackgroundExit(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jboolean {
+    EXIT_PREVENTED.load(std::sync::atomic::Ordering::Relaxed) as jni::sys::jboolean
+}
+
 /// Called from MainActivity.onCreate (Kotlin `external fun`). Tauri's Android
 /// runtime never populates the `ndk-context` crate global, so libraries that
 /// read it (iroh's network monitor) panic with "android context was not
@@ -24,6 +53,11 @@ pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext
     context: jni::objects::JObject,
 ) {
     use jni::objects::JObject;
+    // Already initialized for this process (e.g. the Activity was recreated while
+    // Background sync kept the process alive) — skip; re-initializing panics.
+    if ANDROID_CTX_INIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let Ok(vm) = env.get_java_vm() else { return };
     let Ok(global) = env.new_global_ref(&context) else { return };
     // Cache the app class loader (we're on the UI thread here) so worker threads
@@ -133,9 +167,11 @@ fn get_material_you() -> Option<String> {
     None
 }
 
-// Desktop: whether closing the window should hide to the tray (keep syncing)
-// instead of quitting. Mirrors the Background sync setting; see set_background_sync.
-#[cfg(desktop)]
+// Whether Background sync is on. Desktop: closing the window hides to the tray
+// (keep syncing) instead of quitting. Android: prevent the process from exiting
+// when the Activity is destroyed (swipe-away), so the in-process iroh node keeps
+// running under the foreground service. Mirrors the setting; see set_background_sync.
+#[cfg(any(desktop, target_os = "android"))]
 static LIVE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // Start/stop the Android foreground service (keeps the process + iroh node alive
@@ -193,6 +229,8 @@ async fn set_background_sync(
     state: tauri::State<'_, vault::VaultManager>,
     enabled: bool,
 ) -> Result<(), String> {
+    #[cfg(any(desktop, target_os = "android"))]
+    LIVE_SYNC.store(enabled, std::sync::atomic::Ordering::Relaxed);
     #[cfg(desktop)]
     apply_desktop_background_sync(&app, enabled);
     #[cfg(target_os = "android")]
@@ -342,8 +380,23 @@ pub fn run() {
             vault::watch_vault,
             set_background_sync,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // Android: when the Activity is destroyed (e.g. swiped from recents),
+            // tao's event loop returns and calls std::process::exit, taking the
+            // in-process iroh node with it. With Background sync on we prevent that
+            // exit so the node keeps syncing under the foreground service.
+            // (Desktop's quit paths are handled by the window/menu handlers above.)
+            #[cfg(target_os = "android")]
+            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
+                if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracing::info!("android: preventing exit to keep background sync alive");
+                    api.prevent_exit();
+                    EXIT_PREVENTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
 }
 
 // Bring the main window to the front (tray left-click / "Open Vellum").

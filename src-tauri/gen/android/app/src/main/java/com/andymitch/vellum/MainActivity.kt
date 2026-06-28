@@ -22,9 +22,25 @@ class MainActivity : TauriActivity() {
   // froze the process and its sockets/relay connections went stale (issues #49, #5).
   private external fun notifyResume()
 
+  // True if Background sync kept this process alive through a prior swipe-away
+  // (see EXIT_PREVENTED in Rust). The WebView was destroyed and Tauri can't
+  // rebuild it in this process, so we relaunch fresh instead of showing blank.
+  private external fun survivedBackgroundExit(): Boolean
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Reopened into a process that stayed alive for background sync: its WebView
+    // can't be rebuilt here (blank screen), so relaunch the app cleanly. The iroh
+    // node re-inits on startup; the fresh process won't hit this branch.
+    if (survivedBackgroundExit()) {
+      packageManager.getLaunchIntentForPackage(packageName)?.let {
+        it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        startActivity(it)
+      }
+      Runtime.getRuntime().exit(0)
+      return
+    }
     instance = this
     initAndroidContext(applicationContext)
     watchNetworkChanges()
