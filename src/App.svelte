@@ -94,15 +94,27 @@
   }
   // Android: mirror the web chrome auto-hide to the system status bar so the
   // reading surface is fully unobstructed (#85). No-op off Android (the command
-  // is gated there too); bars return on an edge swipe.
+  // is gated there too); the bar returns on a top-edge swipe.
+  //
+  // The status bar is sequenced relative to the chrome: REVEAL immediately (so
+  // it's never left stuck hidden), but HIDE only after the chrome's slide-out
+  // would have finished, and only if it's still hidden. That avoids thrashing
+  // the (system-animated, janky) status bar when chromeHidden toggles rapidly.
   const isAndroidUA = /Android/.test(navigator.userAgent);
+  let immersiveTimer: ReturnType<typeof setTimeout> | undefined;
   let lastImmersive: boolean | undefined;
+  function pushImmersive(hidden: boolean) {
+    if (hidden === lastImmersive) return;
+    lastImmersive = hidden;
+    invoke("set_immersive", { hidden }).catch(() => {});
+  }
   $effect(() => {
-    // Only push on an actual change (not the initial mount, where it's false).
-    if (isAndroidUA && chromeHidden !== lastImmersive) {
-      lastImmersive = chromeHidden;
-      invoke("set_immersive", { hidden: chromeHidden }).catch(() => {});
-    }
+    const hidden = chromeHidden;
+    if (!isAndroidUA) return;
+    clearTimeout(immersiveTimer);
+    if (!hidden) pushImmersive(false);
+    else immersiveTimer = setTimeout(() => pushImmersive(true), 260);
+    return () => clearTimeout(immersiveTimer);
   });
 
   // Persist the open note's scroll (debounced) so launch can restore it. A
@@ -114,10 +126,17 @@
     const el = scrollerFor(mode);
     if (el) {
       const top = el.scrollTop;
+      const scrollable = el.scrollHeight - el.clientHeight;
       if (el !== lastScroller) {
         // Scroller swapped (mode toggle / note remount): re-baseline so the
         // position jump isn't read as a user scroll and hide the chrome.
         lastScroller = el;
+        lastChromeTop = top;
+      } else if (scrollable < 120) {
+        // Too little scroll room to bother hiding the chrome — keep it shown.
+        // Hiding to reveal a sliver just flickers the bars on a note that barely
+        // overflows (#85).
+        chromeHidden = false;
         lastChromeTop = top;
       } else {
         const delta = top - lastChromeTop;
