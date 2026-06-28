@@ -15,10 +15,10 @@
   {disabled}
   aria-label="New note"
   title="New note"
-  class="fixed bottom-5 right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform duration-200 active:scale-95 disabled:opacity-40 {hidden
-    ? 'translate-y-[160%]'
-    : ''}"
-  style="bottom: calc(1.25rem + env(safe-area-inset-bottom)); right: calc(1.25rem + env(safe-area-inset-right));"
+  class="fixed bottom-5 right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform duration-200 active:scale-95 disabled:opacity-40"
+  style="bottom: calc(1.25rem + env(safe-area-inset-bottom)); right: calc(1.25rem + env(safe-area-inset-right)); transform: {hidden
+    ? 'translateY(calc(100% + 1.5rem + env(safe-area-inset-bottom)))'
+    : 'none'};"
 >
   <Plus size={26} />
 </button>
