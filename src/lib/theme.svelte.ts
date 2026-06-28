@@ -45,7 +45,7 @@ export const FONTS: Font[] = [
   { id: "lora", name: "Lora", stack: '"Lora", Georgia, "Times New Roman", serif' },
 ];
 
-const KEY = "notes-theme";
+const KEY = "vellum-theme";
 const mql = window.matchMedia("(prefers-color-scheme: dark)");
 
 let saved: { palette?: string; mode?: Mode; font?: string } = {};
@@ -72,7 +72,7 @@ function resolvedDark(): boolean {
 // outrank the [data-theme] CSS blocks). Mid-tone accents stand in for the syntax
 // colors since Monet only exposes three accent ramps.
 type Monet = Record<string, string>;
-const MONET_KEY = "notes-monet";
+const MONET_KEY = "vellum-monet";
 let monetPromise: Promise<Monet | null> | null = null;
 function ensureMonet(): Promise<Monet | null> {
   if (!monetPromise) {

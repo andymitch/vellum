@@ -319,10 +319,16 @@
         await newNoteIn(activeVault, "");
     }
 
-    // Imperative hook for the App's FAB / Cmd+N (it owns those, but the name
-    // prompt + creation live here alongside the other dialogs).
-    export function newNoteHotkey(dir = "") {
-        if (activeVault) newNoteIn(activeVault, dir);
+
+    // One-tap new note (#85): create + open "Untitled" in `dir` with no name
+    // prompt — createNote de-dupes to "Untitled 1", "Untitled 2", … The user
+    // starts typing immediately and renames later (breadcrumb / settings) if
+    // they want.
+    export async function newUntitledNote(dir = "") {
+        if (!activeVault) return;
+        if (dir) expanded[dir] = true;
+        await createAndOpenNote(activeVault, dir, "Untitled", onopen);
+        await refreshTree();
     }
 
     // Rename the currently-open note. Used by the settings sheet and the
@@ -425,7 +431,7 @@
     // First-run starter pack (#51): seed a "My Vault" with a welcome note so a
     // brand-new install isn't an empty void. Gated by a localStorage flag so it
     // runs once — deleting everything later won't regenerate it.
-    const SEEDED_KEY = "notes-seeded";
+    const SEEDED_KEY = "vellum-seeded";
     const WELCOME_NOTE = `# Hello Vellum 👋
 
 Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.

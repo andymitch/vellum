@@ -3869,36 +3869,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notes"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures-lite",
- "iroh",
- "iroh-blobs",
- "iroh-docs",
- "iroh-gossip",
- "iroh-mdns-address-lookup",
- "jni 0.21.1",
- "ndk-context",
- "paranoid-android",
- "rustls",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-barcode-scanner",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7011,6 +6981,36 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "vellum"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-lite",
+ "iroh",
+ "iroh-blobs",
+ "iroh-docs",
+ "iroh-gossip",
+ "iroh-mdns-address-lookup",
+ "jni 0.21.1",
+ "ndk-context",
+ "paranoid-android",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-barcode-scanner",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "vergen"

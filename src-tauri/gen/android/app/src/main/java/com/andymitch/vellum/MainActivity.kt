@@ -8,9 +8,11 @@ import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
-  // Implemented in Rust (libnotes_lib.so). Hands the JNI VM + app context to
+  // Implemented in Rust (libvellum_lib.so). Hands the JNI VM + app context to
   // ndk_context so iroh's network monitor doesn't panic on Android.
   private external fun initAndroidContext(context: Context)
 
@@ -79,6 +81,25 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  // Hide/show the status bar to follow the web chrome auto-hide on scroll (#85).
+  // The transient-by-swipe behavior is set ONLY while hidden — leaving it on
+  // after showing makes the status bar render as a black transient overlay when
+  // the soft keyboard appears. On show, restore BEHAVIOR_DEFAULT so it's a
+  // normal persistent bar again.
+  private fun applyImmersive(hide: Boolean) {
+    runOnUiThread {
+      val c = WindowCompat.getInsetsController(window, window.decorView)
+      if (hide) {
+        c.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        c.hide(WindowInsetsCompat.Type.statusBars())
+      } else {
+        c.show(WindowInsetsCompat.Type.statusBars())
+        c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+      }
+    }
+  }
+
   companion object {
     @Volatile private var instance: MainActivity? = null
 
@@ -87,6 +108,14 @@ class MainActivity : TauriActivity() {
     @JvmStatic
     fun setDarkMode(dark: Boolean) {
       instance?.applySystemBarAppearance(!dark)
+    }
+
+    // Called from Rust (set_immersive command) via JNI. `hidden` = hide the
+    // status bar (web chrome scrolled away). Named setStatusBarHidden, not
+    // setImmersive, to avoid clashing with TauriActivity's inherited setImmersive.
+    @JvmStatic
+    fun setStatusBarHidden(hidden: Boolean) {
+      instance?.applyImmersive(hidden)
     }
 
     // Called from Rust (set_background_sync command) via JNI. Starts/stops the
