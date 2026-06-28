@@ -27,3 +27,11 @@ export const liveSync = {
     void setBackgroundSync(v).catch(() => {});
   },
 };
+
+// Reflect a change made in the backend (e.g. "Turn off background sync" from the
+// desktop tray) without calling back into setBackgroundSync — the backend has
+// already applied it; this just keeps the persisted value + UI toggle in step.
+export function applyLiveSyncFromBackend(v: boolean) {
+  enabled = v;
+  localStorage.setItem(KEY, v ? "1" : "0");
+}

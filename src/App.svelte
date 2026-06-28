@@ -15,12 +15,13 @@
     renamePath,
     deletePath,
     onVaultChanged,
+    onBackgroundSyncChanged,
     type TreeNode,
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import { editorSettings } from "$lib/editor-settings.svelte";
-  import { initLiveSync } from "$lib/live-sync.svelte";
+  import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -104,6 +105,13 @@
   // Re-apply the Background sync setting on launch (re-arm the hub + restart the
   // platform keep-alive if it was left enabled).
   onMount(() => initLiveSync());
+  // Keep the Settings toggle in step when background sync is changed from the
+  // desktop tray ("Turn off background sync").
+  onMount(() => {
+    let un: (() => void) | undefined;
+    onBackgroundSyncChanged(applyLiveSyncFromBackend).then((u) => (un = u));
+    return () => un?.();
+  });
   onMount(() => {
     if (!isMacDesktop) return;
     const w = getCurrentWindow();

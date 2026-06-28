@@ -43,3 +43,8 @@ export const setBackgroundSync = (enabled: boolean) =>
 
 export const onVaultChanged = (cb: (vaultId: string) => void): Promise<UnlistenFn> =>
   listen<string>("vault-changed", (e) => cb(e.payload));
+
+// Emitted by the backend when background sync is changed outside the Settings
+// toggle (e.g. "Turn off background sync" from the desktop tray).
+export const onBackgroundSyncChanged = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
+  listen<boolean>("background-sync", (e) => cb(e.payload));

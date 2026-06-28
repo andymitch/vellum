@@ -197,29 +197,33 @@ async fn set_background_sync(
     enabled: bool,
 ) -> Result<(), String> {
     #[cfg(desktop)]
-    {
-        use std::sync::atomic::Ordering;
-        use tauri_plugin_autostart::ManagerExt;
-        LIVE_SYNC.store(enabled, Ordering::Relaxed);
-        // Show the tray icon only while Background sync is on — it's the only
-        // time the app runs without a window, so an always-present icon would
-        // just be menu-bar clutter.
-        if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
-            let _ = tray.set_visible(enabled);
-        }
-        let autostart = app.autolaunch();
-        let _ = if enabled {
-            autostart.enable()
-        } else {
-            autostart.disable()
-        };
-    }
+    apply_desktop_background_sync(&app, enabled);
     #[cfg(target_os = "android")]
     set_android_background_service(enabled);
     if enabled {
         vault::arm_all_vaults(&app, state.inner()).await?;
     }
     Ok(())
+}
+
+// Apply the desktop side of the Background sync setting: remember it (for
+// close-to-tray), show/hide the tray icon (visible only while on, so it's not
+// menu-bar clutter), and register/unregister launch-at-login. Shared by the
+// command and the tray's "Turn off" item.
+#[cfg(desktop)]
+fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
+    use std::sync::atomic::Ordering;
+    use tauri_plugin_autostart::ManagerExt;
+    LIVE_SYNC.store(enabled, Ordering::Relaxed);
+    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+        let _ = tray.set_visible(enabled);
+    }
+    let autostart = app.autolaunch();
+    let _ = if enabled {
+        autostart.enable()
+    } else {
+        autostart.disable()
+    };
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -323,34 +327,53 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-// System-tray icon (desktop). Left-click shows the window; the menu offers
-// Open / Quit. Lets the app keep running headless with Background sync on. Built
-// hidden at startup and managed as app state; set_background_sync toggles its
-// visibility so the icon only appears while Background sync is enabled.
+// Bring the main window to the front (tray left-click / "Open Vellum").
+#[cfg(desktop)]
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+// System-tray icon (desktop). Shown only while Background sync is on (it's the
+// only time the app runs without a window), so it doubles as the daemon's
+// presence + control surface: a status line, Open, Turn off background sync, and
+// Quit. Built hidden at startup and managed as app state; visibility is toggled
+// by apply_desktop_background_sync.
 #[cfg(desktop)]
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem};
+    use tauri::image::Image;
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::Emitter;
 
+    // Disabled header so the menu reads as the daemon's status.
+    let status = MenuItem::with_id(app, "status", "Background sync: on", false, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "Open Vellum", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "Turn off background sync", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Vellum", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&status, &sep, &show, &stop, &quit])?;
 
-    let show_main = |app: &tauri::AppHandle| {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.show();
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-        }
-    };
+    // The logo as a monochrome template image so macOS tints it to the menu-bar
+    // appearance (light/dark) instead of showing the full-color app icon.
+    let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
 
     let tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("Vellum")
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("Vellum — background sync")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, ev| match ev.id.as_ref() {
-            "show" => show_main(app),
+            "show" => show_main_window(app),
+            "stop" => {
+                apply_desktop_background_sync(app, false);
+                // Keep the in-app Settings toggle in sync with the tray action.
+                let _ = app.emit("background-sync", false);
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -361,15 +384,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                if let Some(w) = tray.app_handle().get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         })
         .build(app)?;
-    // Hidden until Background sync turns it on (see set_background_sync).
+    // Hidden until Background sync turns it on (see apply_desktop_background_sync).
     let _ = tray.set_visible(false);
     app.manage(tray);
     Ok(())
