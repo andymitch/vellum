@@ -82,14 +82,21 @@ class MainActivity : TauriActivity() {
   }
 
   // Hide/show the status bar to follow the web chrome auto-hide on scroll (#85).
-  // Hidden bars return transiently on an edge swipe (BEHAVIOR_SHOW_TRANSIENT...).
+  // The transient-by-swipe behavior is set ONLY while hidden — leaving it on
+  // after showing makes the status bar render as a black transient overlay when
+  // the soft keyboard appears. On show, restore BEHAVIOR_DEFAULT so it's a
+  // normal persistent bar again.
   private fun applyImmersive(hide: Boolean) {
     runOnUiThread {
       val c = WindowCompat.getInsetsController(window, window.decorView)
-      c.systemBarsBehavior =
-        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-      if (hide) c.hide(WindowInsetsCompat.Type.statusBars())
-      else c.show(WindowInsetsCompat.Type.statusBars())
+      if (hide) {
+        c.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        c.hide(WindowInsetsCompat.Type.statusBars())
+      } else {
+        c.show(WindowInsetsCompat.Type.statusBars())
+        c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+      }
     }
   }
 
