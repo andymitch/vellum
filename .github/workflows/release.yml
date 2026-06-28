@@ -29,6 +29,19 @@ jobs:
           echo "tag=v${N}" >> "$GITHUB_OUTPUT"
           [ -n "$LATEST" ] && echo "prev=v${LATEST}" >> "$GITHUB_OUTPUT" || echo "prev=" >> "$GITHUB_OUTPUT"
           echo "Next release: v${N} (version ${N}.0.0)"
+      # Create the release up front so desktop + android can upload to it in
+      # parallel. tauri-action finds this existing release by tagName; the
+      # android job uploads via `gh release upload`. (Previously tauri-action
+      # created the release, forcing android to wait on the whole macOS build.)
+      - name: Create empty release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "Vellum $TAG" \
+            --notes "Building…"
 
   # macOS desktop: .app/.dmg + signed updater artifacts + latest.json, via
   # tauri-action (which also creates the GitHub Release for the tag).
@@ -84,7 +97,7 @@ jobs:
   # Android: build the release APK, sign it with the release keystore (apksigner
   # — Tauri regenerates gradle's signingConfig), attach it to the release.
   android:
-    needs: [prepare, desktop]
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
