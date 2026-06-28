@@ -33,12 +33,17 @@ jobs:
       # parallel. tauri-action finds this existing release by tagName; the
       # android job uploads via `gh release upload`. (Previously tauri-action
       # created the release, forcing android to wait on the whole macOS build.)
-      - name: Create empty release
+      #
+      # Created as a DRAFT — the notes job publishes it only after both builds
+      # succeed. If either build fails, the release stays a hidden draft instead
+      # of a public release missing one platform's artifact.
+      - name: Create draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.v.outputs.tag }}
         run: |
           gh release create "$TAG" \
+            --draft \
             --target "${{ github.sha }}" \
             --title "Vellum $TAG" \
             --notes "Building…"
@@ -74,7 +79,7 @@ jobs:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Vellum ${{ needs.prepare.outputs.tag }}"
           releaseBody: "Building…"
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin
       # tauri-action attaches a version-stamped dmg (Vellum_N.0.0_aarch64.dmg),
@@ -168,4 +173,6 @@ jobs:
         run: |
           node scripts/release-notes.mjs > notes.md
           cat notes.md
-          gh release edit "$TAG" --repo "$REPO" --notes-file notes.md
+          # Publish the draft now that both builds succeeded and all artifacts
+          # are attached.
+          gh release edit "$TAG" --repo "$REPO" --notes-file notes.md --draft=false
