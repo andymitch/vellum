@@ -9,9 +9,21 @@
     "opener:default",
     "dialog:default",
     "fs:default",
-    { "identifier": "fs:allow-read-file", "allow": [{ "path": "**" }] },
-    { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
-    { "identifier": "fs:allow-read-text-file", "allow": [{ "path": "**" }] },
-    { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "**" }] }
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOCUMENT/**" }, { "path": "$DOWNLOAD/**" }]
+    }
   ]
 }
