@@ -5,6 +5,7 @@
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
+  import { checkForUpdateInteractive } from "$lib/updater";
   import { portal } from "$lib/portal";
 
   // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
@@ -402,9 +403,20 @@
         {/each}
 
         <div class="my-4 border-t border-border"></div>
-        <p class="text-xs text-muted-foreground">
-          {version}
-        </p>
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-muted-foreground">
+            {version}
+          </p>
+          {#if !isMobile}
+            <button
+              type="button"
+              class="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              onclick={() => checkForUpdateInteractive()}
+            >
+              Check for updates
+            </button>
+          {/if}
+        </div>
       </div>
     </div>
   </div>
