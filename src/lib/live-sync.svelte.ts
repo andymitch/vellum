@@ -1,8 +1,8 @@
-// Background sync ("live sync") preference. When on, the backend arms every
-// vault as an always-on hub and the platform keeps the process alive (desktop:
-// tray + launch-at-login; Android: foreground service) so notes keep syncing
-// with no window open / while the app is backgrounded. Persisted to localStorage
-// and pushed to the backend on change and once on launch.
+// Background sync ("live sync") preference — desktop only (the Settings toggle is
+// hidden on mobile). When on, the backend arms every vault as an always-on hub and
+// keeps the process alive in the menu-bar tray + launches at login, so notes keep
+// syncing with no window open. Persisted to localStorage and pushed to the backend
+// on change and once on launch.
 
 import { setBackgroundSync } from "./vault";
 
