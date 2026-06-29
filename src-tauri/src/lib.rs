@@ -192,6 +192,20 @@ fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
     } else {
         autostart.disable()
     };
+    // Turned the hub off while running window-less (menu-bar agent): nothing left
+    // to keep the process around for, so exit cleanly instead of lingering invisibly.
+    if !enabled && app.webview_windows().is_empty() {
+        app.exit(0);
+    }
+}
+
+// Was the hub left enabled? Launch-at-login is our persisted signal — it's set
+// and cleared together with the Background sync setting (see above), so an
+// always-on desktop re-arms itself on a login (or manual) launch.
+#[cfg(desktop)]
+fn hub_enabled_at_launch(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -227,7 +241,16 @@ pub fn run() {
             .try_init();
     }
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Single-instance must be registered first (plugins run in registration order)
+    // so a second launch is intercepted before any window/node setup. Desktop only:
+    // it re-opens the running agent's window instead of spawning a rival process
+    // that would contend for the iroh-docs store.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        show_main_window(app);
+    }));
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         // Markdown export/import (#79) — dialog picks the file, fs reads/writes
         // it (incl. Android SAF). Both cross-platform.
@@ -249,30 +272,23 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ));
-    // Closing the window quits by default. With Background sync on, hide to the
-    // tray instead so the iroh node keeps syncing in the background.
-    #[cfg(desktop)]
-    let builder = builder.on_window_event(|window, event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        }
-    });
+    // Closing the window destroys it (frees the webview). With the hub on, the
+    // process survives the last window closing — see the ExitRequested handler in
+    // run() — so the iroh node keeps syncing as a menu-bar agent. With it off, the
+    // last window closing exits normally.
+    //
     // macOS Cmd+Q is the other "implicit quit" path. The native Quit menu item
-    // calls -[NSApplication terminate:], which tao delivers straight as
-    // RunEvent::Exit with NO RunEvent::ExitRequested first — so prevent_exit()
-    // can't catch it. We replace the app menu's Quit with our own item (id
-    // "menu_quit") so Cmd+Q routes through on_menu_event, where (like the close
-    // button) we hide to the tray while Background sync is on. The tray's "Quit
-    // Vellum" still hard-quits via app.exit(0). See setup_macos_menu.
+    // calls -[NSApplication terminate:], delivered straight as RunEvent::Exit with
+    // no preventable ExitRequested — so we swap the app menu's Quit for our own
+    // "menu_quit" item (see setup_macos_menu) and route it here: with the hub on,
+    // just close the window (the agent lives on); otherwise quit. The tray's "Quit
+    // Vellum" hard-quits via app.exit(0).
     #[cfg(target_os = "macos")]
     let builder = builder.on_menu_event(|app, ev| {
         if ev.id().as_ref() == "menu_quit" {
             if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
+                    let _ = w.close();
                 }
             } else {
                 app.exit(0);
@@ -290,11 +306,29 @@ pub fn run() {
             setup_tray(app)?;
             #[cfg(target_os = "macos")]
             setup_macos_menu(app)?;
-            // Started at login → stay hidden in the tray (don't pop a window).
+            // Re-arm the always-on hub if it was left enabled (launch-at-login is
+            // our persisted signal). Builds the iroh node + arms every vault with
+            // no window/frontend needed, so a login launch syncs headlessly.
             #[cfg(desktop)]
-            if std::env::args().any(|a| a == "--autostart") {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
+            {
+                let handle = app.handle().clone();
+                if hub_enabled_at_launch(&handle) {
+                    apply_desktop_background_sync(&handle, true);
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(state) = h.try_state::<vault::VaultManager>() {
+                            let _ = vault::arm_all_vaults(&h, state.inner()).await;
+                        }
+                    });
+                }
+                // Started at login → run window-less as a menu-bar agent: drop the
+                // auto-created window (frees the webview) and hide from the Dock.
+                if std::env::args().any(|a| a == "--autostart") {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.close();
+                    }
+                    #[cfg(target_os = "macos")]
+                    let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
             Ok(())
@@ -320,17 +354,59 @@ pub fn run() {
             vault::watch_vault,
             set_background_sync,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app_handle, _event| {
+            // Keep the always-on hub alive when the last window closes. ExitRequested
+            // with code = None is an implicit exit (last window closed / Cmd+Q); with
+            // the hub on we prevent it so the iroh node keeps syncing as a menu-bar
+            // agent, and drop the Dock icon. Explicit app.exit(n) carries code = Some
+            // (tray "Quit") and is never prevented.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &_event {
+                if code.is_none() && LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                    api.prevent_exit();
+                    #[cfg(target_os = "macos")]
+                    let _ = _app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
+            }
+        });
 }
 
-// Bring the main window to the front (tray left-click / "Open Vellum").
+// (Re)create the main window. Used to bring it back after a close destroyed it
+// (the hub keeps running window-less). Mirrors the window config in
+// tauri.conf.json — the config window is the one created at a normal launch; this
+// is only for re-opening from the tray / a second launch.
+#[cfg(desktop)]
+fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    #[allow(unused_mut)]
+    let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+        .title("Vellum")
+        .inner_size(800.0, 600.0)
+        .disable_drag_drop_handler();
+    #[cfg(target_os = "macos")]
+    {
+        b = b
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    b.build()
+}
+
+// Bring the main window to the front (tray left-click / "Open Vellum" / a second
+// launch). Restores the Dock icon (we may be a window-less menu-bar agent) and
+// re-creates the window if a previous close destroyed it.
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+    } else if let Err(e) = create_main_window(app) {
+        tracing::error!("failed to re-create main window: {e}");
     }
 }
 

@@ -70,6 +70,10 @@ tauri-plugin-process = "2"
 # Launch Vellum at login so an always-on desktop stays a sync hub across reboots
 # (toggled with the Background sync setting).
 tauri-plugin-autostart = "2"
+# Keep the always-on hub a single process: a second launch (Finder/Dock click
+# while the menu-bar agent is running) re-opens its window instead of starting a
+# rival process that would contend for the iroh-docs store.
+tauri-plugin-single-instance = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
