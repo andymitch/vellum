@@ -22,7 +22,10 @@ export async function exportVaultZip(vault: string, vaultName: string): Promise<
 // Import a .zip of .md files into the vault. Returns the number of notes added,
 // or null if cancelled.
 export async function importVaultZip(vault: string): Promise<number | null> {
-  const sel = await open({ multiple: false, filters: [{ name: "Zip archive", extensions: ["zip"] }] });
+  // No extension filter — Android SAF maps extensions to MIME types unreliably
+  // (a zip can register as application/octet-stream and get hidden). The backend
+  // validates the archive on parse.
+  const sel = await open({ multiple: false });
   if (!sel) return null;
   const path = sel as string;
   const bytes = await readFile(path);
@@ -44,10 +47,7 @@ export async function exportNoteMd(vault: string, notePath: string): Promise<boo
 // Import a single .md file into `dir` ("" = root). Returns the created path, or
 // null if cancelled.
 export async function importNoteMd(vault: string, dir: string): Promise<string | null> {
-  const sel = await open({
-    multiple: false,
-    filters: [{ name: "Markdown", extensions: ["md", "markdown", "txt"] }],
-  });
+  const sel = await open({ multiple: false });
   if (!sel) return null;
   const path = sel as string;
   const text = await readTextFile(path);
