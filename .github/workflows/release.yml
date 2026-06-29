@@ -170,6 +170,9 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
           PREV: ${{ needs.prepare.outputs.prev }}
+          # The vN tag doesn't exist until the draft is published below, so diff
+          # up to the release's target commit instead (avoids a compare 404).
+          HEAD: ${{ github.sha }}
         run: |
           node scripts/release-notes.mjs > notes.md
           cat notes.md

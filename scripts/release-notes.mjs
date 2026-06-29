@@ -8,7 +8,10 @@
 // first release). Auth via the gh CLI. Prints markdown to stdout.
 import { execFileSync } from "node:child_process";
 
-const { REPO, TAG, PREV } = process.env;
+// HEAD is the commit to diff up to. In CI the vN tag doesn't exist yet (the
+// release is still a draft — publishing creates the tag), so a compare against
+// TAG 404s; pass the release's target SHA as HEAD. Falls back to TAG locally.
+const { REPO, TAG, PREV, HEAD } = process.env;
 const [OWNER, NAME] = REPO.split("/");
 // execFile (no shell) — args are passed literally, so nothing is shell-interpreted.
 const ghJson = (args) =>
@@ -37,7 +40,7 @@ const categoryFor = (labels) =>
 // The last one matters because branches are often merged locally, with no PR —
 // those carry no PR number, so we fall back to the issue the branch name names.
 const messages = PREV
-  ? ghJson(["api", `repos/${REPO}/compare/${PREV}...${TAG}`, "--jq", "[.commits[].commit.message]"])
+  ? ghJson(["api", `repos/${REPO}/compare/${PREV}...${HEAD || TAG}`, "--jq", "[.commits[].commit.message]"])
   : ghJson(["api", `repos/${REPO}/commits`, "--paginate", "--jq", "[.[].commit.message]"]);
 
 const prNums = new Set();
