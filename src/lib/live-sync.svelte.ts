@@ -10,9 +10,9 @@ const KEY = "vellum-live-sync";
 
 let enabled = $state<boolean>(localStorage.getItem(KEY) === "1");
 
-// Push the persisted value to the backend at startup (e.g. re-arm the hub +
-// restart the Android service after a relaunch). Fire-and-forget — the backend
-// no-ops if the node isn't ready yet; the toggle path is the source of truth.
+// Push the persisted value to the backend at startup (e.g. re-arm the hub after a
+// relaunch). Fire-and-forget — the backend no-ops if the node isn't ready yet; the
+// toggle path is the source of truth.
 export function initLiveSync() {
   if (enabled) void setBackgroundSync(true).catch(() => {});
 }
