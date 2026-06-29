@@ -21,9 +21,11 @@ export const listTree = (vault: string) => invoke<TreeNode[]>("list_tree", { vau
 export const readNote = (vault: string, path: string) =>
   invoke<string>("read_note", { vault, path });
 // Writes note content. Filename and content are independent — renaming is an
-// explicit file action (rename_path), never derived from the content.
-export const writeNote = (vault: string, path: string, content: string) =>
-  invoke<void>("write_note", { vault, path, content });
+// explicit file action (rename_path), never derived from the content. `base` is
+// the text the editor loaded; the backend 3-way merges base→content against any
+// concurrent peer edit so neither side is clobbered (#99). New notes pass "".
+export const writeNote = (vault: string, path: string, content: string, base = "") =>
+  invoke<void>("write_note", { vault, path, base, content });
 // Returns the actual (possibly de-duplicated) path of the created note.
 export const createNote = (vault: string, path: string) =>
   invoke<string>("create_note", { vault, path });

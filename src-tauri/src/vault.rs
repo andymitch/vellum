@@ -39,9 +39,19 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
+use yrs::updates::decoder::Decode;
+use yrs::{Doc, GetString, ReadTxn, StateVector, Text, TextRef, Transact, TransactionMut, Update};
 
 const NAME_KEY: &[u8] = b"\x00meta/name";
 const MARKER: u8 = 0x01;
+// Note bodies are stored as a yrs (CRDT) document state, tagged 0x02, so
+// concurrent edits on different devices merge instead of clobbering — plain
+// last-writer-wins would silently drop one side (issue #99). Plain-text values
+// (the vault meta name, `.keep` folder markers, and pre-CRDT notes) stay tagged
+// 0x01 (MARKER) and are seeded into a CRDT on first edit. Each note doc holds a
+// single text type rooted under TEXT_ROOT.
+const TAG_YRS: u8 = 0x02;
+const TEXT_ROOT: &str = "t";
 const KEEP: &str = ".keep";
 // How often to sweep orphaned content blobs (old note versions no longer
 // referenced by any entry). Blobs referenced by current entries are protected.
@@ -136,6 +146,185 @@ fn decode(bytes: &[u8]) -> String {
         _ => bytes,
     };
     String::from_utf8_lossy(body).into_owned()
+}
+
+// ---- note CRDT (yrs) ----
+
+/// Deterministic yrs client id from `bytes` via FNV-1a, masked to 53 bits (yrs
+/// requires Yjs-compatible 53-bit ids). Identical input → identical id on every
+/// device, so e.g. a legacy note seeded independently on two peers produces
+/// byte-identical ops that dedup on merge instead of duplicating the text.
+fn client_id(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h & ((1u64 << 53) - 1)
+}
+
+/// A full-state v1 yrs update for a doc whose text is `s`, built with a
+/// content-derived client id so the same text seeds identically on any device.
+/// This is the unit applied when merging, and (tagged) the value we store.
+fn seed_update(s: &str) -> Vec<u8> {
+    let doc = Doc::with_client_id(client_id(format!("seed:{s}").as_bytes()));
+    let text = doc.get_or_insert_text(TEXT_ROOT);
+    let mut txn = doc.transact_mut();
+    if !s.is_empty() {
+        text.insert(&mut txn, 0, s);
+    }
+    txn.encode_state_as_update_v1(&StateVector::default())
+}
+
+/// Turn one stored note value into a yrs update ready to apply: a 0x02 value is
+/// already an update; a legacy 0x01 (or untagged) value is seeded from its text.
+fn value_to_update(bytes: &[u8]) -> Vec<u8> {
+    match bytes.first() {
+        Some(&TAG_YRS) => bytes[1..].to_vec(),
+        _ => seed_update(&decode(bytes)),
+    }
+}
+
+/// Materialize a note doc's text.
+fn doc_text(doc: &Doc) -> String {
+    let text = doc.get_or_insert_text(TEXT_ROOT);
+    let txn = doc.transact();
+    text.get_string(&txn)
+}
+
+/// Encode a note doc's full state for storage, tagged 0x02.
+fn encode_doc(doc: &Doc) -> Vec<u8> {
+    let txn = doc.transact();
+    let state = txn.encode_state_as_update_v1(&StateVector::default());
+    let mut v = Vec::with_capacity(state.len() + 1);
+    v.push(TAG_YRS);
+    v.extend_from_slice(&state);
+    v
+}
+
+/// A fresh note value (tagged 0x02) holding `s` — used when creating a note or
+/// writing one to a new key (rename/import).
+fn fresh_note(s: &str) -> Vec<u8> {
+    let mut v = Vec::with_capacity(s.len() + 1);
+    v.push(TAG_YRS);
+    v.extend_from_slice(&seed_update(s));
+    v
+}
+
+/// Apply the minimal single-region edit turning `old` into `new` onto a yrs text
+/// whose current content is `old`. Offsets are byte offsets (OffsetKind::Bytes),
+/// backed off to UTF-8 char boundaries so a codepoint is never split. Callers
+/// must pass the doc's *current* text as `old`, so the offsets are always valid.
+fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &str) {
+    let (ob, nb) = (old.as_bytes(), new.as_bytes());
+    let max = ob.len().min(nb.len());
+    let mut p = 0;
+    while p < max && ob[p] == nb[p] {
+        p += 1;
+    }
+    while p > 0 && (!old.is_char_boundary(p) || !new.is_char_boundary(p)) {
+        p -= 1;
+    }
+    let mut s = 0;
+    while s < (ob.len() - p).min(nb.len() - p) && ob[ob.len() - 1 - s] == nb[nb.len() - 1 - s] {
+        s += 1;
+    }
+    while s > 0 && (!old.is_char_boundary(ob.len() - s) || !new.is_char_boundary(nb.len() - s)) {
+        s -= 1;
+    }
+    let remove_len = ob.len() - p - s;
+    if remove_len > 0 {
+        text.remove_range(txn, p as u32, remove_len as u32);
+    }
+    let ins = &new[p..nb.len() - s];
+    if !ins.is_empty() {
+        text.insert(txn, p as u32, ins);
+    }
+}
+
+/// Merge every author's stored state for a note key into one yrs doc. iroh-docs
+/// keeps one entry per (key, author); reading only the newest (LWW) would drop a
+/// peer's concurrent edit, so we apply them all — yrs merges them order-free.
+/// `client_id` identifies edits we are about to make on the returned doc (use 0
+/// for a read-only merge). Tombstones and not-yet-downloaded blobs are skipped.
+/// Returns the doc and whether any content was applied.
+async fn merged_note(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    key: &[u8],
+    client_id: u64,
+) -> Result<(Doc, bool)> {
+    let ydoc = Doc::with_client_id(client_id);
+    let mut found = false;
+    let mut stream = Box::pin(doc.get_many(Query::key_exact(key)).await?);
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        if entry.content_len() == 0 {
+            continue; // tombstone (deleted by some author)
+        }
+        // After a sync the entry can exist before its content blob has
+        // downloaded; skip it (a ContentReady event re-fires the read).
+        let Ok(bytes) = node.blobs.blobs().get_bytes(entry.content_hash()).await else {
+            continue;
+        };
+        if let Ok(update) = Update::decode_v1(&value_to_update(&bytes)) {
+            let mut txn = ydoc.transact_mut();
+            if txn.apply_update(update).is_ok() {
+                found = true;
+            }
+        }
+    }
+    Ok((ydoc, found))
+}
+
+/// Current merged text of a note, or `None` if the note is deleted or no entry's
+/// content is available yet.
+async fn read_note_text(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    key: &[u8],
+) -> Result<Option<String>> {
+    // Deletion (a tombstone with the newest timestamp) wins over older edits,
+    // matching the pre-CRDT LWW behavior — don't resurrect a deleted note from a
+    // stale per-author entry that a peer hasn't tombstoned yet.
+    let live = Query::single_latest_per_key().key_exact(key);
+    if !doc.get_one(live).await?.is_some_and(|e| e.content_len() > 0) {
+        return Ok(None);
+    }
+    let (ydoc, found) = merged_note(node, doc, key, 0).await?;
+    Ok(found.then(|| doc_text(&ydoc)))
+}
+
+/// Apply a whole-buffer note edit to its CRDT. The editor sends the text it
+/// loaded (`base`) and the text now (`content`); we 3-way merge those against the
+/// current merged state (`cur`) so a peer's concurrent edit is preserved rather
+/// than overwritten (issue #99). True same-region conflicts come back as inline
+/// `<<<<<<<`/`>>>>>>>` markers — surfaced, never silently dropped. The resulting
+/// delta is applied relative to `cur`, so yrs offsets are always in bounds even
+/// when a remote edit shifted them.
+async fn write_note_merged(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    key: &[u8],
+    base: &str,
+    content: &str,
+) -> Result<()> {
+    let cid = client_id(node.author.to_string().as_bytes());
+    let (ydoc, _) = merged_note(node, doc, key, cid).await?;
+    let cur = doc_text(&ydoc);
+    let merged = match diffy::merge(base, &cur, content) {
+        Ok(m) | Err(m) => m,
+    };
+    if merged == cur {
+        return Ok(()); // nothing new to store
+    }
+    {
+        let text = ydoc.get_or_insert_text(TEXT_ROOT);
+        let mut txn = ydoc.transact_mut();
+        apply_text_diff(&text, &mut txn, &cur, &merged);
+    }
+    doc.set_bytes(node.author, key.to_vec(), encode_doc(&ydoc)).await?;
+    Ok(())
 }
 
 fn peers_path(dir: &std::path::Path) -> PathBuf {
@@ -760,7 +949,7 @@ pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: Stri
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            Ok(read_key(node, &doc, path.as_bytes()).await?.unwrap_or_default())
+            Ok(read_note_text(node, &doc, path.as_bytes()).await?.unwrap_or_default())
         }
         .await,
     )
@@ -791,7 +980,7 @@ pub async fn export_vault(state: State<'_, VaultManager>, vault: String) -> Resu
                     }
                     continue;
                 }
-                let content = read_key(node, &doc, key.as_bytes()).await?.unwrap_or_default();
+                let content = read_note_text(node, &doc, key.as_bytes()).await?.unwrap_or_default();
                 items.push((key.clone(), Some(content)));
             }
             let opts = zip::write::SimpleFileOptions::default()
@@ -876,7 +1065,7 @@ pub async fn import_vault(
                             name
                         };
                         let free = free_key(&doc, &path).await?;
-                        doc.set_bytes(node.author, free.into_bytes(), encode(&c)).await?;
+                        doc.set_bytes(node.author, free.into_bytes(), fresh_note(&c)).await?;
                         count += 1;
                     }
                 }
@@ -887,19 +1076,22 @@ pub async fn import_vault(
     )
 }
 
+/// Save a note. `base` is the text the editor last loaded; it lets the backend
+/// 3-way merge the user's buffer (`content`) against any concurrent peer edit
+/// instead of overwriting it (see `write_note_merged`, issue #99).
 #[tauri::command]
 pub async fn write_note(
     state: State<'_, VaultManager>,
     vault: String,
     path: String,
+    base: String,
     content: String,
 ) -> Result<(), String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            doc.set_bytes(node.author, path.clone().into_bytes(), encode(&content)).await?;
-            Ok(())
+            write_note_merged(node, &doc, path.as_bytes(), &base, &content).await
         }
         .await,
     )
@@ -912,7 +1104,7 @@ pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: St
         async {
             let doc = open(node, &vault).await?;
             let free = free_key(&doc, &path).await?;
-            doc.set_bytes(node.author, free.clone().into_bytes(), encode("")).await?;
+            doc.set_bytes(node.author, free.clone().into_bytes(), fresh_note("")).await?;
             Ok(free)
         }
         .await,
@@ -945,20 +1137,35 @@ pub async fn rename_path(
     map_err(
         async {
             let doc = open(node, &vault).await?;
+            // Copy the merged CRDT state to the new key (preserving edit history),
+            // then tombstone the old one. A note whose content blob hasn't synced
+            // yet reads as empty (merged_note `found == false`); copying it would
+            // write a blank note and the tombstone would lose the original, so we
+            // abort the rename instead and let the user retry once sync catches up.
             if is_dir {
                 let from_prefix = format!("{}/", from.trim_end_matches('/'));
                 let to_prefix = format!("{}/", to.trim_end_matches('/'));
                 let keys = list_keys(&doc).await?;
+                // Stage every child first; bail before mutating if any isn't ready.
+                let mut staged = Vec::new();
                 for key in keys.iter().filter(|k| k.starts_with(&from_prefix)) {
                     let new_key = format!("{}{}", to_prefix, &key[from_prefix.len()..]);
-                    if let Some(content) = read_key(node, &doc, key.as_bytes()).await? {
-                        doc.set_bytes(node.author, new_key.into_bytes(), encode(&content)).await?;
+                    let (ydoc, found) = merged_note(node, &doc, key.as_bytes(), 0).await?;
+                    if !found {
+                        return Err(anyhow!("folder contents still syncing; try again"));
                     }
+                    staged.push((new_key, encode_doc(&ydoc)));
+                }
+                for (new_key, val) in staged {
+                    doc.set_bytes(node.author, new_key.into_bytes(), val).await?;
                 }
                 doc.del(node.author, from_prefix.into_bytes()).await?;
             } else {
-                let content = read_key(node, &doc, from.as_bytes()).await?.unwrap_or_default();
-                doc.set_bytes(node.author, to.into_bytes(), encode(&content)).await?;
+                let (ydoc, found) = merged_note(node, &doc, from.as_bytes(), 0).await?;
+                if !found {
+                    return Err(anyhow!("note content still syncing; try again"));
+                }
+                doc.set_bytes(node.author, to.into_bytes(), encode_doc(&ydoc)).await?;
                 doc.del(node.author, from.into_bytes()).await?;
             }
             Ok(())
@@ -1147,6 +1354,117 @@ mod tests {
         assert_eq!(got2.as_deref(), Some("from B"), "A did not receive B's note");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Concurrent edits to the SAME note on two peers must both survive — the
+    /// whole-note last-writer-wins clobber was issue #99. A creates a note, B
+    /// joins, then each appends a different line *before* the other's edit syncs;
+    /// after convergence both lines are present on both sides.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_note_edits_merge() {
+        let base_dir = std::env::temp_dir().join(format!("notes-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let a = init(base_dir.join("a")).await.expect("node A");
+        let b = init(base_dir.join("b")).await.expect("node B");
+
+        let doc_a = a.docs.create().await.expect("create");
+        let key = b"shared.md";
+        // Seed the note via the same path the app uses (CRDT-tagged value).
+        doc_a.set_bytes(a.author, key.to_vec(), fresh_note("L1\n")).await.expect("seed");
+        let ticket = doc_a
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .expect("share");
+        let doc_b = b
+            .docs
+            .import(DocTicket::from_str(&ticket.to_string()).expect("ticket"))
+            .await
+            .expect("import");
+
+        // B must receive the seed before editing, else there's no shared base.
+        let mut seeded = None;
+        for _ in 0..60 {
+            if let Ok(Some(t)) = read_note_text(&b, &doc_b, key).await {
+                seeded = Some(t);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(seeded.as_deref(), Some("L1\n"), "B did not receive the seed note");
+
+        // Each appends a distinct line from the same base, concurrently.
+        write_note_merged(&a, &doc_a, key, "L1\n", "L1\nfrom-A\n").await.expect("A edit");
+        write_note_merged(&b, &doc_b, key, "L1\n", "L1\nfrom-B\n").await.expect("B edit");
+
+        // Both edits converge on both peers.
+        for (node, doc, who) in [(&a, &doc_a, "A"), (&b, &doc_b, "B")] {
+            let mut ok = false;
+            for _ in 0..60 {
+                if let Ok(Some(t)) = read_note_text(node, doc, key).await {
+                    if t.contains("from-A") && t.contains("from-B") {
+                        ok = true;
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            assert!(ok, "{who} is missing one side's edit (clobber regression)");
+        }
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// Legacy plain-text notes (tagged 0x01, pre-CRDT) still read, and merging two
+    /// devices that independently seed the *same* legacy text does not duplicate
+    /// it (deterministic content-derived seed client id).
+    #[tokio::test]
+    async fn legacy_text_reads_and_seeds_dedup() {
+        let dir = std::env::temp_dir().join(format!("notes-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+
+        // A pre-CRDT note: plain text value (0x01).
+        doc.set_bytes(node.author, b"old.md".to_vec(), encode("legacy body")).await.expect("set");
+        assert_eq!(
+            read_note_text(&node, &doc, b"old.md").await.expect("read").as_deref(),
+            Some("legacy body"),
+        );
+        // Two independent seeds of identical text merge to one copy, not two.
+        let ydoc = Doc::with_client_id(0);
+        {
+            let mut txn = ydoc.transact_mut();
+            txn.apply_update(Update::decode_v1(&seed_update("hello")).unwrap()).unwrap();
+            txn.apply_update(Update::decode_v1(&seed_update("hello")).unwrap()).unwrap();
+        }
+        assert_eq!(doc_text(&ydoc), "hello", "identical seeds duplicated text");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A note's content survives a rename (CRDT state copied to the new key),
+    /// and the old key is gone. Guards the rename-copy path added for #99.
+    #[tokio::test]
+    async fn rename_preserves_note_content() {
+        let dir = std::env::temp_dir().join(format!("notes-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+
+        doc.set_bytes(node.author, b"a.md".to_vec(), fresh_note("hello world")).await.expect("seed");
+        // Mirror rename_path's single-file copy+tombstone.
+        let (ydoc, found) = merged_note(&node, &doc, b"a.md", 0).await.expect("merge");
+        assert!(found);
+        doc.set_bytes(node.author, b"b.md".to_vec(), encode_doc(&ydoc)).await.expect("copy");
+        doc.del(node.author, b"a.md".to_vec()).await.expect("del");
+
+        assert_eq!(
+            read_note_text(&node, &doc, b"b.md").await.expect("read").as_deref(),
+            Some("hello world"),
+        );
+        assert_eq!(read_note_text(&node, &doc, b"a.md").await.expect("read old").as_deref(), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The data path behind the `vault-changed` Tauri event: subscribing to a
