@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil } from "@lucide/svelte";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -64,6 +64,10 @@
     oncopy,
     ondelete,
     onrename,
+    onexportnote,
+    onexportvault,
+    onimportvault,
+    onimportnote,
   }: {
     open?: boolean;
     activePath?: string | null;
@@ -74,6 +78,10 @@
     oncopy: () => void;
     ondelete: () => void;
     onrename: () => void;
+    onexportnote: () => void;
+    onexportvault: () => void;
+    onimportvault: () => void;
+    onimportnote: () => void;
   } = $props();
 
   let movePicker = $state(false);
@@ -217,6 +225,17 @@
           </button>
           <button
             type="button"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+            onclick={() => {
+              onexportnote();
+              open = false;
+            }}
+          >
+            <FileDown class="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Export as Markdown</span>
+          </button>
+          <button
+            type="button"
             class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm text-destructive hover:bg-muted"
             onclick={() => {
               ondelete();
@@ -229,6 +248,45 @@
 
           <div class="my-4 border-t border-border"></div>
         {/if}
+
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Data
+        </p>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          onclick={() => {
+            onimportnote();
+            open = false;
+          }}
+        >
+          <FileUp class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Import note (.md)</span>
+        </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          onclick={() => {
+            onexportvault();
+            open = false;
+          }}
+        >
+          <Archive class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Export vault (.zip)</span>
+        </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          onclick={() => {
+            onimportvault();
+            open = false;
+          }}
+        >
+          <ArchiveRestore class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Import vault (.zip)</span>
+        </button>
+
+        <div class="my-4 border-t border-border"></div>
 
         <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Appearance

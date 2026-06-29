@@ -730,6 +730,116 @@ pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: Stri
     )
 }
 
+/// Export every note in the vault as a zip of `.md` files mirroring the folder
+/// tree (#79). Empty folders are preserved as zip directory entries; the meta
+/// name entry is skipped. Returns the zip bytes for the frontend to save.
+#[tauri::command]
+pub async fn export_vault(state: State<'_, VaultManager>, vault: String) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let node = state.node().await?;
+    map_err(
+        async {
+            let doc = open(node, &vault).await?;
+            let keys = list_keys(&doc).await?;
+            // Read all contents first — the zip writer isn't Send, so it must not
+            // be held across an await. (name, Some(content)) = file; None = dir.
+            let mut items: Vec<(String, Option<String>)> = Vec::new();
+            for key in &keys {
+                if key.as_bytes().first() == Some(&0) {
+                    continue; // \x00meta/* — internal, not a note
+                }
+                if key == KEEP || key.ends_with(&format!("/{KEEP}")) {
+                    let dir = &key[..key.len() - KEEP.len()]; // keeps trailing '/'
+                    if !dir.is_empty() {
+                        items.push((dir.to_string(), None));
+                    }
+                    continue;
+                }
+                let content = read_key(node, &doc, key.as_bytes()).await?.unwrap_or_default();
+                items.push((key.clone(), Some(content)));
+            }
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
+            for (name, content) in items {
+                match content {
+                    None => zip.add_directory(&name, opts)?,
+                    Some(c) => {
+                        zip.start_file(&name, opts)?;
+                        zip.write_all(c.as_bytes())?;
+                    }
+                }
+            }
+            Ok(zip.finish()?.into_inner())
+        }
+        .await,
+    )
+}
+
+/// Import a zip of `.md` files into the vault (#79), recreating the folder tree.
+/// Name collisions are de-duplicated against existing notes (free_key). Empty
+/// directory entries recreate empty folders. Returns the number of notes added.
+#[tauri::command]
+pub async fn import_vault(
+    state: State<'_, VaultManager>,
+    vault: String,
+    data: Vec<u8>,
+) -> Result<usize, String> {
+    use std::io::Read;
+    let node = state.node().await?;
+    map_err(
+        async {
+            // Drain the archive into memory first — ZipArchive isn't Send, so it
+            // must be fully read (and dropped) before any await.
+            let items: Vec<(String, Option<String>)> = {
+                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data))?;
+                let mut v = Vec::new();
+                for i in 0..archive.len() {
+                    let mut entry = archive.by_index(i)?;
+                    let name = entry.name().replace('\\', "/");
+                    if entry.is_dir() {
+                        v.push((name, None));
+                        continue;
+                    }
+                    let lower = name.to_lowercase();
+                    if !(lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")) {
+                        continue; // only text/markdown
+                    }
+                    let mut s = String::new();
+                    if entry.read_to_string(&mut s).is_err() {
+                        continue; // non-utf8 — skip rather than fail the whole import
+                    }
+                    v.push((name, Some(s)));
+                }
+                v
+            };
+            let doc = open(node, &vault).await?;
+            let mut count = 0usize;
+            for (name, content) in items {
+                match content {
+                    None => {
+                        let key = format!("{}{}", name.trim_end_matches('/'), format!("/{KEEP}"));
+                        doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
+                    }
+                    Some(c) => {
+                        // .txt imports normalize to .md so they open as notes.
+                        let path = if name.to_lowercase().ends_with(".txt") {
+                            format!("{}.md", &name[..name.len() - 4])
+                        } else {
+                            name
+                        };
+                        let free = free_key(&doc, &path).await?;
+                        doc.set_bytes(node.author, free.into_bytes(), encode(&c)).await?;
+                        count += 1;
+                    }
+                }
+            }
+            Ok(count)
+        }
+        .await,
+    )
+}
+
 #[tauri::command]
 pub async fn write_note(
     state: State<'_, VaultManager>,

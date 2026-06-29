@@ -29,6 +29,11 @@ export const createNote = (vault: string, path: string) =>
   invoke<string>("create_note", { vault, path });
 export const createFolder = (vault: string, path: string) =>
   invoke<void>("create_folder", { vault, path });
+// Markdown export/import (#79). Bytes cross IPC as a number[]; the caller wraps
+// them in a Uint8Array / Array.from for the fs plugin.
+export const exportVault = (vault: string) => invoke<number[]>("export_vault", { vault });
+export const importVault = (vault: string, data: number[]) =>
+  invoke<number>("import_vault", { vault, data });
 export const renamePath = (vault: string, from: string, to: string, isDir: boolean) =>
   invoke<void>("rename_path", { vault, from, to, isDir });
 export const deletePath = (vault: string, path: string, isDir: boolean) =>

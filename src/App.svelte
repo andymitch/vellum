@@ -21,6 +21,7 @@
   } from "$lib/vault";
   import { session } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
+  import { exportVaultZip, importVaultZip, exportNoteMd, importNoteMd } from "$lib/transfer";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
@@ -511,6 +512,11 @@
     const finalPath = await duplicateNoteFile(activeVault, activePath, tree);
     handleOpen(activeVault, finalPath);
   }
+  async function onImportNote() {
+    if (!activeVault) return;
+    const created = await importNoteMd(activeVault, currentDir);
+    if (created) handleOpen(activeVault, created);
+  }
   async function copyContents() {
     try {
       await navigator.clipboard.writeText(content);
@@ -836,6 +842,10 @@
   oncopy={copyContents}
   ondelete={deleteNote}
   onrename={() => sidebar?.renameActive()}
+  onexportnote={() => activeVault && activePath && exportNoteMd(activeVault, activePath)}
+  onexportvault={() => activeVault && exportVaultZip(activeVault, "")}
+  onimportvault={() => activeVault && importVaultZip(activeVault)}
+  onimportnote={onImportNote}
 />
 
 <style>
