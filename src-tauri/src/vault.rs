@@ -261,23 +261,29 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     }
 }
 
-// Android only: a clone of the endpoint, so the JNI network-change hook (fired
-// from Kotlin's ConnectivityManager callback) can notify iroh. Android doesn't
-// surface network changes to native code, so iroh relies on us telling it.
-#[cfg(target_os = "android")]
+// A clone of the live node bits needed to recover sync after the OS freezes our
+// sockets without telling iroh. Used by the recovery hooks below:
+//   - Android: the JNI network-change / app-resume callbacks (ConnectivityManager
+//     + onResume) — Android doesn't surface these to native code.
+//   - Desktop: the wake-from-suspend detector (macOS et al. freeze sockets +
+//     relay paths during sleep, and a same-IP wake doesn't trip iroh's monitor).
+#[cfg(any(target_os = "android", desktop))]
 struct NetHandle {
     endpoint: Endpoint,
     docs: Docs,
     watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
     peers: std::sync::Arc<Mutex<PeerMap>>,
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", desktop))]
 static NET: std::sync::OnceLock<NetHandle> = std::sync::OnceLock::new();
 
 // Re-probe the endpoint and re-dial every watched vault's peers. Shared by the
-// network-change and app-resume hooks: both leave iroh with stale sockets/paths
-// it can't detect on Android, and the recovery action is identical.
-#[cfg(target_os = "android")]
+// network-change, app-resume, and wake-from-suspend hooks: all leave iroh with
+// stale sockets/paths it can't detect, and the recovery action is identical.
+// Crucially this re-calls start_sync directly, bypassing arm_vault's "already
+// watched" guard — the vault stays watched across a freeze, so re-arming it that
+// way would be a no-op and never re-dial.
+#[cfg(any(target_os = "android", desktop))]
 fn rearm_sync() {
     let Some(net) = NET.get() else { return };
     let endpoint = net.endpoint.clone();
@@ -378,13 +384,43 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
             }
         });
     }
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", desktop))]
     let _ = NET.set(NetHandle {
         endpoint: endpoint.clone(),
         docs: docs.clone(),
         watched: watched.clone(),
         peers: peers.clone(),
     });
+    // Desktop wake-from-suspend recovery. macOS (and others) freeze our UDP
+    // sockets + relay paths during sleep; on wake the IP is often unchanged, so
+    // iroh's own monitor doesn't fire and live sync stays dead until restart
+    // (#107). Android gets the same recovery from MainActivity.onResume; desktop
+    // has no such signal, so we infer a wake by watching wall-clock for a jump.
+    // We compare SystemTime, not Instant: macOS's monotonic clock pauses during
+    // sleep, so a sleeping timer wouldn't reveal the gap, but wall-clock does.
+    #[cfg(desktop)]
+    {
+        tauri::async_runtime::spawn(async move {
+            let tick = Duration::from_secs(10);
+            // Tolerate normal scheduling slop + small NTP steps; only a real
+            // suspend produces a multi-minute jump.
+            let wake_threshold = tick + Duration::from_secs(20);
+            loop {
+                let before = std::time::SystemTime::now();
+                tokio::time::sleep(tick).await;
+                let elapsed = std::time::SystemTime::now()
+                    .duration_since(before)
+                    .unwrap_or(tick);
+                if elapsed > wake_threshold {
+                    tracing::info!(
+                        gap_secs = elapsed.as_secs(),
+                        "wake from suspend detected; re-arming sync"
+                    );
+                    rearm_sync();
+                }
+            }
+        });
+    }
 
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
