@@ -13,6 +13,9 @@ export async function checkForUpdate(): Promise<void> {
     return; // no updater (mobile), offline, or endpoint unreachable
   }
   if (!update?.available) return;
+  // Skip dev builds (v0 / major < 1): they're built locally off a 0.x version
+  // and would otherwise be nagged to "update" to a real release every launch.
+  if ((parseInt(update.currentVersion.split(".")[0], 10) || 0) < 1) return;
   // Show "vN": our release scheme stamps the tag's integer as the semver major
   // (vN -> N.0.0), so the major component is the release number (matches the
   // version shown in Settings).
