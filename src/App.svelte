@@ -426,7 +426,7 @@
   // A `[[note#heading]]` link: open the note (unless already open) and scroll
   // the preview to the heading. Headings get their slug ids after Preview
   // renders, so retry across a few frames until the anchor exists (#45).
-  function openInternalLink(path: string, fragment?: string) {
+  function openInternalLink(path: string, fragment: string | undefined) {
     if (!activeVault) return;
     if (path !== activePath) handleOpen(activeVault, path);
     if (!fragment) return;
