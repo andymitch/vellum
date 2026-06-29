@@ -512,10 +512,19 @@
     const finalPath = await duplicateNoteFile(activeVault, activePath, tree);
     handleOpen(activeVault, finalPath);
   }
+  // Import/export run through native dialogs + the backend; surface any failure
+  // instead of letting the promise reject silently (#79).
+  function reportTransferError(e: unknown) {
+    console.error("import/export failed", e);
+  }
   async function onImportNote() {
     if (!activeVault) return;
-    const created = await importNoteMd(activeVault, currentDir);
-    if (created) handleOpen(activeVault, created);
+    try {
+      const created = await importNoteMd(activeVault, currentDir);
+      if (created) handleOpen(activeVault, created);
+    } catch (e) {
+      reportTransferError(e);
+    }
   }
   async function copyContents() {
     try {
@@ -842,9 +851,10 @@
   oncopy={copyContents}
   ondelete={deleteNote}
   onrename={() => sidebar?.renameActive()}
-  onexportnote={() => activeVault && activePath && exportNoteMd(activeVault, activePath)}
-  onexportvault={() => activeVault && exportVaultZip(activeVault, "")}
-  onimportvault={() => activeVault && importVaultZip(activeVault)}
+  onexportnote={() =>
+    activeVault && activePath && exportNoteMd(activeVault, activePath).catch(reportTransferError)}
+  onexportvault={() => activeVault && exportVaultZip(activeVault, "").catch(reportTransferError)}
+  onimportvault={() => activeVault && importVaultZip(activeVault).catch(reportTransferError)}
   onimportnote={onImportNote}
 />
 

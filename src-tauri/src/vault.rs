@@ -797,6 +797,17 @@ pub async fn import_vault(
                 for i in 0..archive.len() {
                     let mut entry = archive.by_index(i)?;
                     let name = entry.name().replace('\\', "/");
+                    let name = name.trim_start_matches('/').to_string();
+                    // Entry names become iroh-docs keys, so reject a crafted
+                    // archive's path traversal ('..'), empty segments, and
+                    // meta-namespace injection (a \x00-prefixed segment).
+                    if name
+                        .trim_end_matches('/')
+                        .split('/')
+                        .any(|c| c.is_empty() || c == ".." || c.as_bytes().first() == Some(&0))
+                    {
+                        continue;
+                    }
                     if entry.is_dir() {
                         v.push((name, None));
                         continue;
