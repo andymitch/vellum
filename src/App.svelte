@@ -430,11 +430,16 @@
     if (path !== activePath) handleOpen(activeVault, path);
     if (!fragment) return;
     const sel = `#${CSS.escape(slugify(fragment))}`;
+    let done = false;
     for (const d of [0, 60, 150, 300])
-      setTimeout(
-        () => mainEl?.querySelector(sel)?.scrollIntoView({ behavior: "smooth", block: "start" }),
-        d,
-      );
+      setTimeout(() => {
+        if (done) return;
+        const el = mainEl?.querySelector(sel);
+        if (el) {
+          done = true;
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }, d);
   }
 
   async function handleOpen(vault: string, path: string, focus = false) {
