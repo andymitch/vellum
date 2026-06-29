@@ -1,8 +1,8 @@
-// Background sync ("live sync") preference. When on, the backend arms every
-// vault as an always-on hub and the platform keeps the process alive (desktop:
-// tray + launch-at-login; Android: foreground service) so notes keep syncing
-// with no window open / while the app is backgrounded. Persisted to localStorage
-// and pushed to the backend on change and once on launch.
+// Background sync ("live sync") preference — desktop only (the Settings toggle is
+// hidden on mobile). When on, the backend arms every vault as an always-on hub and
+// keeps the process alive in the menu-bar tray + launches at login, so notes keep
+// syncing with no window open. Persisted to localStorage and pushed to the backend
+// on change and once on launch.
 
 import { setBackgroundSync } from "./vault";
 
@@ -10,9 +10,9 @@ const KEY = "vellum-live-sync";
 
 let enabled = $state<boolean>(localStorage.getItem(KEY) === "1");
 
-// Push the persisted value to the backend at startup (e.g. re-arm the hub +
-// restart the Android service after a relaunch). Fire-and-forget — the backend
-// no-ops if the node isn't ready yet; the toggle path is the source of truth.
+// Push the persisted value to the backend at startup (e.g. re-arm the hub after a
+// relaunch). Fire-and-forget — the backend no-ops if the node isn't ready yet; the
+// toggle path is the source of truth.
 export function initLiveSync() {
   if (enabled) void setBackgroundSync(true).catch(() => {});
 }

@@ -27,7 +27,3 @@
 # the Material You theme on installed releases (debug builds aren't minified, so
 # this is invisible in `tauri android dev`). Keep the class and its members.
 -keep class com.andymitch.vellum.MainActivity { *; }
-
-# Foreground service for Background sync — declared in the manifest and started
-# by name. Keep it (and its members) from being shrunk/renamed by R8 in release.
--keep class com.andymitch.vellum.SyncService { *; }

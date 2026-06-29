@@ -2,43 +2,12 @@ mod vault;
 
 use tauri::Manager;
 
-// The app class loader, cached on the Android UI thread during initAndroidContext.
-// Worker threads (async Tauri commands run on tokio) JNI-attach with the *system*
-// class loader, which can't resolve app classes by name — so we resolve them via
-// this loader's loadClass() instead. (Sync commands run on the UI thread and can
-// FindClass directly, which is why set_dark_mode works by name.)
-#[cfg(target_os = "android")]
-static APP_CLASS_LOADER: std::sync::OnceLock<jni::objects::GlobalRef> =
-    std::sync::OnceLock::new();
-
-// Guards one-time Android context init. With Background sync on, the process can
-// outlive its Activity (we prevent the exit on swipe-away so the iroh node keeps
-// running). A relaunched Activity calls initAndroidContext again, but
-// ndk_context::initialize_android_context panics if called twice — and the cached
-// VM/context/loader are still valid for the (same) process — so we init only once.
+// Guards one-time Android context init. An Activity can be recreated within the
+// same process (e.g. a config change), which would call initAndroidContext again,
+// but ndk_context::initialize_android_context panics if called twice — and the
+// cached VM/context are still valid for the (same) process — so we init only once.
 #[cfg(target_os = "android")]
 static ANDROID_CTX_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-// Set when we prevent the process exit on Activity destroy (Background sync on,
-// swipe-away). The WebView is gone but the process + iroh node live on. Tauri
-// can't rebuild the WebView in this process, so a relaunched Activity would show
-// a blank screen — MainActivity checks this (survivedBackgroundExit) and restarts
-// the app fresh for a working UI. See the run() exit handler.
-#[cfg(target_os = "android")]
-static EXIT_PREVENTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-// Called from MainActivity.onCreate. True if this process kept itself alive
-// through a prior Activity destroy for background sync (see EXIT_PREVENTED), i.e.
-// the Activity is being recreated into a process whose WebView can't be rebuilt —
-// the caller should relaunch fresh.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_andymitch_vellum_MainActivity_survivedBackgroundExit(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-) -> jni::sys::jboolean {
-    EXIT_PREVENTED.load(std::sync::atomic::Ordering::Relaxed) as jni::sys::jboolean
-}
 
 /// Called from MainActivity.onCreate (Kotlin `external fun`). Tauri's Android
 /// runtime never populates the `ndk-context` crate global, so libraries that
@@ -48,32 +17,18 @@ pub extern "system" fn Java_com_andymitch_vellum_MainActivity_survivedBackground
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext(
-    mut env: jni::JNIEnv,
+    env: jni::JNIEnv,
     _class: jni::objects::JClass,
     context: jni::objects::JObject,
 ) {
     use jni::objects::JObject;
-    // Already initialized for this process (e.g. the Activity was recreated while
-    // Background sync kept the process alive) — skip; re-initializing panics.
+    // Already initialized for this process (e.g. the Activity was recreated by a
+    // config change) — skip; re-initializing panics.
     if ANDROID_CTX_INIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     let Ok(vm) = env.get_java_vm() else { return };
     let Ok(global) = env.new_global_ref(&context) else { return };
-    // Cache the app class loader (we're on the UI thread here) so worker threads
-    // can resolve app classes by name via loadClass — see APP_CLASS_LOADER.
-    if let Ok(loader) = env.call_method(
-        &context,
-        "getClassLoader",
-        "()Ljava/lang/ClassLoader;",
-        &[],
-    ) {
-        if let Ok(obj) = loader.l() {
-            if let Ok(g) = env.new_global_ref(&obj) {
-                let _ = APP_CLASS_LOADER.set(g);
-            }
-        }
-    }
     // SAFETY: vm pointer is valid for the process; the context global ref is
     // leaked below so it outlives all readers.
     unsafe {
@@ -193,74 +148,26 @@ fn get_material_you() -> Option<String> {
     None
 }
 
-// Whether Background sync is on. Desktop: closing the window hides to the tray
-// (keep syncing) instead of quitting. Android: prevent the process from exiting
-// when the Activity is destroyed (swipe-away), so the in-process iroh node keeps
-// running under the foreground service. Mirrors the setting; see set_background_sync.
-#[cfg(any(desktop, target_os = "android"))]
+// Whether Background sync is on (desktop only). When on, closing the window hides
+// the app to the menu-bar tray instead of quitting, so the in-process iroh node
+// keeps syncing as an always-on hub. Mirrors the setting; see set_background_sync.
+#[cfg(desktop)]
 static LIVE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-// Start/stop the Android foreground service (keeps the process + iroh node alive
-// while backgrounded) via MainActivity.setBackgroundSync. Resolves the class
-// through the cached app class loader so it works from any thread (async commands
-// run on tokio workers whose system class loader can't find app classes by name).
-#[cfg(target_os = "android")]
-fn set_android_background_service(enabled: bool) {
-    let ctx = ndk_context::android_context();
-    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
-        return;
-    };
-    let Ok(mut env) = vm.attach_current_thread() else {
-        return;
-    };
-    let Some(loader) = APP_CLASS_LOADER.get() else {
-        tracing::warn!("no cached app classloader");
-        return;
-    };
-    let res = (|| -> jni::errors::Result<()> {
-        let name = env.new_string("com.andymitch.vellum.MainActivity")?;
-        let class = env
-            .call_method(
-                loader.as_obj(),
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[jni::objects::JValue::Object(name.as_ref())],
-            )?
-            .l()?;
-        let class = jni::objects::JClass::from(class);
-        env.call_static_method(
-            &class,
-            "setBackgroundSync",
-            "(Z)V",
-            &[jni::objects::JValue::Bool(enabled as u8)],
-        )?;
-        Ok(())
-    })();
-    // Clear any pending Java exception so it doesn't crash on return to the JVM.
-    if res.is_err() {
-        let _ = env.exception_clear();
-    }
-}
-
-/// Toggle background "live sync" (the Background sync setting). Arms every vault
-/// so this device is an always-on hub, then flips the platform keep-alive that
-/// lets it keep syncing with no window open / while backgrounded:
-///   - desktop: closing the window hides to the tray instead of quitting, and
-///     Vellum is registered to launch at login (so a desktop hub survives reboots).
-///   - Android: a foreground service holds the process alive in the background.
-/// The frontend calls this on toggle and once on launch if it was left enabled.
+/// Toggle background "live sync" (the desktop Background sync setting). Arms every
+/// vault so this device is an always-on hub, then flips the desktop keep-alive
+/// that lets it keep syncing with no window open: closing the window hides to the
+/// menu-bar tray instead of quitting, and Vellum is registered to launch at login
+/// (so a desktop hub survives reboots). The frontend calls this on toggle and once
+/// on launch if it was left enabled. No-op on mobile (the toggle is desktop-only).
 #[tauri::command]
 async fn set_background_sync(
     app: tauri::AppHandle,
     state: tauri::State<'_, vault::VaultManager>,
     enabled: bool,
 ) -> Result<(), String> {
-    #[cfg(any(desktop, target_os = "android"))]
-    LIVE_SYNC.store(enabled, std::sync::atomic::Ordering::Relaxed);
     #[cfg(desktop)]
     apply_desktop_background_sync(&app, enabled);
-    #[cfg(target_os = "android")]
-    set_android_background_service(enabled);
     if enabled {
         vault::arm_all_vaults(&app, state.inner()).await?;
     }
@@ -285,6 +192,20 @@ fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
     } else {
         autostart.disable()
     };
+    // Turned the hub off while running window-less (menu-bar agent): nothing left
+    // to keep the process around for, so exit cleanly instead of lingering invisibly.
+    if !enabled && app.webview_windows().is_empty() {
+        app.exit(0);
+    }
+}
+
+// Was the hub left enabled? Launch-at-login is our persisted signal — it's set
+// and cleared together with the Background sync setting (see above), so an
+// always-on desktop re-arms itself on a login (or manual) launch.
+#[cfg(desktop)]
+fn hub_enabled_at_launch(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -320,7 +241,16 @@ pub fn run() {
             .try_init();
     }
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Single-instance must be registered first (plugins run in registration order)
+    // so a second launch is intercepted before any window/node setup. Desktop only:
+    // it re-opens the running agent's window instead of spawning a rival process
+    // that would contend for the iroh-docs store.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        show_main_window(app);
+    }));
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         // Markdown export/import (#79) — dialog picks the file, fs reads/writes
         // it (incl. Android SAF). Both cross-platform.
@@ -342,30 +272,23 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ));
-    // Closing the window quits by default. With Background sync on, hide to the
-    // tray instead so the iroh node keeps syncing in the background.
-    #[cfg(desktop)]
-    let builder = builder.on_window_event(|window, event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        }
-    });
+    // Closing the window destroys it (frees the webview). With the hub on, the
+    // process survives the last window closing — see the ExitRequested handler in
+    // run() — so the iroh node keeps syncing as a menu-bar agent. With it off, the
+    // last window closing exits normally.
+    //
     // macOS Cmd+Q is the other "implicit quit" path. The native Quit menu item
-    // calls -[NSApplication terminate:], which tao delivers straight as
-    // RunEvent::Exit with NO RunEvent::ExitRequested first — so prevent_exit()
-    // can't catch it. We replace the app menu's Quit with our own item (id
-    // "menu_quit") so Cmd+Q routes through on_menu_event, where (like the close
-    // button) we hide to the tray while Background sync is on. The tray's "Quit
-    // Vellum" still hard-quits via app.exit(0). See setup_macos_menu.
+    // calls -[NSApplication terminate:], delivered straight as RunEvent::Exit with
+    // no preventable ExitRequested — so we swap the app menu's Quit for our own
+    // "menu_quit" item (see setup_macos_menu) and route it here: with the hub on,
+    // just close the window (the agent lives on); otherwise quit. The tray's "Quit
+    // Vellum" hard-quits via app.exit(0).
     #[cfg(target_os = "macos")]
     let builder = builder.on_menu_event(|app, ev| {
         if ev.id().as_ref() == "menu_quit" {
             if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
+                    let _ = w.close();
                 }
             } else {
                 app.exit(0);
@@ -383,11 +306,29 @@ pub fn run() {
             setup_tray(app)?;
             #[cfg(target_os = "macos")]
             setup_macos_menu(app)?;
-            // Started at login → stay hidden in the tray (don't pop a window).
+            // Re-arm the always-on hub if it was left enabled (launch-at-login is
+            // our persisted signal). Builds the iroh node + arms every vault with
+            // no window/frontend needed, so a login launch syncs headlessly.
             #[cfg(desktop)]
-            if std::env::args().any(|a| a == "--autostart") {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
+            {
+                let handle = app.handle().clone();
+                if hub_enabled_at_launch(&handle) {
+                    apply_desktop_background_sync(&handle, true);
+                    let h = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(state) = h.try_state::<vault::VaultManager>() {
+                            let _ = vault::arm_all_vaults(&h, state.inner()).await;
+                        }
+                    });
+                }
+                // Started at login → run window-less as a menu-bar agent: drop the
+                // auto-created window (frees the webview) and hide from the Dock.
+                if std::env::args().any(|a| a == "--autostart") {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.close();
+                    }
+                    #[cfg(target_os = "macos")]
+                    let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
             Ok(())
@@ -415,30 +356,57 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app, _event| {
-            // Android: when the Activity is destroyed (e.g. swiped from recents),
-            // tao's event loop returns and calls std::process::exit, taking the
-            // in-process iroh node with it. With Background sync on we prevent that
-            // exit so the node keeps syncing under the foreground service.
-            // (Desktop's quit paths are handled by the window/menu handlers above.)
-            #[cfg(target_os = "android")]
-            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
-                if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
-                    tracing::info!("android: preventing exit to keep background sync alive");
+        .run(|_app_handle, _event| {
+            // Keep the always-on hub alive when the last window closes. ExitRequested
+            // with code = None is an implicit exit (last window closed / Cmd+Q); with
+            // the hub on we prevent it so the iroh node keeps syncing as a menu-bar
+            // agent, and drop the Dock icon. Explicit app.exit(n) carries code = Some
+            // (tray "Quit") and is never prevented.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &_event {
+                if code.is_none() && LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
                     api.prevent_exit();
-                    EXIT_PREVENTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    #[cfg(target_os = "macos")]
+                    let _ = _app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
         });
 }
 
-// Bring the main window to the front (tray left-click / "Open Vellum").
+// (Re)create the main window. Used to bring it back after a close destroyed it
+// (the hub keeps running window-less). Mirrors the window config in
+// tauri.conf.json — the config window is the one created at a normal launch; this
+// is only for re-opening from the tray / a second launch.
+#[cfg(desktop)]
+fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    #[allow(unused_mut)]
+    let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+        .title("Vellum")
+        .inner_size(800.0, 600.0)
+        .disable_drag_drop_handler();
+    #[cfg(target_os = "macos")]
+    {
+        b = b
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    b.build()
+}
+
+// Bring the main window to the front (tray left-click / "Open Vellum" / a second
+// launch). Restores the Dock icon (we may be a window-less menu-bar agent) and
+// re-creates the window if a previous close destroyed it.
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+    } else if let Err(e) = create_main_window(app) {
+        tracing::error!("failed to re-create main window: {e}");
     }
 }
 
