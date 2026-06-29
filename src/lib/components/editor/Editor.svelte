@@ -61,6 +61,10 @@
 
   let container: HTMLDivElement;
 
+  // Cancels the scroll-pin from the previous tap (see pointerdown handler), so a
+  // fresh gesture never fights a stale pin still re-asserting the old position.
+  let cancelScrollPin: (() => void) | null = null;
+
   // The completion source runs inside the editor (created once in onMount), so
   // it reads this mutable holder rather than the captured prop — kept current
   // by the effect below.
@@ -135,16 +139,48 @@
           EditorView.domEventHandlers({
             // Preserve scroll across a tap. The scroller sits entirely above the
             // keyboard (the wrapper is shrunk by --editor-kb-inset), so tapping a
-            // visible line never needs a scroll — but on mobile the tap's
-            // selection transaction was resetting scrollTop to 0 (caret correct,
-            // viewport yanked to the top — #66). Snap scroll back to where it was.
-            pointerdown: (_e, v) => {
+            // visible line never needs a scroll — yet a tap could still yank the
+            // viewport away: the selection/keyboard re-layout scrolls the *prior*
+            // caret into view (to the top — #66; or back to the old caret after
+            // you'd scrolled away — #101).
+            //
+            // A one-shot snap-back guesses when that scroll fires and loses the
+            // race when it lands late (#101). Instead pin scrollTop for the whole
+            // gesture + a short settle, re-asserting on every scroll event, until
+            // the user actually drags (then it's a real scroll/selection — let go)
+            // or the next gesture starts.
+            pointerdown: (e, v) => {
+              cancelScrollPin?.();
               const top = v.scrollDOM.scrollTop;
-              requestAnimationFrame(() =>
-                requestAnimationFrame(() => {
-                  if (v.scrollDOM.scrollTop !== top) v.scrollDOM.scrollTop = top;
-                }),
-              );
+              const startY = e.clientY;
+              const onScroll = () => {
+                if (v.scrollDOM.scrollTop !== top) v.scrollDOM.scrollTop = top;
+              };
+              const onMove = (ev: PointerEvent) => {
+                if (Math.abs(ev.clientY - startY) > 8) release();
+              };
+              let timer = 0;
+              const release = () => {
+                cancelScrollPin = null;
+                clearTimeout(timer);
+                v.scrollDOM.removeEventListener("scroll", onScroll);
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("touchmove", release);
+                window.removeEventListener("pointercancel", release);
+                window.removeEventListener("pointerup", onUp);
+              };
+              // Keep pinning briefly past the release to absorb a late layout
+              // scroll, then stop.
+              const onUp = () => (timer = window.setTimeout(release, 250));
+              cancelScrollPin = release;
+              v.scrollDOM.addEventListener("scroll", onScroll);
+              window.addEventListener("pointermove", onMove);
+              // A touch-scroll fires touchmove (and WebKit a pointercancel as it
+              // takes over) before the scroll lands — release then so we never
+              // fight a genuine user scroll.
+              window.addEventListener("touchmove", release, { passive: true });
+              window.addEventListener("pointercancel", release);
+              window.addEventListener("pointerup", onUp);
               return false;
             },
             focus: () => {
@@ -165,6 +201,7 @@
     if (focusOnMount) view.focus();
 
     return () => {
+      cancelScrollPin?.();
       view?.destroy();
       view = undefined;
     };
