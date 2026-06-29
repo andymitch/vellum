@@ -42,6 +42,12 @@ rustls = { version = "0.23", features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 iroh-mdns-address-lookup = "0.4"
+# Markdown export/import (#79): zip a vault's notes on export / unzip on import.
+# No C deps (deflate via miniz_oxide). dialog picks the file; fs reads/writes it
+# and abstracts Android's SAF content URIs — both needed on every platform.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
 
 # Android-only: used to hand the JNI JavaVM + Context to ndk_context so iroh's
 # network monitor works (Tauri doesn't populate ndk_context — see lib.rs).
@@ -59,9 +65,8 @@ tauri-plugin-barcode-scanner = "2.4.5"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-# Native dialogs for the update prompt — window.confirm() is a no-op in the
-# Tauri v2 webview, so the updater needs this to actually ask the user.
-tauri-plugin-dialog = "2"
+# (tauri-plugin-dialog is in [dependencies] — cross-platform for #79 + the
+# desktop updater prompt.)
 # Launch Vellum at login so an always-on desktop stays a sync hub across reboots
 # (toggled with the Background sync setting).
 tauri-plugin-autostart = "2"

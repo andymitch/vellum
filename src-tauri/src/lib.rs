@@ -320,7 +320,12 @@ pub fn run() {
             .try_init();
     }
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        // Markdown export/import (#79) — dialog picks the file, fs reads/writes
+        // it (incl. Android SAF). Both cross-platform.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init());
     // Native camera QR scanner for joining vaults (mobile only; the crate is
     // gated to android/ios in Cargo.toml).
     #[cfg(mobile)]
@@ -330,7 +335,6 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
         // Launch at login (toggled by Background sync) so an always-on desktop
         // stays a sync hub across reboots. The "--autostart" arg lets us start
         // hidden to the tray on a login launch (handled in setup).
@@ -401,6 +405,8 @@ pub fn run() {
             vault::read_note,
             vault::write_note,
             vault::create_note,
+            vault::export_vault,
+            vault::import_vault,
             vault::create_folder,
             vault::rename_path,
             vault::delete_path,
