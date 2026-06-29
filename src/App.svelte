@@ -567,11 +567,24 @@
     const c = content;
     const v = activeVault;
     const p = activePath;
+    // `base` = the text last synced to the backend; it merges base→c against
+    // concurrent peer edits so a remote change isn't clobbered (#99).
+    const base = lastLoaded;
     if (!v || !p || c === lastLoaded) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
-      await writeNote(v, p, c);
+      // Advance the base *before* awaiting: if the user types again while this
+      // write is in flight, the next save must merge against the text we just
+      // sent — not this same stale `base` — or the 3-way merge sees both sides
+      // diverging from an old ancestor and injects spurious conflict markers.
       lastLoaded = c;
+      try {
+        await writeNote(v, p, c, base);
+      } catch (e) {
+        // Write failed: restore the prior base so the effect retries this edit.
+        if (lastLoaded === c) lastLoaded = base;
+        throw e;
+      }
     }, 400);
   });
 

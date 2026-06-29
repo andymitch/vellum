@@ -48,6 +48,8 @@ iroh-mdns-address-lookup = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
+yrs = "0.27.2"
+diffy = "0.5.0"
 
 # Android-only: used to hand the JNI JavaVM + Context to ndk_context so iroh's
 # network monitor works (Tauri doesn't populate ndk_context — see lib.rs).
