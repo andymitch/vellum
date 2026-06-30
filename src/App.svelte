@@ -622,7 +622,10 @@
 
     onVaultChanged(async (vaultId) => {
       if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
-      const fresh = await readNote(activeVault, activePath);
+      const pathAtRead = activePath;
+      const fresh = await readNote(activeVault, pathAtRead);
+      // The user navigated away while the read was in flight — discard.
+      if (activePath !== pathAtRead) return;
       if (fresh === lastLoaded) return;
       // A remote key update can arrive before its content blob finishes
       // downloading; read_note then returns empty (unwrap_or_default). Don't
