@@ -41,10 +41,12 @@
     return k.length === 1 ? k.toUpperCase() : k;
   }
 
-  // Show "vN": our release scheme stamps the tag's integer as the semver major
-  // (vN -> N.0.0), so the major component is the release number.
   let version = $state("");
-  getVersion().then((v) => (version = "v" + v.split(".")[0]));
+  getVersion().then((v) => {
+    const parts = v.split(".");
+    while (parts.length > 1 && parts[parts.length - 1] === "0") parts.pop();
+    version = "v" + parts.join(".");
+  });
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
   const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
