@@ -6,6 +6,15 @@ name: Release
 # CI stamps the build version as N.0.0 so Tauri/the updater get valid semver.
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Override tag, e.g. v5.1 for a hotfix. Blank = next major vN."
+        required: false
+        default: ""
+      version:
+        description: "Override semver, e.g. 5.1.0. Required when tag is set."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -22,13 +31,29 @@ jobs:
         with:
           fetch-depth: 0
       - id: v
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_VERSION: ${{ inputs.version }}
         run: |
-          LATEST=$(git tag -l 'v*' | grep -E '^v[0-9]+$' | sed 's/^v//' | sort -n | tail -1)
-          N=$(( ${LATEST:-0} + 1 ))
-          echo "version=${N}.0.0" >> "$GITHUB_OUTPUT"
-          echo "tag=v${N}" >> "$GITHUB_OUTPUT"
-          [ -n "$LATEST" ] && echo "prev=v${LATEST}" >> "$GITHUB_OUTPUT" || echo "prev=" >> "$GITHUB_OUTPUT"
-          echo "Next release: v${N} (version ${N}.0.0)"
+          if [ -n "$IN_TAG" ]; then
+            # Override (hotfix point release, e.g. v5.1 / 5.1.0). prev = latest
+            # existing release tag (vN or vN.X) — the new tag doesn't exist yet.
+            if [ -z "$IN_VERSION" ]; then
+              echo "version input is required when tag is set" >&2; exit 1
+            fi
+            PREV=$(git tag -l 'v*' | grep -E '^v[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)
+            echo "version=${IN_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag=${IN_TAG}" >> "$GITHUB_OUTPUT"
+            echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
+            echo "Override release: ${IN_TAG} (version ${IN_VERSION}), prev ${PREV}"
+          else
+            LATEST=$(git tag -l 'v*' | grep -E '^v[0-9]+$' | sed 's/^v//' | sort -n | tail -1)
+            N=$(( ${LATEST:-0} + 1 ))
+            echo "version=${N}.0.0" >> "$GITHUB_OUTPUT"
+            echo "tag=v${N}" >> "$GITHUB_OUTPUT"
+            [ -n "$LATEST" ] && echo "prev=v${LATEST}" >> "$GITHUB_OUTPUT" || echo "prev=" >> "$GITHUB_OUTPUT"
+            echo "Next release: v${N} (version ${N}.0.0)"
+          fi
       # Create the release up front so desktop + android can upload to it in
       # parallel. tauri-action finds this existing release by tagName; the
       # android job uploads via `gh release upload`. (Previously tauri-action
