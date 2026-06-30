@@ -90,6 +90,10 @@
   let headerH = $state(0);
   let lastChromeTop = 0;
   let lastScroller: HTMLElement | null = null;
+  // True while the user has a finger on screen. Chrome hide/show only responds
+  // to user-initiated scroll, not programmatic scroll (e.g. CodeMirror
+  // scroll-into-view on a new line), which would otherwise jitter the chrome.
+  let touchActive = false;
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -142,10 +146,13 @@
         lastChromeTop = top;
       } else {
         const delta = top - lastChromeTop;
-        if (top < 8) chromeHidden = false;
-        else if (delta > 6) chromeHidden = true;
-        else if (delta < -6) chromeHidden = false;
         lastChromeTop = top;
+        if (top < 8) chromeHidden = false;
+        else if (!touchActive) {
+          // Programmatic scroll (e.g. CodeMirror scroll-into-view on new line) —
+          // update baseline but don't change chrome visibility to avoid jitter.
+        } else if (delta > 6) chromeHidden = true;
+        else if (delta < -6) chromeHidden = false;
       }
     }
     clearTimeout(scrollSaveTimer);
@@ -213,6 +220,7 @@
   let drawerPan = $state<number | null>(null);
 
   function onSwipeStart(e: TouchEvent) {
+    touchActive = true;
     if (!mobile || settingsOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
@@ -238,6 +246,7 @@
   }
   const COMMIT = 64;
   function onSwipeEnd() {
+    touchActive = false;
     if (panStart && panLocked && drawerPan !== null)
       setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
