@@ -177,11 +177,26 @@ fn seed_update(s: &str) -> Vec<u8> {
 }
 
 /// Turn one stored note value into a yrs update ready to apply: a 0x02 value is
-/// already an update; a legacy 0x01 (or untagged) value is seeded from its text.
+/// already an update; a legacy 0x01 (or untagged) plain-text value is seeded
+/// from its text.
+///
+/// Disambiguate by UTF-8 validity, not by the leading byte: a raw yrs update for
+/// a single-client doc begins with 0x01 — colliding with MARKER — so a
+/// `bytes.first()` test alone would treat an untagged yrs update (stored by
+/// builds predating the 0x02 tag) as plain text and `from_utf8_lossy` would bake
+/// U+FFFD garbage into the doc. Only seed-from-text when the marker-stripped
+/// bytes are valid UTF-8; otherwise hand the raw bytes to the yrs decoder.
 fn value_to_update(bytes: &[u8]) -> Vec<u8> {
-    match bytes.first() {
-        Some(&TAG_YRS) => bytes[1..].to_vec(),
-        _ => seed_update(&decode(bytes)),
+    if bytes.first() == Some(&TAG_YRS) {
+        return bytes[1..].to_vec();
+    }
+    let body = match bytes.first() {
+        Some(&MARKER) => &bytes[1..],
+        _ => bytes,
+    };
+    match std::str::from_utf8(body) {
+        Ok(s) => seed_update(s),
+        Err(_) => bytes.to_vec(),
     }
 }
 
@@ -1440,6 +1455,41 @@ mod tests {
         assert_eq!(doc_text(&ydoc), "hello", "identical seeds duplicated text");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A raw (untagged) yrs update must be decoded as an update, not lossily
+    /// decoded as text. A 1-client update begins with 0x01 (== MARKER), so the
+    /// old prefix-only check ran `from_utf8_lossy` over the binary and baked
+    /// U+FFFD into the note (#116). value_to_update now disambiguates by UTF-8
+    /// validity and round-trips the update intact.
+    #[test]
+    fn untagged_yrs_update_decodes_without_mojibake() {
+        let raw = seed_update("hello — world"); // em-dash: multibyte, exercises lossy path
+        assert_eq!(raw.first(), Some(&MARKER), "precondition: 1-client update starts 0x01");
+
+        let ydoc = Doc::with_client_id(0);
+        {
+            let mut txn = ydoc.transact_mut();
+            let update = Update::decode_v1(&value_to_update(&raw)).expect("decode");
+            txn.apply_update(update).expect("apply");
+        }
+        let text = doc_text(&ydoc);
+        assert!(!text.contains('\u{FFFD}'), "lossy decode baked in replacement chars: {text:?}");
+        assert_eq!(text, "hello — world");
+    }
+
+    /// Legacy 0x01 plain-text values still seed from their text (the common,
+    /// valid-UTF-8 case must not regress into the raw-update branch).
+    #[test]
+    fn legacy_marker_text_still_seeds() {
+        let v = encode("plain legacy — body");
+        let ydoc = Doc::with_client_id(0);
+        {
+            let mut txn = ydoc.transact_mut();
+            let update = Update::decode_v1(&value_to_update(&v)).expect("decode");
+            txn.apply_update(update).expect("apply");
+        }
+        assert_eq!(doc_text(&ydoc), "plain legacy — body");
     }
 
     /// A note's content survives a rename (CRDT state copied to the new key),
