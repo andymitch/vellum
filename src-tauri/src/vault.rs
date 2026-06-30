@@ -1200,12 +1200,16 @@ pub async fn delete_path(
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            let prefix = if is_dir {
-                format!("{}/", path.trim_end_matches('/'))
+            if is_dir {
+                let prefix = format!("{}/", path.trim_end_matches('/'));
+                let keys = list_keys(&doc).await?;
+                for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
+                    doc.del(node.author, key.as_bytes().to_vec()).await?;
+                }
+                doc.del(node.author, prefix.into_bytes()).await?;
             } else {
-                path
-            };
-            doc.del(node.author, prefix.into_bytes()).await?;
+                doc.del(node.author, path.into_bytes()).await?;
+            }
             Ok(())
         }
         .await,
