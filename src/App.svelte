@@ -621,8 +621,16 @@
     }
 
     onVaultChanged(async (vaultId) => {
-      if (vaultId !== activeVault || !activePath || content !== lastLoaded) return;
-      const fresh = await readNote(activeVault, activePath);
+      const vault = activeVault;
+      const path = activePath;
+      if (vaultId !== vault || !path || content !== lastLoaded) return;
+      const fresh = await readNote(vault, path);
+      // The open note may have changed while readNote was in flight — e.g.
+      // creating a note fires vault-changed, and opening it swaps activePath
+      // mid-read. Without this guard the in-flight read of the *previous* note
+      // lands in the new note's editor, so a just-created note briefly shows the
+      // old note's text until you navigate away and back (#123, desktop timing).
+      if (vault !== activeVault || path !== activePath) return;
       if (fresh === lastLoaded) return;
       // A remote key update can arrive before its content blob finishes
       // downloading; read_note then returns empty (unwrap_or_default). Don't
