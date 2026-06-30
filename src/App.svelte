@@ -320,7 +320,7 @@
     let block: HTMLElement | null =
       caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
     while (block && block.parentElement && block.parentElement !== root) block = block.parentElement;
-    if (!block) return null;
+    if (!block || block.parentElement !== root) return null;
     const norm1 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const r = document.createRange();
     r.selectNodeContents(block);
