@@ -65,6 +65,10 @@
   // fresh gesture never fights a stale pin still re-asserting the old position.
   let cancelScrollPin: (() => void) | null = null;
 
+  // Set during the onMount cleanup: view.destroy() fires a blur, and mutating the
+  // bindable `focused` then trips Svelte 5's state_unsafe_mutation guard (#122).
+  let tearingDown = false;
+
   // The completion source runs inside the editor (created once in onMount), so
   // it reads this mutable holder rather than the captured prop — kept current
   // by the effect below.
@@ -188,7 +192,7 @@
               return false;
             },
             blur: () => {
-              focused = false;
+              if (!tearingDown) focused = false;
               return false;
             },
           }),
@@ -201,6 +205,7 @@
     if (focusOnMount) view.focus();
 
     return () => {
+      tearingDown = true;
       cancelScrollPin?.();
       view?.destroy();
       view = undefined;

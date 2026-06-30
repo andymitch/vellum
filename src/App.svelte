@@ -270,6 +270,7 @@
   let focusOnMount = false; // focus the editor once it mounts after the tap
   let quickEditCaret: number | null = null; // source offset for the tapped point
   let tapStart: { x: number; y: number; t: number } | null = null;
+  let cancelCaretReassert: (() => void) | null = null;
 
   // Caret position under a viewport point, across engines (Chromium/WebKit).
   function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
@@ -377,11 +378,38 @@
       // to the editor's existing position when the tap couldn't be mapped.
       if (quickEditCaret != null) {
         const pos = Math.max(0, Math.min(quickEditCaret, v.state.doc.length));
-        v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+        placeQuickEditCaret(v, pos);
       }
       quickEditCaret = null;
     }
   });
+
+  // The touch that triggered the quick edit also produces compatibility mouse
+  // events (mousedown→mouseup→click) on the freshly-mounted editor. CodeMirror's
+  // mousedown handler places the caret by pixel, which would clobber our mapped
+  // offset — and the discrepancy grows the farther down the note you tap, since
+  // the source view is scrolled to the top (#122). We must *not* preventDefault
+  // those events (that suppresses the soft keyboard), so instead we set the caret
+  // now and re-assert it on the trailing click — after CodeMirror has had its say,
+  // so our offset wins last. A timeout covers engines that emit no synthetic click.
+  function placeQuickEditCaret(v: EditorView, pos: number) {
+    cancelCaretReassert?.();
+    const dispatch = () => v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+    let timer = 0;
+    const cleanup = () => {
+      clearTimeout(timer);
+      cancelCaretReassert = null;
+      window.removeEventListener("click", onClick, true);
+    };
+    const onClick = () => {
+      dispatch();
+      cleanup();
+    };
+    cancelCaretReassert = cleanup;
+    dispatch();
+    window.addEventListener("click", onClick, true);
+    timer = window.setTimeout(cleanup, 600);
+  }
 
   // While a quick edit is active, returning the keyboard to hidden returns to
   // preview — but only after it was actually raised, so we don't bounce back
