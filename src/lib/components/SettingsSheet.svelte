@@ -5,7 +5,7 @@
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
-  import { checkForUpdateInteractive } from "$lib/updater";
+  import { checkForUpdateInteractive, formatVersion } from "$lib/updater";
   import { portal } from "$lib/portal";
 
   // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
@@ -41,10 +41,9 @@
     return k.length === 1 ? k.toUpperCase() : k;
   }
 
-  // Show "vN": our release scheme stamps the tag's integer as the semver major
-  // (vN -> N.0.0), so the major component is the release number.
+  // Drop trailing-zero components (5.0.0 -> v5, 5.1.0 -> v5.1, 5.0.1 -> v5.0.1).
   let version = $state("");
-  getVersion().then((v) => (version = "v" + v.split(".")[0]));
+  getVersion().then((v) => (version = formatVersion(v)));
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
   const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [

@@ -6,9 +6,14 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 
-// Show "vN": our release scheme stamps the tag's integer as the semver major
-// (vN -> N.0.0), so the major component is the release number (matches Settings).
-const rel = (v: string) => "v" + v.split(".")[0];
+// Format a version for display: drop trailing zero components only, keeping at
+// least the major. e.g. 5.0.0 -> v5, 5.1.0 -> v5.1, 5.0.1 -> v5.0.1 (#124).
+export const formatVersion = (v: string) => {
+  const parts = v.split(".");
+  while (parts.length > 1 && parts[parts.length - 1] === "0") parts.pop();
+  return "v" + parts.join(".");
+};
+const rel = formatVersion;
 // Dev builds run off a 0.x version — there's no real release to update to.
 const isDevVersion = (v: string) => (parseInt(v.split(".")[0], 10) || 0) < 1;
 
