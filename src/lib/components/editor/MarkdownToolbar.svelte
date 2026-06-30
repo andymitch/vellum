@@ -57,7 +57,7 @@
     { icon: Bold, label: "Bold", run: (v: EditorView) => wrapInline(v, "**") },
     { icon: Italic, label: "Italic", run: (v: EditorView) => wrapInline(v, "*") },
     { icon: Strikethrough, label: "Strikethrough", run: (v: EditorView) => wrapInline(v, "~~") },
-    { icon: Heading, label: "Heading", run: (v: EditorView) => toggleLinePrefix(v, "# ") },
+    { icon: Heading, label: "Heading", run: (v: EditorView) => toggleLinePrefix(v, "## ") },
     { icon: List, label: "Bullet list", run: (v: EditorView) => toggleLinePrefix(v, "- ") },
     { icon: ListChecks, label: "Checkbox", run: (v: EditorView) => toggleLinePrefix(v, "- [ ] ") },
     { icon: Quote, label: "Quote", run: (v: EditorView) => toggleLinePrefix(v, "> ") },
