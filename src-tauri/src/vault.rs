@@ -1200,12 +1200,22 @@ pub async fn delete_path(
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            let prefix = if is_dir {
-                format!("{}/", path.trim_end_matches('/'))
+            if is_dir {
+                // Recursively tombstone every entry under the folder. A prefix
+                // del only clears *our* author's entries; deleting each key
+                // explicitly lets the tombstone win across authors (peer-created
+                // notes) by timestamp, so the folder's contents fully disappear.
+                let prefix = format!("{}/", path.trim_end_matches('/'));
+                let keys = list_keys(&doc).await?;
+                for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
+                    doc.del(node.author, key.clone().into_bytes()).await?;
+                }
+                // Also clear the folder marker key itself (e.g. an empty folder
+                // whose only entry is "work/").
+                doc.del(node.author, prefix.into_bytes()).await?;
             } else {
-                path
-            };
-            doc.del(node.author, prefix.into_bytes()).await?;
+                doc.del(node.author, path.into_bytes()).await?;
+            }
             Ok(())
         }
         .await,
@@ -1622,6 +1632,38 @@ mod tests {
         doc.del(node.author, b"a/b.md".to_vec()).await.expect("del");
         let keys2 = list_keys(&doc).await.expect("list2");
         assert!(!keys2.contains(&"a/b.md".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Deleting a folder recursively tombstones every entry under it — nested
+    // notes and subfolder markers — while leaving sibling notes untouched (#121).
+    #[tokio::test]
+    async fn delete_folder_is_recursive() {
+        let dir = std::env::temp_dir().join(format!("notes-rmdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+
+        for k in ["proj/.keep", "proj/a.md", "proj/sub/b.md", "proj.md", "other.md"] {
+            doc.set_bytes(node.author, k.as_bytes().to_vec(), encode("x"))
+                .await
+                .expect("set");
+        }
+
+        // Mirror delete_path(is_dir=true): tombstone every key under the prefix.
+        let prefix = "proj/".to_string();
+        let keys = list_keys(&doc).await.expect("list");
+        for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
+            doc.del(node.author, key.clone().into_bytes()).await.expect("del");
+        }
+        doc.del(node.author, prefix.into_bytes()).await.expect("del prefix");
+
+        let after = list_keys(&doc).await.expect("list2");
+        assert!(!after.iter().any(|k| k.starts_with("proj/")), "folder contents survived: {after:?}");
+        // A note named like the folder ("proj.md") and an unrelated sibling stay.
+        assert!(after.contains(&"proj.md".to_string()), "prefix over-matched proj.md");
+        assert!(after.contains(&"other.md".to_string()), "sibling deleted");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
