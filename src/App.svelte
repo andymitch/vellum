@@ -87,7 +87,10 @@
   // events as the save below — direction is computed synchronously (not
   // debounced) so the chrome responds immediately.
   let chromeHidden = $state(false);
-  let headerH = $state(0);
+  // Seed near the real height (min-h-12 + pb-2) so the mobile body's
+  // padding-top:headerH doesn't jump on the first frame before offsetHeight
+  // binds (#100). The bind corrects it (incl. safe-area) a frame later.
+  let headerH = $state(56);
   let lastChromeTop = 0;
   let lastScroller: HTMLElement | null = null;
   function resetChrome() {
@@ -716,15 +719,22 @@
 </script>
 
 <div
-  class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
+  class="relative flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
 >
   <!-- Top bar. data-tauri-drag-region lets the window drag by the header, since the
-       Overlay titlebar removes the native drag strip; child buttons still click. -->
+       Overlay titlebar removes the native drag strip; child buttons still click.
+       On mobile the header floats (absolute) over the body and auto-hides via
+       transform+opacity, so toggling it never reflows the editor — a reflow on
+       every keystroke-driven scroll was what caused the jitter (#100). The body
+       reserves headerH of top padding to sit the content below it; opaque bg so
+       content scrolling underneath doesn't bleed through. -->
   <header
     data-tauri-drag-region
     bind:offsetHeight={headerH}
-    class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
+    class="flex items-center justify-between gap-3 border-b border-border {mobile
+      ? 'absolute inset-x-0 top-0 z-10 bg-secondary'
+      : 'shrink-0 bg-secondary/40'} {isMacDesktop
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'}"
     style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
@@ -732,7 +742,7 @@
       : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
       ? 'padding-left:78px;'
       : ''}{mobile
-      ? `transition:margin-top 200ms ease;margin-top:${chromeHidden ? -headerH : 0}px;`
+      ? `transition:transform 200ms ease, opacity 200ms ease;transform:translateY(${chromeHidden ? -headerH : 0}px);opacity:${chromeHidden ? 0 : 1};`
       : ''}"
   >
     <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
@@ -823,8 +833,10 @@
     </div>
   </header>
 
-  <!-- Body -->
-  <div class="relative flex min-h-0 flex-1">
+  <!-- Body. On mobile the header floats over this, so reserve its height as top
+       padding; the editor scroller then owns a fixed region that doesn't move
+       when the floating header auto-hides (#100). -->
+  <div class="relative flex min-h-0 flex-1" style={mobile ? `padding-top:${headerH}px` : ""}>
     <!-- Mobile backdrop. Shown while open or mid-drag; its opacity tracks the
          drawer position during an interactive swipe (#46). -->
     {#if sidebarOpen || drawerPan !== null}
