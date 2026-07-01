@@ -87,7 +87,10 @@
   // events as the save below — direction is computed synchronously (not
   // debounced) so the chrome responds immediately.
   let chromeHidden = $state(false);
-  let headerH = $state(0);
+  // Seed near the real height (min-h-12 + pb-2) so the mobile body's
+  // padding-top:headerH doesn't jump on the first frame before offsetHeight
+  // binds (#100). The bind corrects it (incl. safe-area) a frame later.
+  let headerH = $state(56);
   let lastChromeTop = 0;
   let lastScroller: HTMLElement | null = null;
   function resetChrome() {
