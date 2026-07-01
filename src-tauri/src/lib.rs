@@ -342,6 +342,7 @@ pub fn run() {
             vault::join_vault,
             vault::share_vault,
             vault::forget_vault,
+            vault::rename_vault,
             vault::list_tree,
             vault::read_note,
             vault::write_note,

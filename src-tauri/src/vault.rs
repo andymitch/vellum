@@ -65,6 +65,11 @@ const PEER_TTL_SECS: u64 = 60 * 60 * 24 * 30; // 30 days
 /// long time (PEER_TTL_SECS) so dead devices don't pile up.
 type PeerMap = BTreeMap<NamespaceId, BTreeMap<EndpointId, u64>>;
 
+/// Per-user LOCAL vault display-name overrides: NamespaceId -> name. Persisted to
+/// `vault-names.json`. Renaming a vault (#120) writes here only; it never touches
+/// the synced `\x00meta/name`, so renames stay local to this device/user.
+type NameMap = BTreeMap<NamespaceId, String>;
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -85,6 +90,8 @@ pub struct Node {
     // the current relay + addresses), so connections survive address/network
     // changes and restarts — rather than relying on stale ticket addresses.
     peers: std::sync::Arc<Mutex<PeerMap>>,
+    // Local per-user vault name overrides (#120). Never synced.
+    names: std::sync::Arc<Mutex<NameMap>>,
 }
 
 /// Managed Tauri state. Builds the node lazily on first use (see module docs).
@@ -123,6 +130,9 @@ pub struct VaultInfo {
     // ticket but no peer has come online to sync its contents. The UI shows a
     // "waiting for a peer" state instead of a misleading generated vault (#4).
     pending: bool,
+    // First 6 hex chars of the id; shown after the name to disambiguate vaults
+    // that share a local display name (#120).
+    hash: String,
 }
 
 #[derive(Serialize)]
@@ -396,6 +406,38 @@ fn save_peers(dir: &std::path::Path, map: &PeerMap) {
     }
 }
 
+fn names_path(dir: &std::path::Path) -> PathBuf {
+    dir.join("vault-names.json")
+}
+
+/// Load per-user local vault name overrides (#120). A missing file, bad JSON, or
+/// blank entries are simply skipped — a vault with no override falls back to its
+/// synced meta name (see `vault_info`).
+fn load_names(dir: &std::path::Path) -> NameMap {
+    let mut out = NameMap::new();
+    let Ok(s) = std::fs::read_to_string(names_path(dir)) else {
+        return out;
+    };
+    if let Ok(raw) = serde_json::from_str::<BTreeMap<String, String>>(&s) {
+        for (k, name) in raw {
+            let Ok(nsid) = NamespaceId::from_str(&k) else { continue };
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                out.insert(nsid, name);
+            }
+        }
+    }
+    out
+}
+
+fn save_names(dir: &std::path::Path, map: &NameMap) {
+    let raw: BTreeMap<String, String> =
+        map.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    if let Ok(s) = serde_json::to_string(&raw) {
+        let _ = std::fs::write(names_path(dir), s);
+    }
+}
+
 /// Remember a vault's sync peer by EndpointId, stamping last-seen = now. Skips our
 /// own id. Persists immediately for a newly-seen peer; refreshed timestamps for
 /// known peers are flushed periodically (see the flush task in `init`).
@@ -575,6 +617,7 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
     let watched = std::sync::Arc::new(Mutex::new(HashSet::new()));
     let our_id = endpoint.id();
     let peers = std::sync::Arc::new(Mutex::new(load_peers(&dir)));
+    let names = std::sync::Arc::new(Mutex::new(load_names(&dir)));
     // Periodically refresh on-disk peer last-seen and prune dead peers, so an
     // actively-syncing peer keeps a fresh timestamp (avoids being pruned) while
     // long-gone devices age out of the cache.
@@ -643,6 +686,7 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         dir,
         our_id,
         peers,
+        names,
     })
 }
 
@@ -685,19 +729,36 @@ async fn vault_meta_name(node: &Node, doc: &iroh_docs::api::Doc) -> Option<Strin
     }
 }
 
-/// Placeholder name for a vault whose real name hasn't synced yet.
-fn fallback_name(id: &iroh_docs::NamespaceId) -> String {
+/// First 6 hex chars of the NamespaceId, shown after the name to disambiguate
+/// vaults sharing a local display name (#120). Idempotent, stable across devices.
+fn short_hash(id: &iroh_docs::NamespaceId) -> String {
     let s = id.to_string();
-    format!("vault-{}", &s[..s.len().min(6)])
+    s[..s.len().min(6)].to_string()
 }
 
-/// Build a `VaultInfo`, marking it `pending` (and using a placeholder name)
-/// when the vault's meta name hasn't synced from a peer yet.
-fn vault_info(id: iroh_docs::NamespaceId, meta_name: Option<String>) -> VaultInfo {
+/// Placeholder name for a vault whose real name hasn't synced yet.
+fn fallback_name(id: &iroh_docs::NamespaceId) -> String {
+    format!("vault-{}", short_hash(id))
+}
+
+/// Build a `VaultInfo`. Effective name = local override (#120) ?? synced meta
+/// name ?? fallback. No explicit meta->local backfill on upgrade: with no
+/// override, resolution falls through to the synced meta name, so existing users
+/// keep their current name automatically. `pending` reflects ONLY whether the
+/// synced meta has arrived — a local override does not clear it, because a
+/// renamed-but-not-yet-synced vault is still waiting for peer content.
+fn vault_info(
+    id: iroh_docs::NamespaceId,
+    meta_name: Option<String>,
+    override_name: Option<String>,
+) -> VaultInfo {
     VaultInfo {
-        id: id.to_string(),
         pending: meta_name.is_none(),
-        name: meta_name.unwrap_or_else(|| fallback_name(&id)),
+        name: override_name
+            .or(meta_name)
+            .unwrap_or_else(|| fallback_name(&id)),
+        hash: short_hash(&id),
+        id: id.to_string(),
     }
 }
 
@@ -818,7 +879,8 @@ pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo
                 let (id, _cap) = item?;
                 let doc = node.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
                 let meta_name = vault_meta_name(node, &doc).await;
-                out.push(vault_info(id, meta_name));
+                let override_name = node.names.lock().unwrap().get(&id).cloned();
+                out.push(vault_info(id, meta_name, override_name));
             }
             Ok(out)
         }
@@ -834,7 +896,8 @@ pub async fn create_vault(state: State<'_, VaultManager>, name: String) -> Resul
             let doc = node.docs.create().await?;
             doc.set_bytes(node.author, NAME_KEY.to_vec(), encode(&name)).await?;
             // A vault we create has its name immediately, so it's never pending.
-            Ok(vault_info(doc.id(), Some(name)))
+            // No local override yet — the synced-meta name is the default (#120).
+            Ok(vault_info(doc.id(), Some(name), None))
         }
         .await,
     )
@@ -867,7 +930,8 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
             // isn't here yet, so this comes back pending and the UI shows a
             // "waiting for a peer" state rather than a generated vault (#4).
             let meta_name = vault_meta_name(node, &doc).await;
-            Ok(vault_info(doc.id(), meta_name))
+            let override_name = node.names.lock().unwrap().get(&doc.id()).cloned();
+            Ok(vault_info(doc.id(), meta_name, override_name))
         }
         .await,
     )
@@ -908,6 +972,14 @@ pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Resu
             save_peers(&node.dir, &m);
         }
     }
+    // Drop this vault's local name override too (#120), so a later rejoin starts
+    // from the synced-meta default rather than a stale local name.
+    {
+        let mut m = node.names.lock().unwrap();
+        if m.remove(&nsid).is_some() {
+            save_names(&node.dir, &m);
+        }
+    }
     map_err(
         async {
             // leave() ends live sync.
@@ -931,6 +1003,35 @@ pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Resu
         }
         .await,
     )
+}
+
+/// Set this device's LOCAL display name for a vault (#120). Writes only
+/// `vault-names.json`; never touches the synced meta, so peers keep their own
+/// names. An empty/whitespace name clears the override (falls back to the synced
+/// meta name / hash).
+#[tauri::command]
+pub async fn rename_vault(
+    app: AppHandle,
+    state: State<'_, VaultManager>,
+    vault: String,
+    name: String,
+) -> Result<(), String> {
+    let node = state.node().await?;
+    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
+    let name = name.trim().to_string();
+    {
+        let mut m = node.names.lock().unwrap();
+        if name.is_empty() {
+            m.remove(&nsid);
+        } else {
+            m.insert(nsid, name);
+        }
+        save_names(&node.dir, &m);
+    }
+    // Refresh the UI. The FE also re-reads after the invoke resolves, so this is
+    // a belt-and-suspenders refresh for the active vault.
+    let _ = app.emit("vault-changed", vault);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1734,6 +1835,103 @@ mod tests {
         }
         assert!(freed, "A never saw the deletion propagate");
         assert_eq!(free_key(&doc_a, "Backlog.md").await.expect("free"), "Backlog.md");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #120: renaming a vault sets a LOCAL name only. Node A creates + names a
+    /// vault, renames it locally, and name resolution reflects the new name on A
+    /// — while Node B joining the SAME vault does NOT see A's rename (it sees the
+    /// synced meta default). Also asserts the override round-trips through disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rename_vault_is_local_only() {
+        let base = std::env::temp_dir().join(format!("notes-rename-vault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = init(base.join("a")).await.expect("node A");
+
+        // A creates a vault with a synced-meta default name.
+        let doc_a = a.docs.create().await.expect("create");
+        let nsid = doc_a.id();
+        doc_a
+            .set_bytes(a.author, NAME_KEY.to_vec(), encode("Shared Default"))
+            .await
+            .expect("meta");
+
+        // Local rename: writes vault-names.json only.
+        {
+            let mut m = a.names.lock().unwrap();
+            m.insert(nsid, "A's Custom Name".to_string());
+            save_names(&a.dir, &m);
+        }
+
+        // Effective name on A = local override; hash is the 6-hex disambiguator.
+        let meta = vault_meta_name(&a, &doc_a).await;
+        let ov = a.names.lock().unwrap().get(&nsid).cloned();
+        let info = vault_info(nsid, meta, ov);
+        assert_eq!(info.name, "A's Custom Name");
+        assert_eq!(info.hash.len(), 6);
+        assert!(!info.pending);
+
+        // Persistence round-trip: reload names from disk.
+        let reloaded = load_names(&a.dir);
+        assert_eq!(reloaded.get(&nsid).map(String::as_str), Some("A's Custom Name"));
+
+        // B joins the shared vault; B must NOT see A's rename — only synced meta.
+        let b = init(base.join("b")).await.expect("node B");
+        let ticket = doc_a
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .expect("share");
+        let doc_b = b
+            .docs
+            .import(DocTicket::from_str(&ticket.to_string()).expect("ticket"))
+            .await
+            .expect("import");
+        let got = await_key(&b, &doc_b, NAME_KEY, Duration::from_secs(30)).await;
+        assert_eq!(
+            got.as_deref(),
+            Some("Shared Default"),
+            "synced meta default should reach B"
+        );
+        let b_ov = b.names.lock().unwrap().get(&doc_b.id()).cloned();
+        assert_eq!(b_ov, None, "B must not have A's local override");
+        let b_info = vault_info(doc_b.id(), got, b_ov);
+        assert_eq!(
+            b_info.name, "Shared Default",
+            "B sees the meta default, not A's rename"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #120 unit checks: short_hash is idempotent + fixed length, and load_names
+    /// skips blank/whitespace overrides.
+    #[tokio::test]
+    async fn short_hash_and_load_names_edge_cases() {
+        let base = std::env::temp_dir()
+            .join(format!("notes-names-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir");
+
+        // short_hash: deterministic, first 6 hex chars.
+        let a = init(base.join("node")).await.expect("node");
+        let id = a.docs.create().await.expect("create").id();
+        assert_eq!(short_hash(&id), short_hash(&id));
+        assert_eq!(short_hash(&id).len(), 6);
+        assert_eq!(short_hash(&id), id.to_string()[..6]);
+
+        // load_names skips blank entries but keeps trimmed real ones.
+        let good = id.to_string();
+        let json = format!("{{\"{good}\":\"  Trimmed Me  \",\"bad-id\":\"x\"}}");
+        std::fs::write(names_path(&base), json).expect("write");
+        let names = load_names(&base);
+        assert_eq!(names.get(&id).map(String::as_str), Some("Trimmed Me"));
+        assert_eq!(names.len(), 1, "unparseable id dropped");
+
+        // A blank override is dropped entirely.
+        let blank = format!("{{\"{good}\":\"   \"}}");
+        std::fs::write(names_path(&base), blank).expect("write");
+        assert!(load_names(&base).is_empty(), "blank override skipped");
 
         let _ = std::fs::remove_dir_all(&base);
     }

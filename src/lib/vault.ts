@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type VaultInfo = { id: string; name: string; pending: boolean };
+export type VaultInfo = { id: string; name: string; pending: boolean; hash: string };
 export type TreeNode = {
   name: string;
   path: string;
@@ -16,6 +16,8 @@ export const createVault = (name: string) => invoke<VaultInfo>("create_vault", {
 export const joinVault = (ticket: string) => invoke<VaultInfo>("join_vault", { ticket });
 export const shareVault = (vault: string) => invoke<string>("share_vault", { vault });
 export const forgetVault = (vault: string) => invoke<void>("forget_vault", { vault });
+export const renameVault = (vault: string, name: string) =>
+  invoke<void>("rename_vault", { vault, name });
 
 export const listTree = (vault: string) => invoke<TreeNode[]>("list_tree", { vault });
 export const readNote = (vault: string, path: string) =>
