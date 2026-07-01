@@ -65,6 +65,13 @@
   // fresh gesture never fights a stale pin still re-asserting the old position.
   let cancelScrollPin: (() => void) | null = null;
 
+  // Set the instant we start tearing the view down. Destroying CodeMirror fires a
+  // synchronous `blur`, whose handler would mutate the bindable `focused` during
+  // effect cleanup — Svelte 5 throws `state_unsafe_mutation`, and that error
+  // aborts the same reactive flush that would place the quick-edit caret (#122).
+  // Skip the focus/blur writes once teardown has begun.
+  let tearingDown = false;
+
   // The completion source runs inside the editor (created once in onMount), so
   // it reads this mutable holder rather than the captured prop — kept current
   // by the effect below.
@@ -184,11 +191,11 @@
               return false;
             },
             focus: () => {
-              focused = true;
+              if (!tearingDown) focused = true;
               return false;
             },
             blur: () => {
-              focused = false;
+              if (!tearingDown) focused = false;
               return false;
             },
           }),
@@ -201,6 +208,7 @@
     if (focusOnMount) view.focus();
 
     return () => {
+      tearingDown = true;
       cancelScrollPin?.();
       view?.destroy();
       view = undefined;
