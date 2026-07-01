@@ -33,13 +33,18 @@ jobs:
         env:
           TYPE: ${{ inputs.release_type }}
         run: |
+          set -euo pipefail
+          TYPE="${TYPE:-major}"
+          # A no-match grep is a legitimate state here (no tags yet -> first
+          # release; no vN.* -> vN.1), so `|| true` keeps pipefail from aborting
+          # on empty matches while still catching real git/sed/sort failures.
           # Latest major counter (point tags excluded by the ^v[0-9]+$ anchor).
-          LATEST_MAJOR=$(git tag -l 'v*' | grep -E '^v[0-9]+$' | sed 's/^v//' | sort -n | tail -1)
+          LATEST_MAJOR=$(git tag -l 'v*' | { grep -E '^v[0-9]+$' || true; } | sed 's/^v//' | sort -n | tail -1)
           if [ "$TYPE" = "hotfix" ]; then
-            [ -z "$LATEST_MAJOR" ] && { echo "No major release to hotfix"; exit 1; }
+            if [ -z "$LATEST_MAJOR" ]; then echo "No major release to hotfix"; exit 1; fi
             N=$LATEST_MAJOR
             # Next point segment from existing vN.* tags (0 if none yet -> vN.1).
-            X=$(git tag -l "v${N}.*" | grep -E "^v${N}\.[0-9]+$" | sed "s/^v${N}\.//" | sort -n | tail -1)
+            X=$(git tag -l "v${N}.*" | { grep -E "^v${N}\.[0-9]+$" || true; } | sed "s/^v${N}\.//" | sort -n | tail -1)
             X=$(( ${X:-0} + 1 ))
             VERSION="${N}.${X}.0"; TAG="v${N}.${X}"
           else
@@ -49,7 +54,7 @@ jobs:
           # prev = immediately preceding release: highest existing vN or vN.X
           # (version sort). The new TAG doesn't exist yet, so this is the prior
           # release — a major cut after a hotfix diffs against the hotfix.
-          PREV=$(git tag -l 'v*' | grep -E '^v[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)
+          PREV=$(git tag -l 'v*' | { grep -E '^v[0-9]+(\.[0-9]+)?$' || true; } | sort -V | tail -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prev=$PREV" >> "$GITHUB_OUTPUT"
