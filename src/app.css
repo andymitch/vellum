@@ -690,6 +690,15 @@
     border-color: var(--border);
   }
 
+  /* Native app: the document itself must never scroll or rubber-band — only the
+     editor/content area does. Lock the root and kill overscroll chaining (#98). */
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   body {
     background-color: var(--background);
     color: var(--foreground);
