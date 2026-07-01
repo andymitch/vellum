@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
@@ -94,31 +93,13 @@
     chromeHidden = false;
     lastChromeTop = 0;
   }
-  // Android: mirror the web chrome auto-hide to the system status bar so the
-  // reading surface is fully unobstructed (#85). No-op off Android (the command
-  // is gated there too); the bar returns on a top-edge swipe.
+  // The chrome floats over the scroller, which carries a *constant* top padding
+  // equal to the header height (see markup). Hiding the chrome is a pure
+  // transform+fade that never changes layout, so it can't nudge scrollTop — no
+  // settling window is needed. The padding just scrolls off the top like any
+  // other content: scrolling down reclaims its space, scrolling back up brings
+  // it (and the chrome) back (#100).
   //
-  // The status bar is sequenced relative to the chrome: REVEAL immediately (so
-  // it's never left stuck hidden), but HIDE only after the chrome's slide-out
-  // would have finished, and only if it's still hidden. That avoids thrashing
-  // the (system-animated, janky) status bar when chromeHidden toggles rapidly.
-  const isAndroidUA = /Android/.test(navigator.userAgent);
-  let immersiveTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastImmersive: boolean | undefined;
-  function pushImmersive(hidden: boolean) {
-    if (hidden === lastImmersive) return;
-    lastImmersive = hidden;
-    invoke("set_immersive", { hidden }).catch(() => {});
-  }
-  $effect(() => {
-    const hidden = chromeHidden;
-    if (!isAndroidUA) return;
-    clearTimeout(immersiveTimer);
-    if (!hidden) pushImmersive(false);
-    else immersiveTimer = setTimeout(() => pushImmersive(true), 260);
-    return () => clearTimeout(immersiveTimer);
-  });
-
   // Persist the open note's scroll (debounced) so launch can restore it. A
   // capturing listener catches scroll from either scroller (scroll doesn't
   // bubble, but it is observable in the capture phase).
@@ -680,23 +661,36 @@
 </script>
 
 <div
-  class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
-  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);"
+  class="relative flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
+  style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);--chrome-h:{mobile
+    ? headerH + 'px'
+    : '0px'};"
 >
   <!-- Top bar. data-tauri-drag-region lets the window drag by the header, since the
        Overlay titlebar removes the native drag strip; child buttons still click. -->
+  <!-- On mobile the header floats (absolute) fully over the scroller, which
+       carries a *constant* top padding of --chrome-h (the header height) so
+       content always clears it. Hiding is a pure transform + fade that never
+       touches layout, so it can't nudge scrollTop — the padding just scrolls off
+       the top like any content, reclaiming the space, and scrolls back into view
+       (with the header flying back in) on scroll-up (#100). Desktop keeps the
+       header in normal flow. -->
   <header
     data-tauri-drag-region
     bind:offsetHeight={headerH}
-    class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 {isMacDesktop
+    class="flex shrink-0 items-center justify-between gap-3 border-b border-border {isMacDesktop
       ? 'min-h-0 px-2'
-      : 'min-h-12 px-3 pb-2'}"
+      : 'min-h-12 px-3 pb-2'} {mobile
+      ? 'absolute inset-x-0 top-0 z-10 bg-background'
+      : 'bg-secondary/40'}"
     style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
       ? '0.25rem'
       : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
       ? 'padding-left:78px;'
       : ''}{mobile
-      ? `transition:margin-top 200ms ease;margin-top:${chromeHidden ? -headerH : 0}px;`
+      ? `transition:transform 200ms ease, opacity 200ms ease;transform:translateY(${chromeHidden
+          ? '-100%'
+          : '0'});opacity:${chromeHidden ? 0 : 1};`
       : ''}"
   >
     <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
@@ -787,6 +781,20 @@
     </div>
   </header>
 
+  <!-- Status-bar scrim (mobile). We leave the Android system status bar alone, so
+       when the chrome is hidden the note scrolls up underneath it; this fixed
+       fade softens text against the status bar. It's a solid background masked to
+       fade its alpha (so the same theme colour fades cleanly to nothing, with no
+       grey mid-tone) — a top→transparent gradient over the status-bar inset. Sits
+       under the header (z-10) so the header covers it while shown. -->
+  {#if mobile}
+    <div
+      aria-hidden="true"
+      class="pointer-events-none absolute inset-x-0 top-0 z-[5]"
+      style="height:calc(env(safe-area-inset-top) + 16px);background:var(--background);-webkit-mask-image:linear-gradient(to bottom, #000, transparent);mask-image:linear-gradient(to bottom, #000, transparent);"
+    ></div>
+  {/if}
+
   <!-- Body -->
   <div class="relative flex min-h-0 flex-1">
     <!-- Mobile backdrop. Shown while open or mid-drag; its opacity tracks the
@@ -834,6 +842,9 @@
     <main
       bind:this={mainEl}
       class="min-w-0 flex-1 overflow-auto"
+      style={mobile
+        ? `padding-top:${mode === "preview" ? headerH : 0}px;`
+        : ""}
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}
       onpointercancel={onPreviewPointerCancel}
@@ -902,5 +913,13 @@
     white-space: nowrap;
     text-overflow: ellipsis;
     min-width: 0;
+  }
+  /* Source mode scrolls CodeMirror's own .cm-scroller (not <main>), so the
+     floating-header clearance lives here as a constant top padding that scrolls
+     off with the content — mirroring <main>'s padding in preview. --chrome-h is
+     the header height on mobile, 0 on desktop (set on the app root), so this is a
+     no-op on desktop. (#100) */
+  :global(.cm-scroller) {
+    padding-top: var(--chrome-h, 0px);
   }
 </style>
