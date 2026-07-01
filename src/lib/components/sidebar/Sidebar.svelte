@@ -6,6 +6,7 @@
         joinVault,
         shareVault,
         forgetVault,
+        renameVault,
         listTree,
         readNote,
         createNote,
@@ -26,6 +27,7 @@
         Share2,
         Download,
         Plus,
+        Pencil,
         Trash2,
         ChevronsUpDown,
         Check,
@@ -300,6 +302,24 @@
         }
         await refreshVaults();
         if (id === activeVault) await setActive(vaults[0]?.id ?? null);
+    }
+
+    // Rename this device's LOCAL copy of a vault (#120) — never syncs to peers.
+    // Empty input clears the override (backend falls back to synced meta / hash).
+    async function renameVaultAction(id: string) {
+        const v = vaults.find((x) => x.id === id);
+        const current = v?.name ?? "";
+        const name = await askText("Rename vault", current);
+        if (name === undefined || name === null) return;
+        const trimmed = name.trim();
+        if (trimmed === current) return;
+        try {
+            await renameVault(id, trimmed);
+        } catch (e) {
+            console.error("rename vault failed", e);
+            return;
+        }
+        await refreshVaults();
     }
 
     // Create a note in `dir` ("" = vault root). Filename and content are
@@ -653,7 +673,10 @@ Delete this note whenever you're ready. Happy writing!
                             />
                             {#if v.pending}
                                 <span class="flex min-w-0 flex-col">
-                                    <span class="truncate italic">{v.name}</span>
+                                    <span class="flex min-w-0 items-baseline gap-1.5">
+                                        <span class="truncate italic">{v.name}</span>
+                                        <span class="shrink-0 text-xs text-muted-foreground/70">{v.hash}</span>
+                                    </span>
                                     <span
                                         class="flex items-center gap-1 text-xs text-muted-foreground"
                                     >
@@ -662,7 +685,10 @@ Delete this note whenever you're ready. Happy writing!
                                     </span>
                                 </span>
                             {:else}
-                                <span class="truncate">{v.name}</span>
+                                <span class="flex min-w-0 items-baseline gap-1.5">
+                                    <span class="truncate">{v.name}</span>
+                                    <span class="shrink-0 text-xs text-muted-foreground/70">{v.hash}</span>
+                                </span>
                             {/if}
                         </button>
                         <button
@@ -673,6 +699,15 @@ Delete this note whenever you're ready. Happy writing!
                             onclick={() => share(v.id)}
                         >
                             <Share2 class="h-4.5 w-4.5" />
+                        </button>
+                        <button
+                            type="button"
+                            class="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            title="Rename vault"
+                            aria-label="Rename {v.name}"
+                            onclick={() => renameVaultAction(v.id)}
+                        >
+                            <Pencil class="h-4.5 w-4.5" />
                         </button>
                         <button
                             type="button"
