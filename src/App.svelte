@@ -78,7 +78,9 @@
     session.mode = m;
     session.scroll = ratio;
     await tick();
-    applyScroll(m, ratio);
+    // A quick-edit tap positions source's scroll itself (caret pinned to the tap's
+    // on-screen height, see the focus effect); ratio-restore would fight that jump.
+    if (!(m === "source" && quickEditActive)) applyScroll(m, ratio);
   }
 
   // Auto-hide the editor chrome (top bar + FAB) on scroll-down, reveal on
@@ -272,8 +274,22 @@
   let kbWasOpen = false; // the keyboard has been up since this quick edit began
   let focusOnMount = false; // focus the editor once it mounts after the tap
   let quickEditCaret: number | null = null; // source offset for the tapped point
+  let quickEditCaretY: number | null = null; // tap's viewport Y, to keep it in place
+  let quickEditPin: { pos: number; tapY: number } | null = null; // re-pin once kb opens
   let tapStart: { x: number; y: number; t: number } | null = null;
-  let cancelCaretReassert: (() => void) | null = null;
+
+  // Scroll `view` so the caret's line sits at on-screen height `tapY` (where the
+  // preview tap was), but never below the keyboard/toolbar — clamp to the
+  // scroller's visible bottom. Used on quick-edit entry and again once the soft
+  // keyboard opens, since the keyboard shrinks the editor and would otherwise
+  // leave the tapped line behind it (#122).
+  function pinQuickEditCaret(view: EditorView, pos: number, tapY: number) {
+    const c = view.coordsAtPos(pos);
+    if (!c) return;
+    const rect = view.scrollDOM.getBoundingClientRect();
+    const targetY = Math.min(tapY, rect.bottom - 24);
+    view.scrollDOM.scrollTop += c.top - targetY;
+  }
 
   // Caret position under a viewport point, across engines (Chromium/WebKit).
   function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
@@ -319,18 +335,52 @@
   // it can't map (caller then just focuses at the existing position).
   function sourceOffsetFromPoint(x: number, y: number): number | null {
     const root = mainEl?.querySelector<HTMLElement>(".md-preview");
-    const caret = caretFromPoint(x, y);
-    if (!root || !caret || !root.contains(caret.node)) return null;
-    let block: HTMLElement | null =
-      caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
-    while (block && block.parentElement && block.parentElement !== root) block = block.parentElement;
-    if (!block) return null;
+    if (!root) return null;
     const norm1 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+    // Resolve the *direct child* block of the preview under the tap, plus the
+    // caret node/offset within it. A tap on real text yields a precise in-block
+    // caret; only trust it when the walk lands on a direct child of the preview.
+    const caret = caretFromPoint(x, y);
+    let block: HTMLElement | null = null;
+    let caretNode: Node | null = null;
+    let caretOffset = 0;
+    if (caret && root.contains(caret.node) && caret.node !== root) {
+      let b: HTMLElement | null =
+        caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
+      while (b && b.parentElement && b.parentElement !== root) b = b.parentElement;
+      if (b && b.parentElement === root) {
+        block = b;
+        caretNode = caret.node;
+        caretOffset = caret.offset;
+      }
+    }
+
+    // Tap fell in a gap or below the content — common at the bottom of a note,
+    // where `caretFromPoint` returns the `.md-preview` container itself and the
+    // walk above would climb past the root. Pick the block nearest the tap's Y
+    // and land the caret at its *end*, instead of returning null and dropping the
+    // caret to the top of the document (#122).
+    if (!block) {
+      const blocks = Array.from(root.children) as HTMLElement[];
+      for (const el of blocks) {
+        const rect = el.getBoundingClientRect();
+        if (y >= rect.top && y <= rect.bottom) {
+          block = el;
+          break;
+        }
+        if (y > rect.bottom) block = el; // last block wholly above the tap
+      }
+      block ??= blocks[blocks.length - 1] ?? null;
+      if (!block) return null;
+      caretNode = block;
+      caretOffset = block.childNodes.length; // end of the block
+    }
+
     const r = document.createRange();
     r.selectNodeContents(block);
-    r.setEnd(caret.node, caret.offset);
+    r.setEnd(caretNode!, caretOffset);
     const prefix = norm1(r.toString()); // tapped block's text up to the caret
-    if (!prefix) return null;
     const { norm, map } = normalizeWithMap(content);
     // Locate the tapped block in the source by its *full* text (much more unique
     // than the prefix), then offset within it by the prefix — so a phrase that
@@ -339,9 +389,18 @@
     const base = blockText ? norm.indexOf(blockText) : -1;
     const start = base >= 0 ? base : norm.indexOf(prefix);
     if (start < 0) return null;
-    const caretNorm = (base >= 0 ? base : start) + prefix.length;
+    const caretNorm = start + prefix.length;
     if (caretNorm <= 0) return null;
-    return map[Math.min(caretNorm, map.length) - 1] + 1;
+    let offset = map[Math.min(caretNorm, map.length) - 1] + 1;
+    // The normalized prefix ends on the block's last *alphanumeric* char, so a tap
+    // at the end of a line lands `offset` just *before* any trailing punctuation or
+    // markup ("writing|!", "Wi-Fi|."). When the prefix covers the whole block (an
+    // end-of-line tap — middle taps have a shorter prefix), advance to the end of
+    // that source line so the caret sits after those trailing characters (#122).
+    if (prefix === blockText) {
+      while (offset < content.length && content[offset] !== "\n") offset++;
+    }
+    return offset;
   }
 
   function onPreviewPointerDown(e: PointerEvent) {
@@ -363,6 +422,7 @@
     if ((e.target as HTMLElement | null)?.closest("a, input")) return;
     // Map the tap to a source caret before we leave preview (DOM is still here).
     quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
+    quickEditCaretY = e.clientY; // so source can keep the tapped line at this height
     quickEditActive = true;
     kbWasOpen = false;
     focusOnMount = true;
@@ -373,46 +433,58 @@
   // the soft keyboard. (The Editor only exists in source mode, so this can't run
   // inside the tap handler.)
   $effect(() => {
-    if (focusOnMount && mode === "source" && editorView) {
-      focusOnMount = false;
-      const v = editorView;
-      v.focus();
-      // Place the caret where the user tapped in the preview (#41). Falls back
-      // to the editor's existing position when the tap couldn't be mapped.
-      if (quickEditCaret != null) {
-        const pos = Math.max(0, Math.min(quickEditCaret, v.state.doc.length));
-        placeQuickEditCaret(v, pos);
+    // Read all three reactive deps up-front and unconditionally. As a single
+    // `focusOnMount && mode === "source" && editorView` guard, `&&` short-circuits:
+    // on the runs while focusOnMount/mode are still settling during the
+    // preview→source swap, `editorView` is never read, so Svelte doesn't track it
+    // — and the effect then won't re-run when the freshly-mounted editor *binds*,
+    // silently skipping the quick-edit caret placement (the caret then falls to
+    // wherever the tap's synthetic click lands in the top-scrolled editor). Read
+    // them into locals so all three are always tracked (#122).
+    const armed = focusOnMount;
+    const inSource = mode === "source";
+    const v = editorView;
+    if (!(armed && inSource && v)) return;
+    focusOnMount = false;
+    const caret = quickEditCaret;
+    const tapY = quickEditCaretY;
+    quickEditCaret = null;
+    quickEditCaretY = null;
+    v.focus();
+    // Place the caret where the user tapped in the preview (#41). Falls back to
+    // the editor's existing position when the tap couldn't be mapped.
+    if (caret == null) return;
+    const pos = Math.max(0, Math.min(caret, v.state.doc.length));
+    // Place the caret, then scroll so its line sits at the same on-screen height
+    // the tap had in the preview — a continuous transition instead of a jump to
+    // the viewport edge (what plain scrollIntoView does). scrollIntoView in place()
+    // first renders/reveals the line so coordsAtPos is measurable; pin() then
+    // shifts scrollTop to the tap's Y. The keyboard isn't up yet here, so pin()
+    // again once it opens (see below) — that reflow shrinks the editor (#122).
+    const place = () => v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+    const pin = () => tapY != null && pinQuickEditCaret(v, pos, tapY);
+    place();
+    pin();
+    if (tapY != null) quickEditPin = { pos, tapY };
+    // The tap's synthetic click must be allowed through — it's what focuses the
+    // editor and raises the soft keyboard on Android (programmatic focus alone
+    // doesn't). But that click *natively* moves the caret to the tapped pixel,
+    // which in the freshly-mounted, top-scrolled editor is the wrong offset, and
+    // CodeMirror mirrors that DOM change back into its state a few frames later.
+    // Re-assert across a short window: each frame, if CM has drifted off our
+    // target, put it back and re-pin the scroll; once the synthetic sequence
+    // settles this is a no-op. Bails out if we leave the editor (#122).
+    let frames = 0;
+    const enforce = () => {
+      if (!v.dom.isConnected) return;
+      if (v.state.selection.main.head !== pos) {
+        place();
+        pin();
       }
-      quickEditCaret = null;
-    }
+      if (++frames < 20) requestAnimationFrame(enforce);
+    };
+    requestAnimationFrame(enforce);
   });
-
-  // The touch that triggered the quick edit also produces compatibility mouse
-  // events (mousedown→mouseup→click) on the freshly-mounted editor. CodeMirror's
-  // mousedown handler places the caret by pixel, which would clobber our mapped
-  // offset — and the discrepancy grows the farther down the note you tap, since
-  // the source view is scrolled to the top (#122). We must *not* preventDefault
-  // those events (that suppresses the soft keyboard), so instead we set the caret
-  // now and re-assert it on the trailing click — after CodeMirror has had its say,
-  // so our offset wins last. A timeout covers engines that emit no synthetic click.
-  function placeQuickEditCaret(v: EditorView, pos: number) {
-    cancelCaretReassert?.();
-    const dispatch = () => v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
-    let timer = 0;
-    const cleanup = () => {
-      clearTimeout(timer);
-      cancelCaretReassert = null;
-      window.removeEventListener("click", onClick, true);
-    };
-    const onClick = () => {
-      dispatch();
-      cleanup();
-    };
-    cancelCaretReassert = cleanup;
-    dispatch();
-    window.addEventListener("click", onClick, true);
-    timer = window.setTimeout(cleanup, 600);
-  }
 
   // While a quick edit is active, returning the keyboard to hidden returns to
   // preview — but only after it was actually raised, so we don't bounce back
@@ -421,9 +493,26 @@
     if (!quickEditActive) return;
     if (kbOpen) {
       kbWasOpen = true;
+      // The keyboard opening shrinks the editor (--editor-kb-inset); re-pin the
+      // quick-edit caret to the tap's height, now clamped above the keyboard, so
+      // the tapped line isn't left behind it. Re-pin across a short settle window
+      // as the inset animates in, then we're done (#122).
+      const p = quickEditPin;
+      const v = editorView;
+      if (p && v) {
+        quickEditPin = null;
+        let n = 0;
+        const settle = () => {
+          if (!v.dom.isConnected) return;
+          pinQuickEditCaret(v, p.pos, p.tapY);
+          if (++n < 8) requestAnimationFrame(settle);
+        };
+        requestAnimationFrame(settle);
+      }
     } else if (kbWasOpen) {
       quickEditActive = false;
       kbWasOpen = false;
+      quickEditPin = null;
       if (mode === "source") setMode("preview");
     }
   });
