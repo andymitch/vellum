@@ -474,10 +474,15 @@
     if (!quickEditActive) return;
     if (kbOpen) {
       kbWasOpen = true;
-      // The keyboard opening shrinks the editor (--editor-kb-inset); re-pin the
-      // quick-edit caret to the tap's height, now clamped above the keyboard, so
-      // the tapped line isn't left behind it. Re-pin across a short settle window
-      // as the inset animates in, then we're done (#122).
+      // The keyboard opening shrinks the editor (--editor-kb-inset = keyboard +
+      // toolbar), which reflows the tapped line — potentially behind the keyboard
+      // or the markdown toolbar. Both land over several frames: the keyboard
+      // animates open and the toolbar only mounts/measures its height once kbOpen
+      // flips. So watch across a longer window and, *only while the caret is
+      // occluded* below the scroller's visible bottom, pull it back up to the
+      // tap's height clamped above that bottom. Conditional so it catches the late
+      // toolbar inset without fighting the user once the caret is already visible
+      // (#122, #147).
       const p = quickEditPin;
       const v = editorView;
       if (p && v) {
@@ -485,8 +490,10 @@
         let n = 0;
         const settle = () => {
           if (!v.dom.isConnected) return;
-          pinQuickEditCaret(v, p.pos, p.tapY);
-          if (++n < 8) requestAnimationFrame(settle);
+          const c = v.coordsAtPos(p.pos);
+          const bottom = v.scrollDOM.getBoundingClientRect().bottom - 24;
+          if (c && c.bottom > bottom) v.scrollDOM.scrollTop += c.top - Math.min(p.tapY, bottom);
+          if (++n < 32) requestAnimationFrame(settle);
         };
         requestAnimationFrame(settle);
       }
