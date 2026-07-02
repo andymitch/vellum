@@ -1042,12 +1042,4 @@
     text-overflow: ellipsis;
     min-width: 0;
   }
-  /* Source mode scrolls CodeMirror's own .cm-scroller (not <main>), so the
-     floating-header clearance lives here as a constant top padding that scrolls
-     off with the content — mirroring <main>'s padding in preview. --chrome-h is
-     the header height on mobile, 0 on desktop (set on the app root), so this is a
-     no-op on desktop. (#100) */
-  :global(.cm-scroller) {
-    padding-top: var(--chrome-h, 0px);
-  }
 </style>
