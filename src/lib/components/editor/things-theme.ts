@@ -20,7 +20,12 @@ const thingsEditorTheme = (dark: boolean) =>
   ".cm-scroller": {
     fontFamily: "var(--font-sans)",
     lineHeight: "1.7",
-    padding: "1.5rem 0",
+    // Top padding clears the floating mobile header (--chrome-h, 0 on desktop) on
+    // top of the editor's own 1.5rem breathing room, so the first line isn't
+    // hidden behind the chrome (mirrors <main>'s padding in preview). Setting it
+    // here (not a :global rule) so it isn't lost to the theme's own .cm-scroller
+    // padding, which is injected later and would otherwise win (#148).
+    padding: "calc(var(--chrome-h, 0px) + 1.5rem) 0 1.5rem",
   },
   ".cm-content": {
     caretColor: "var(--editor-cursor)",
