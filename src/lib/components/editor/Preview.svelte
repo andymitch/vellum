@@ -267,7 +267,7 @@
 
 <style>
   .md-preview {
-    max-width: 48rem;
+    max-width: 96rem;
     margin: 0 auto;
     padding: 1.5rem;
     line-height: 1.7;
