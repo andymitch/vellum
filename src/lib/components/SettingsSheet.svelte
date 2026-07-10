@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { fade, fly } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore } from "@lucide/svelte";
+  import { fade, fly, slide } from "svelte/transition";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -40,6 +40,60 @@
     if (k === "Shift") return isMac ? "⇧" : "Shift";
     return k.length === 1 ? k.toUpperCase() : k;
   }
+
+  // Markdown cheatsheet (#155), grouped, shown as a collapsible section in
+  // Settings. `syntax` renders verbatim in a <code> block; a `\n` in it makes a
+  // multi-line example. Covers GFM plus Vellum's own wiki links (`[[...]]`,
+  // resolved in Preview.svelte).
+  const CHEATS: { group: string; rows: { syntax: string; label: string }[] }[] = [
+    {
+      group: "Text",
+      rows: [
+        { syntax: "**bold**", label: "Bold" },
+        { syntax: "*italic*", label: "Italic" },
+        { syntax: "~~strikethrough~~", label: "Strikethrough" },
+        { syntax: "`inline code`", label: "Inline code" },
+      ],
+    },
+    {
+      group: "Headings",
+      rows: [
+        { syntax: "# Heading 1", label: "Largest" },
+        { syntax: "## Heading 2", label: "" },
+        { syntax: "###### Heading 6", label: "Smallest" },
+      ],
+    },
+    {
+      group: "Lists",
+      rows: [
+        { syntax: "- item\n- item", label: "Bulleted" },
+        { syntax: "1. item\n2. item", label: "Numbered" },
+        { syntax: "- [ ] to do\n- [x] done", label: "Task list" },
+      ],
+    },
+    {
+      group: "Links",
+      rows: [
+        { syntax: "[label](https://url)", label: "External link" },
+        { syntax: "![alt](image-url)", label: "Image" },
+        { syntax: "[[Note title]]", label: "Link another note" },
+        { syntax: "[[Note title|label]]", label: "Linked note, custom label" },
+        { syntax: "[[Note#Heading]]", label: "Link a heading in a note" },
+        { syntax: "[[#Heading]]", label: "Link a heading in this note" },
+      ],
+    },
+    {
+      group: "Blocks",
+      rows: [
+        { syntax: "> quoted text", label: "Blockquote" },
+        { syntax: "```lang\ncode\n```", label: "Fenced code block" },
+        { syntax: "```mermaid\ngraph TD; A-->B\n```", label: "Mermaid diagram" },
+        { syntax: "| a | b |\n| - | - |\n| 1 | 2 |", label: "Table" },
+        { syntax: "---", label: "Horizontal rule" },
+      ],
+    },
+  ];
+  let cheatOpen = $state(false);
 
   // Drop trailing-zero components (5.0.0 -> v5, 5.1.0 -> v5.1, 5.0.1 -> v5.0.1).
   let version = $state("");
@@ -380,6 +434,49 @@
               onchange={(e) => (liveSync.enabled = e.currentTarget.checked)}
             />
           </label>
+        {/if}
+
+        <div class="my-4 border-t border-border"></div>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Help
+        </p>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          aria-expanded={cheatOpen}
+          onclick={() => (cheatOpen = !cheatOpen)}
+        >
+          <BookOpen class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Markdown cheatsheet</span>
+          <ChevronRight
+            class="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform {cheatOpen
+              ? 'rotate-90'
+              : ''}"
+          />
+        </button>
+        {#if cheatOpen}
+          <div class="mt-1 px-2 pb-1" transition:slide={{ duration: 150 }}>
+            {#each CHEATS as section (section.group)}
+              <p class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
+                {section.group}
+              </p>
+              <div class="flex flex-col gap-1.5">
+                {#each section.rows as row (row.syntax)}
+                  <div class="flex items-center justify-between gap-3">
+                    <code
+                      class="whitespace-pre rounded bg-muted px-1.5 py-1 text-xs text-muted-foreground"
+                      >{row.syntax}</code
+                    >
+                    {#if row.label}
+                      <span class="shrink-0 text-right text-xs text-muted-foreground/70">
+                        {row.label}
+                      </span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/each}
+          </div>
         {/if}
 
         <div class="my-4 border-t border-border"></div>
