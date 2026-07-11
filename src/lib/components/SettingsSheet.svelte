@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly, slide } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper } from "@lucide/svelte";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -102,6 +102,7 @@
     },
   ];
   let cheatOpen = $state(false);
+  let shortcutsOpen = $state(false);
 
   // "What's new" (#144): lazily fetch the latest GitHub release notes on first
   // expand and render them as markdown. "loading"/"error" are sentinel states.
@@ -546,24 +547,38 @@
           </div>
         {/if}
 
-        <div class="my-4 border-t border-border"></div>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Keyboard shortcuts
-        </p>
-        {#each SHORTCUTS as s (s.label)}
-          <div class="flex items-center justify-between gap-3 py-1.5">
-            <span class="text-sm">{s.label}</span>
-            <span class="flex items-center gap-1">
-              {#each s.keys as k (k)}
-                <kbd
-                  class="min-w-5 rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground"
-                >
-                  {keyLabel(k)}
-                </kbd>
-              {/each}
-            </span>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          aria-expanded={shortcutsOpen}
+          onclick={() => (shortcutsOpen = !shortcutsOpen)}
+        >
+          <Keyboard class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Keyboard shortcuts</span>
+          <ChevronRight
+            class="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform {shortcutsOpen
+              ? 'rotate-90'
+              : ''}"
+          />
+        </button>
+        {#if shortcutsOpen}
+          <div class="mt-1 px-2 pb-1" transition:slide={{ duration: 150 }}>
+            {#each SHORTCUTS as s (s.label)}
+              <div class="flex items-center justify-between gap-3 py-1.5">
+                <span class="text-sm text-muted-foreground">{s.label}</span>
+                <span class="flex items-center gap-1">
+                  {#each s.keys as k (k)}
+                    <kbd
+                      class="min-w-5 rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground"
+                    >
+                      {keyLabel(k)}
+                    </kbd>
+                  {/each}
+                </span>
+              </div>
+            {/each}
           </div>
-        {/each}
+        {/if}
 
         <div class="my-4 border-t border-border"></div>
         <div class="flex items-center justify-between gap-3">
