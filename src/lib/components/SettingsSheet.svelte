@@ -1,11 +1,19 @@
 <script lang="ts">
   import { fade, fly, slide } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight } from "@lucide/svelte";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
-  import { checkForUpdateInteractive, formatVersion } from "$lib/updater";
+  import {
+    checkForUpdateInteractive,
+    checkForUpdateMobile,
+    formatVersion,
+    fetchLatestRelease,
+    type LatestRelease,
+  } from "$lib/updater";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { marked } from "marked";
   import { portal } from "$lib/portal";
 
   // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
@@ -94,6 +102,29 @@
     },
   ];
   let cheatOpen = $state(false);
+  let shortcutsOpen = $state(false);
+
+  // "What's new" (#144): lazily fetch the latest GitHub release notes on first
+  // expand and render them as markdown. "loading"/"error" are sentinel states.
+  let whatsNewOpen = $state(false);
+  let whatsNew = $state<LatestRelease | "loading" | "error" | null>(null);
+  async function toggleWhatsNew() {
+    whatsNewOpen = !whatsNewOpen;
+    if (whatsNewOpen && whatsNew === null) {
+      whatsNew = "loading";
+      whatsNew = (await fetchLatestRelease()) ?? "error";
+    }
+  }
+  // Release notes are trusted (our own generated changelog), so render markdown
+  // directly. Links would otherwise navigate the whole webview — intercept and
+  // open them in the OS browser instead.
+  function onNotesClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement | null)?.closest("a");
+    if (!a) return;
+    e.preventDefault();
+    const href = a.getAttribute("href");
+    if (href) openUrl(href);
+  }
 
   // Drop trailing-zero components (5.0.0 -> v5, 5.1.0 -> v5.1, 5.0.1 -> v5.0.1).
   let version = $state("");
@@ -478,40 +509,89 @@
             {/each}
           </div>
         {/if}
-
-        <div class="my-4 border-t border-border"></div>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Keyboard shortcuts
-        </p>
-        {#each SHORTCUTS as s (s.label)}
-          <div class="flex items-center justify-between gap-3 py-1.5">
-            <span class="text-sm">{s.label}</span>
-            <span class="flex items-center gap-1">
-              {#each s.keys as k (k)}
-                <kbd
-                  class="min-w-5 rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground"
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          aria-expanded={whatsNewOpen}
+          onclick={toggleWhatsNew}
+        >
+          <Newspaper class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>What's new</span>
+          <ChevronRight
+            class="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform {whatsNewOpen
+              ? 'rotate-90'
+              : ''}"
+          />
+        </button>
+        {#if whatsNewOpen}
+          <div class="mt-1 px-2 pb-1" transition:slide={{ duration: 150 }}>
+            {#if whatsNew === "loading"}
+              <p class="text-xs text-muted-foreground">Loading…</p>
+            {:else if whatsNew === "error" || !whatsNew}
+              <p class="text-xs text-muted-foreground">
+                Couldn't load the changelog.
+                <button
+                  type="button"
+                  class="underline hover:text-foreground"
+                  onclick={() => openUrl("https://github.com/andymitch/vellum/releases/latest")}
+                  >View on GitHub</button
                 >
-                  {keyLabel(k)}
-                </kbd>
-              {/each}
-            </span>
+              </p>
+            {:else}
+              <p class="mb-1 text-xs font-semibold text-muted-foreground">{whatsNew.tag}</p>
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <div class="release-notes text-sm text-muted-foreground" onclick={onNotesClick} role="presentation">
+                {@html marked.parse(whatsNew.notes)}
+              </div>
+            {/if}
           </div>
-        {/each}
+        {/if}
+
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+          aria-expanded={shortcutsOpen}
+          onclick={() => (shortcutsOpen = !shortcutsOpen)}
+        >
+          <Keyboard class="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span>Keyboard shortcuts</span>
+          <ChevronRight
+            class="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform {shortcutsOpen
+              ? 'rotate-90'
+              : ''}"
+          />
+        </button>
+        {#if shortcutsOpen}
+          <div class="mt-1 px-2 pb-1" transition:slide={{ duration: 150 }}>
+            {#each SHORTCUTS as s (s.label)}
+              <div class="flex items-center justify-between gap-3 py-1.5">
+                <span class="text-sm text-muted-foreground">{s.label}</span>
+                <span class="flex items-center gap-1">
+                  {#each s.keys as k (k)}
+                    <kbd
+                      class="min-w-5 rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground"
+                    >
+                      {keyLabel(k)}
+                    </kbd>
+                  {/each}
+                </span>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         <div class="my-4 border-t border-border"></div>
         <div class="flex items-center justify-between gap-3">
           <p class="text-xs text-muted-foreground">
             {version}
           </p>
-          {#if !isMobile}
-            <button
-              type="button"
-              class="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-              onclick={() => checkForUpdateInteractive()}
-            >
-              Check for updates
-            </button>
-          {/if}
+          <button
+            type="button"
+            class="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+            onclick={() => (isMobile ? checkForUpdateMobile(true) : checkForUpdateInteractive())}
+          >
+            Check for updates
+          </button>
         </div>
       </div>
     </div>
@@ -565,3 +645,37 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Release notes (#144) are injected via {@html}, so reach them with :global.
+     Keep it compact — this is a small panel, not the note preview. */
+  .release-notes :global(h1),
+  .release-notes :global(h2),
+  .release-notes :global(h3) {
+    margin: 0.75rem 0 0.25rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  .release-notes :global(ul) {
+    margin: 0.25rem 0;
+    padding-left: 1.1rem;
+    list-style: disc;
+  }
+  .release-notes :global(li) {
+    margin: 0.15rem 0;
+  }
+  .release-notes :global(p) {
+    margin: 0.35rem 0;
+  }
+  .release-notes :global(a) {
+    color: var(--primary);
+    text-decoration: underline;
+  }
+  .release-notes :global(code) {
+    border-radius: 4px;
+    background: var(--muted);
+    padding: 0.05em 0.3em;
+    font-size: 0.85em;
+  }
+</style>

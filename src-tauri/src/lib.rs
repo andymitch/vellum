@@ -148,6 +148,36 @@ fn get_material_you() -> Option<String> {
     None
 }
 
+/// Open the update download page (#145). On Android, routes to the Komi Store app
+/// if installed (it intercepts github.com repo URLs), else the browser — see
+/// MainActivity.openUpdatePage. Sync command → runs on the Android main thread, so
+/// the app class resolves by name (see set_dark_mode). No-op off Android (desktop
+/// uses the opener plugin directly).
+#[tauri::command]
+fn open_update_page(url: String) {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return;
+        };
+        let Ok(jurl) = env.new_string(&url) else {
+            return;
+        };
+        let _ = env.call_static_method(
+            "com/andymitch/vellum/MainActivity",
+            "openUpdatePage",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&jurl)],
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = url;
+}
+
 // Whether Background sync is on (desktop only). When on, closing the window hides
 // the app to the menu-bar tray instead of quitting, so the in-process iroh node
 // keeps syncing as an always-on hub. Mirrors the setting; see set_background_sync.
@@ -344,6 +374,7 @@ pub fn run() {
             set_dark_mode,
             set_immersive,
             get_material_you,
+            open_update_page,
             vault::list_vaults,
             vault::create_vault,
             vault::join_vault,

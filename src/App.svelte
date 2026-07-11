@@ -7,7 +7,7 @@
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
-  import { checkForUpdate } from "$lib/updater";
+  import { checkForUpdate, checkForUpdateMobile } from "$lib/updater";
   import Fab from "$lib/components/Fab.svelte";
   import {
     readNote,
@@ -157,11 +157,14 @@
   // titlebar height and its left edge is inset to clear the lights — except in
   // fullscreen, where macOS hides them and the toggle can sit flush left.
   const isMacDesktop = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+  const isAndroid = /Android/.test(navigator.userAgent);
   const chromeIcon = isMacDesktop ? 14 : 16;
   let fullscreen = $state(false);
-  // Check for an app update on launch (desktop only; no-op on mobile).
+  // Check for an app update on launch: desktop via the Tauri updater, Android via
+  // the GitHub releases check (#145). Both silently no-op if up to date/offline.
   onMount(() => {
     if (isMacDesktop) checkForUpdate();
+    else if (isAndroid) checkForUpdateMobile();
   });
   // Re-apply the Background sync setting on launch (re-arm the hub + restart the
   // platform keep-alive if it was left enabled).

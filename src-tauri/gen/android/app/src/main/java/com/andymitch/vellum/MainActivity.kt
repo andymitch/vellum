@@ -90,6 +90,28 @@ class MainActivity : TauriActivity() {
       instance?.applyImmersive(hidden)
     }
 
+    // Called from Rust (open_update_page command) via JNI. Opens `url` (the
+    // GitHub release page) in the Komi Store app if it's installed — Komi
+    // intercepts github.com repo URLs — otherwise in the default browser. Uses
+    // the application context + NEW_TASK so it works off the UI thread.
+    @JvmStatic
+    fun openUpdatePage(url: String) {
+      val ctx = instance?.applicationContext ?: return
+      val uri = android.net.Uri.parse(url)
+      fun view(pkg: String?): Boolean =
+        try {
+          val i = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+          if (pkg != null) i.setPackage(pkg)
+          ctx.startActivity(i)
+          true
+        } catch (e: Exception) {
+          false
+        }
+      // Try Komi Store first (explicit package), fall back to the browser.
+      if (!view("zed.rainxch.githubstore")) view(null)
+    }
+
     // Called from Rust (get_material_you command) via JNI. Returns the device's
     // Material You (Monet) tonal palette as a JSON object of #RRGGBB hex strings,
     // or null on pre-Android-12 (API < 31) where dynamic colors don't exist.
