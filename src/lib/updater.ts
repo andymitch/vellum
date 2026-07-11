@@ -4,7 +4,7 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 
 const REPO = "andymitch/vellum";
@@ -174,5 +174,6 @@ export async function checkForUpdateMobile(interactive = false): Promise<void> {
     `Vellum ${rel(latest.version)} is available${current ? ` (currently running ${rel(current)})` : ""}.\n\nOpen the download page?`,
     { title: "Update available", kind: "info" },
   );
-  if (ok) await openUrl(latest.url);
+  // open_update_page routes to the Komi Store app if installed, else the browser.
+  if (ok) await invoke("open_update_page", { url: latest.url });
 }
