@@ -6,7 +6,12 @@
   "app": {
     "windows": [
       {
-        "title": "Vellum Dev"
+        "title": "Vellum Dev",
+        "width": 800,
+        "height": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": false
       }
     ]
   },

@@ -331,6 +331,13 @@ pub fn run() {
                     let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
+            // Center the Overlay-titlebar traffic lights in our web header (#156).
+            // The config-created launch window isn't built by create_main_window,
+            // so arm it here (skipped on an --autostart launch, which has no window).
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                arm_traffic_light_centering(&w);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -392,7 +399,64 @@ fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWin
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true);
     }
-    b.build()
+    let w = b.build()?;
+    #[cfg(target_os = "macos")]
+    arm_traffic_light_centering(&w);
+    Ok(w)
+}
+
+// The Overlay-titlebar traffic lights are standard macOS size and AppKit centers
+// them for the 32px native titlebar. Our web header is taller (~37px), so they
+// sit a few px above its vertical center. Nudge each button down to line up with
+// the header content (#156). macOS resets the button positions on live-resize and
+// fullscreen transitions, so callers re-apply via `arm_traffic_light_centering`.
+#[cfg(target_os = "macos")]
+fn center_traffic_lights(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+    use objc2_foundation::NSPoint;
+    // Matches the macOS header height in App.svelte (min-h-0 + 28px mode-toggle
+    // pill + 0.25rem vertical padding + 1px border).
+    const HEADER_H: f64 = 37.0;
+    let Ok(ptr) = window.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    // Close = 0, Miniaturize = 1, Zoom = 2.
+    for b in [NSWindowButton(0), NSWindowButton(1), NSWindowButton(2)] {
+        let Some(btn) = ns.standardWindowButton(b) else {
+            continue;
+        };
+        let Some(sv) = (unsafe { btn.superview() }) else {
+            continue;
+        };
+        let container_h = sv.frame().size.height;
+        let f = btn.frame();
+        // AppKit measures y from the container's bottom; the container's top is the
+        // window top, so center the button within HEADER_H measured from the top.
+        let top = (HEADER_H - f.size.height) / 2.0;
+        let y = container_h - top - f.size.height;
+        btn.setFrameOrigin(NSPoint::new(f.origin.x, y));
+    }
+}
+
+// Center the traffic lights now, again after layout settles, and on every resize
+// (macOS resets their positions on live-resize + fullscreen transitions).
+#[cfg(target_os = "macos")]
+fn arm_traffic_light_centering(window: &tauri::WebviewWindow) {
+    center_traffic_lights(window);
+    let w = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let w2 = w.clone();
+        let _ = w.run_on_main_thread(move || center_traffic_lights(&w2));
+    });
+    let w3 = window.clone();
+    window.on_window_event(move |e| {
+        if matches!(e, tauri::WindowEvent::Resized(_)) {
+            center_traffic_lights(&w3);
+        }
+    });
 }
 
 // Bring the main window to the front (tray left-click / "Open Vellum" / a second
