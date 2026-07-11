@@ -29,7 +29,7 @@ const thingsEditorTheme = (dark: boolean) =>
   },
   ".cm-content": {
     caretColor: "var(--editor-cursor)",
-    maxWidth: "48rem",
+    maxWidth: "96rem",
     margin: "0 auto",
     padding: "0 1.5rem",
   },
