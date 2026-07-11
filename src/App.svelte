@@ -71,6 +71,9 @@
   // have different (and recreated) scrollers, so carry the scroll *ratio* across.
   async function setMode(m: Mode) {
     if (m === mode) return;
+    // Leaving source ends any quick-edit session, so ESC (desktop) / keyboard
+    // dismiss (mobile) only returns to preview for a source we entered that way.
+    if (m === "preview") quickEditActive = false;
     const ratio = scrollRatio(mode);
     resetChrome();
     mode = m;
@@ -247,10 +250,12 @@
   // it must hide when the keyboard is dismissed even if the editor keeps focus.
   let kbOpen = $state(false);
 
-  // ---- Quick edit (mobile, opt-in) — issue #33 ----
-  // When on, tapping a previewed note jumps to source + keyboard, and hiding the
-  // keyboard returns to preview. quickEditActive marks a source view we entered
-  // via such a tap (so we only auto-return for those, not manual toggles).
+  // ---- Quick edit — mobile tap (opt-in, #33) + desktop double-click (#153) ----
+  // Mobile: tapping a previewed note jumps to source + keyboard, and hiding the
+  // keyboard returns to preview. Desktop: double-clicking the preview jumps to
+  // source at the clicked point, and ESC returns to preview (see onKeydown).
+  // quickEditActive marks a source view we entered this way (so we only auto-
+  // return for those, not manual toggles).
   let quickEditActive = $state(false);
   let kbWasOpen = false; // the keyboard has been up since this quick edit began
   let focusOnMount = false; // focus the editor once it mounts after the tap
@@ -406,6 +411,21 @@
     quickEditCaretY = e.clientY; // so source can keep the tapped line at this height
     quickEditActive = true;
     kbWasOpen = false;
+    focusOnMount = true;
+    setMode("source");
+  }
+
+  // Desktop quick edit (#153): double-click the preview to jump into source at
+  // the clicked point. ESC returns to preview (onKeydown). No keyboard on desktop,
+  // so unlike mobile there's no auto-return on keyboard-dismiss — the focus-on-
+  // mount effect places the caret; quickEditActive just marks it for ESC.
+  function onPreviewDblClick(e: MouseEvent) {
+    if (mobile || mode !== "preview" || !activePath) return;
+    // Links and task checkboxes have their own behavior; don't hijack them.
+    if ((e.target as HTMLElement | null)?.closest("a, input")) return;
+    quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
+    quickEditCaretY = null; // desktop: no keyboard to pin the line above
+    quickEditActive = true;
     focusOnMount = true;
     setMode("source");
   }
@@ -766,6 +786,17 @@
   // Global hotkeys. Mod = Cmd (macOS) / Ctrl (elsewhere). These complement the
   // editor's own text-formatting shortcuts, which CodeMirror handles internally.
   function onKeydown(e: KeyboardEvent) {
+    // ESC leaves a desktop quick edit (#153), returning to preview. Gated on
+    // quickEditActive so it only undoes a double-click-to-edit, not a manual
+    // source view (where ESC belongs to CodeMirror — closing autocomplete, etc.).
+    if (e.key === "Escape") {
+      if (!mobile && mode === "source" && quickEditActive && activePath) {
+        e.preventDefault();
+        editorView?.contentDOM.blur();
+        setMode("preview");
+      }
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     if (!mod) return;
     const key = e.key.toLowerCase();
@@ -983,6 +1014,7 @@
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}
       onpointercancel={onPreviewPointerCancel}
+      ondblclick={onPreviewDblClick}
     >
       {#if !activePath}
         <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
