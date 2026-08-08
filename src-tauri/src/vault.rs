@@ -819,11 +819,22 @@ pub(crate) struct NoteEntry {
 }
 
 /// Collect all visible entries in a vault, newest first.
+///
+/// Tombstoned keys are excluded by content length, not by trusting the query to
+/// drop them. A delete only ever writes an empty record under the *deleting*
+/// author (iroh-docs scopes removal to `author_prefix`), so when a note was
+/// written on another device the key still has that peer's live record
+/// alongside our newer tombstone. `single_latest_per_key` hands back the newest
+/// of the two — our tombstone — and without this check the key would keep
+/// showing up as a live note. Same rule `key_exists` already applies.
 pub(crate) async fn list_entries(doc: &iroh_docs::api::Doc) -> Result<Vec<NoteEntry>> {
     let mut stream = Box::pin(doc.get_many(Query::single_latest_per_key()).await?);
     let mut out = Vec::new();
     while let Some(entry) = stream.next().await {
         let entry = entry?;
+        if entry.content_len() == 0 {
+            continue; // deleted (tombstone wins over any older live record)
+        }
         let key = entry.key();
         if key.first() == Some(&0x00) {
             continue; // reserved meta keys
@@ -1323,6 +1334,41 @@ pub async fn create_folder(state: State<'_, VaultManager>, vault: String, path: 
     )
 }
 
+/// Remove every entry under `prefix`, whichever device wrote it.
+///
+/// Order matters, and getting it wrong is what made folder renames leave a
+/// duplicate behind. `del` writes ONE empty record at `(our author, prefix)`,
+/// and iroh-docs scopes removal to `author_prefix` — so it clears *our* records
+/// under the prefix and nothing else. Two consequences:
+///
+/// 1. A prefix tombstone never shadows `old/a.md` written by another device, so
+///    peer-authored notes need an exact-key tombstone each (newer than the
+///    peer's record, so the key reads as deleted).
+/// 2. Those per-key tombstones are themselves *our* records under the prefix —
+///    so a prefix `del` afterwards deletes them again. Worse, removing our
+///    tombstone RESURRECTS the peer's record underneath it, which is how a
+///    folder came back after being deleted. Sweep the prefix FIRST.
+///
+/// So: sweep, then re-read the listing and tombstone whatever still reads as
+/// live. The listing must be taken *after* the sweep — a pre-sweep listing
+/// misses exactly the keys the sweep just resurrected.
+pub(crate) async fn clear_prefix(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    prefix: &str,
+) -> Result<()> {
+    // Clears our own entries under the folder, plus the folder marker key
+    // itself (an empty folder whose only entry is "work/"). `del` takes a
+    // prefix, so there is no way to drop the marker without this side effect.
+    doc.del(node.author, prefix.as_bytes().to_vec()).await?;
+    // Anything still live under the prefix was written by another device (or
+    // was just uncovered by the sweep); tombstone it by exact key.
+    for key in list_keys(doc).await?.iter().filter(|k| k.starts_with(prefix)) {
+        doc.del(node.author, key.clone().into_bytes()).await?;
+    }
+    Ok(())
+}
+
 /// Move a note or folder to a new key. Copies the merged CRDT state to the new
 /// key (preserving edit history), then tombstones the old one. A note whose
 /// content blob hasn't synced yet reads as empty (`merged_note` `found == false`);
@@ -1352,7 +1398,7 @@ pub(crate) async fn rename_key(
         for (new_key, val) in staged {
             doc.set_bytes(node.author, new_key.into_bytes(), val).await?;
         }
-        doc.del(node.author, from_prefix.into_bytes()).await?;
+        clear_prefix(node, doc, &from_prefix).await?;
     } else {
         let (ydoc, found) = merged_note(node, doc, from.as_bytes(), 0).await?;
         if !found {
@@ -1372,18 +1418,10 @@ pub(crate) async fn delete_key(
     is_dir: bool,
 ) -> Result<()> {
     if is_dir {
-        // Recursively tombstone every entry under the folder. A prefix del only
-        // clears *our* author's entries; deleting each key explicitly lets the
-        // tombstone win across authors (peer-created notes) by timestamp, so the
-        // folder's contents fully disappear.
+        // Recursively remove every entry under the folder, including notes
+        // written by other devices — see clear_prefix for why the order matters.
         let prefix = format!("{}/", path.trim_end_matches('/'));
-        let keys = list_keys(doc).await?;
-        for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
-            doc.del(node.author, key.clone().into_bytes()).await?;
-        }
-        // Also clear the folder marker key itself (e.g. an empty folder whose
-        // only entry is "work/").
-        doc.del(node.author, prefix.into_bytes()).await?;
+        clear_prefix(node, doc, &prefix).await?;
     } else {
         doc.del(node.author, path.as_bytes().to_vec()).await?;
     }
@@ -1885,6 +1923,94 @@ mod tests {
         assert!(after.contains(&"other.md".to_string()), "sibling deleted");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Renaming a folder must MOVE it, not copy it: the new prefix gets the
+    /// contents and the old prefix disappears entirely. Reported symptom is a
+    /// duplicate — both folders present, the new one holding the notes.
+    #[tokio::test]
+    async fn rename_folder_moves_and_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("notes-mvdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+
+        for k in ["old/.keep", "old/a.md", "old/sub/b.md"] {
+            doc.set_bytes(node.author, k.as_bytes().to_vec(), fresh_note("x"))
+                .await
+                .expect("set");
+        }
+
+        rename_key(&node, &doc, "old", "new", true).await.expect("rename");
+
+        let after = list_keys(&doc).await.expect("list");
+        assert!(
+            after.contains(&"new/a.md".to_string()) && after.contains(&"new/sub/b.md".to_string()),
+            "contents did not arrive at the new name: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|k| k.starts_with("old/")),
+            "old folder survived the rename (duplicate): {after:?}"
+        );
+    }
+
+    /// The real-world case: the folder holds a note written by ANOTHER device
+    /// (a second author, as any synced peer produces). `del(author, prefix)`
+    /// writes a single empty entry at `(our author, "old/")` — it does not
+    /// tombstone `old/a.md` under the peer's author — so the peer's note stays
+    /// live under the old prefix and the folder appears duplicated.
+    #[tokio::test]
+    async fn rename_folder_moves_peer_authored_notes_too() {
+        let dir = std::env::temp_dir().join(format!("notes-mvdir2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+        // A second author stands in for a peer device writing into the vault.
+        let peer = node.docs.author_create().await.expect("peer author");
+
+        doc.set_bytes(node.author, b"old/.keep".to_vec(), encode(""))
+            .await
+            .expect("keep");
+        doc.set_bytes(peer, b"old/a.md".to_vec(), fresh_note("from the phone"))
+            .await
+            .expect("peer note");
+
+        rename_key(&node, &doc, "old", "new", true).await.expect("rename");
+
+        let after = list_keys(&doc).await.expect("list");
+        assert!(
+            after.contains(&"new/a.md".to_string()),
+            "peer's note did not arrive at the new name: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|k| k.starts_with("old/")),
+            "old folder survived — duplicate left behind: {after:?}"
+        );
+    }
+
+    /// And the stale folder left behind must at least be deletable — the second
+    /// half of the report ("deleting the old folder does nothing"). Uses a peer
+    /// author, since that is the case that leaves a folder behind at all.
+    #[tokio::test]
+    async fn delete_folder_after_rename_removes_it() {
+        let dir = std::env::temp_dir().join(format!("notes-mvrm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+        let peer = node.docs.author_create().await.expect("peer author");
+
+        doc.set_bytes(node.author, b"old/.keep".to_vec(), encode("")).await.expect("keep");
+        doc.set_bytes(peer, b"old/a.md".to_vec(), fresh_note("x")).await.expect("peer note");
+
+        rename_key(&node, &doc, "old", "new", true).await.expect("rename");
+        delete_key(&node, &doc, "old", true).await.expect("delete");
+
+        let after = list_keys(&doc).await.expect("list");
+        assert!(
+            !after.iter().any(|k| k.starts_with("old/")),
+            "old folder survived an explicit delete: {after:?}"
+        );
+        assert!(after.contains(&"new/a.md".to_string()), "delete took the renamed copy too: {after:?}");
     }
 
     // A deleted note's name is free again: recreating it reuses the name rather
