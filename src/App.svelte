@@ -26,7 +26,15 @@
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
-  import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
+  import {
+    noteTypeInfo,
+    noteTypeOf,
+    countChecked,
+    sweepChecked,
+    SEPARATOR,
+    ensureDaySection,
+  } from "$lib/note-type";
+  import { Code, Eye, PanelLeft, NotebookPen, Settings, Brush, Minus } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
   let mode = $state<Mode>(session.mode);
@@ -250,6 +258,49 @@
   let activePath = $state<string | null>(null);
   let content = $state("");
   let lastLoaded = $state("");
+
+  // Note types (#104). A typed note renders one way only, so it hides the
+  // source/preview control and shows its own header actions instead.
+  const noteType = $derived(noteTypeOf(content));
+  const typeInfo = $derived(noteTypeInfo(noteType));
+  const singleView = $derived(!!activePath && typeInfo.singleView);
+  const checkedCount = $derived(noteType === "todo" ? countChecked(content) : 0);
+  // Which view actually renders: a TODO is always the interactive checklist, a
+  // scratchpad is always the editor, and Markdown follows the mode toggle.
+  const view = $derived(
+    noteType === "todo" ? "preview" : noteType === "scratchpad" ? "source" : mode,
+  );
+
+  // Remove every ticked item. Behind a confirm because a delete propagates to
+  // every synced device — there is no undo that would work across sync. The
+  // rewrite goes through `content`, so it is an ordinary CRDT-merged edit.
+  async function sweepDone() {
+    if (!checkedCount) return;
+    const plural = checkedCount === 1 ? "item" : "items";
+    if (!(await sidebar?.confirmAction(`Remove ${checkedCount} completed ${plural}?`))) return;
+    content = sweepChecked(content);
+  }
+
+  // Insert a plain thematic break at the end of a scratchpad — a divider that
+  // renders as one and survives export as ordinary Markdown.
+  function insertSeparator() {
+    content = content.replace(/\s*$/, "") + SEPARATOR;
+  }
+
+  // Start a new dated section when the user focuses a scratchpad to write
+  // (#104, absorbing the journal idea). On focus rather than on open: opening a
+  // note must never mutate it, since that would sync a change to every device
+  // just from looking at it. The insert is idempotent, so two devices reaching
+  // this on the same morning can't produce a duplicate heading.
+  let daySectionFor = $state<string | null>(null);
+  $effect(() => {
+    if (noteType !== "scratchpad" || !activePath || !editorFocused) return;
+    if (daySectionFor === activePath) return;
+    daySectionFor = activePath;
+    const next = ensureDaySection(content);
+    if (next !== content) content = next;
+  });
+
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   // Per-open id for the editor's {#key}, so switching notes remounts the editor
   // with a fresh document.
@@ -836,8 +887,9 @@
       searchInitial = "";
       searchOpen = true;
     } else if (key === "p") {
-      // Toggle source <-> preview (only meaningful with a note open).
-      if (activePath) {
+      // Toggle source <-> preview (only meaningful with a note open, and only
+      // for Markdown notes — typed notes have a single view).
+      if (activePath && !singleView) {
         e.preventDefault();
         setMode(mode === "source" ? "preview" : "source");
       }
@@ -925,7 +977,37 @@
     </div>
 
     <div data-tauri-drag-region class="flex items-center gap-1.5">
-      <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit. -->
+      {#if noteType === "todo" && checkedCount}
+        <!-- Sweep completed items (#104). Only shown when there's something to
+             sweep, so it doesn't sit there as dead chrome. -->
+        <button
+          type="button"
+          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
+            ? 'p-1'
+            : 'p-2'}"
+          aria-label="Remove completed items"
+          title="Remove {checkedCount} completed item{checkedCount === 1 ? '' : 's'}"
+          onclick={sweepDone}
+        >
+          <Brush size={chromeIcon} />
+        </button>
+      {/if}
+      {#if noteType === "scratchpad"}
+        <button
+          type="button"
+          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
+            ? 'p-1'
+            : 'p-2'}"
+          aria-label="Add separator"
+          title="Add separator"
+          onclick={insertSeparator}
+        >
+          <Minus size={chromeIcon} />
+        </button>
+      {/if}
+      <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit.
+           Hidden for typed notes (#104), which have exactly one view. -->
+      {#if !singleView}
       <button
         type="button"
         class="inline-flex items-center gap-0.5 rounded-full border border-border bg-background p-0.5"
@@ -952,6 +1034,7 @@
           <Eye size={chromeIcon} />
         </span>
       </button>
+      {/if}
       <button
         type="button"
         class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
@@ -1040,7 +1123,7 @@
           <NotebookPen size={40} class="opacity-30" />
           <p class="text-sm">Select or create a note.</p>
         </div>
-      {:else if mode === "preview"}
+      {:else if view === "preview"}
         <Preview
           bind:value={content}
           {notePaths}
@@ -1068,7 +1151,11 @@
 <!-- Mobile: floating new-note button. Always available while a vault is open
      (#85); auto-hides on scroll-down, slides back in on scroll-up. -->
 {#if mobile && activeVault}
-  <Fab onclick={newNoteHere} hidden={chromeHidden} />
+  <Fab
+    onclick={newNoteHere}
+    ontype={(type) => sidebar?.newTypedNote(currentDir, type)}
+    hidden={chromeHidden}
+  />
 {/if}
 
 <!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->

@@ -44,6 +44,20 @@ const thingsEditorTheme = (dark: boolean) =>
     {
       backgroundColor: "var(--editor-selection)",
     },
+  // The note-type badge that stands in for a hidden frontmatter block (#104).
+  // Small and muted: it says what the note is without competing with the text.
+  ".cm-type-badge": {
+    display: "inline-block",
+    margin: "0 0 0.6em",
+    padding: "0.1em 0.5em",
+    borderRadius: "0.375rem",
+    fontSize: "0.75em",
+    letterSpacing: "0.02em",
+    textTransform: "uppercase",
+    color: "var(--editor-muted)",
+    background: "color-mix(in srgb, var(--editor-muted) 15%, transparent)",
+    userSelect: "none",
+  },
   ".cm-activeLine": {
     backgroundColor: "transparent",
   },
