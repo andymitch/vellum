@@ -3,16 +3,25 @@ name: Release
 # One-click release: Actions → Release → "Run workflow". Pick a release type:
 #   - major  (default): next vN tag, version N.0.0.
 #   - hotfix: next point release off the latest major, vN.X / N.X.0 (#118).
+#   - beta:   pre-release of the NEXT major, vN-beta.X / N.0.0-beta.X (#171).
 # Builds macOS + Android, publishes a GitHub Release with categorized notes
 # (see .github/release.yml). Versions stamp valid semver so Tauri/the updater
-# are happy (N.0.0 or N.X.0).
+# are happy (N.0.0, N.X.0, or N.0.0-beta.X).
+#
+# A beta is published as a GitHub *pre-release*, which /releases/latest/ excludes
+# — and that is the whole mechanism. Both the updater endpoint
+# (tauri.conf.json) and the README download buttons resolve through
+# /releases/latest/, so a beta is invisible to everyone who did not go looking
+# for it. Semver precedence then returns testers to the stable track by itself:
+# 8.0.0-beta.1 < 8.0.0, so the updater moves them onto v8 when it ships, while
+# stable 7.0.0 is older than the beta so it never drags them backwards.
 on:
   workflow_dispatch:
     inputs:
       release_type:
         description: "Release type"
         type: choice
-        options: [major, hotfix]
+        options: [major, hotfix, beta]
         default: major
 
 permissions:
@@ -25,6 +34,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
       prev: ${{ steps.v.outputs.prev }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -40,6 +50,7 @@ jobs:
           # on empty matches while still catching real git/sed/sort failures.
           # Latest major counter (point tags excluded by the ^v[0-9]+$ anchor).
           LATEST_MAJOR=$(git tag -l 'v*' | { grep -E '^v[0-9]+$' || true; } | sed 's/^v//' | sort -n | tail -1)
+          PRERELEASE=false
           if [ "$TYPE" = "hotfix" ]; then
             if [ -z "$LATEST_MAJOR" ]; then echo "No major release to hotfix"; exit 1; fi
             N=$LATEST_MAJOR
@@ -47,6 +58,14 @@ jobs:
             X=$(git tag -l "v${N}.*" | { grep -E "^v${N}\.[0-9]+$" || true; } | sed "s/^v${N}\.//" | sort -n | tail -1)
             X=$(( ${X:-0} + 1 ))
             VERSION="${N}.${X}.0"; TAG="v${N}.${X}"
+          elif [ "$TYPE" = "beta" ]; then
+            # Beta of the NEXT major, so a run of betas leads up to one vN.
+            N=$(( ${LATEST_MAJOR:-0} + 1 ))
+            # Next beta counter from existing vN-beta.* tags (0 if none -> beta.1).
+            B=$(git tag -l "v${N}-beta.*" | { grep -E "^v${N}-beta\.[0-9]+$" || true; } | sed "s/^v${N}-beta\.//" | sort -n | tail -1)
+            B=$(( ${B:-0} + 1 ))
+            VERSION="${N}.0.0-beta.${B}"; TAG="v${N}-beta.${B}"
+            PRERELEASE=true
           else
             N=$(( ${LATEST_MAJOR:-0} + 1 ))
             VERSION="${N}.0.0"; TAG="v${N}"
@@ -54,11 +73,16 @@ jobs:
           # prev = immediately preceding release: highest existing vN or vN.X
           # (version sort). The new TAG doesn't exist yet, so this is the prior
           # release — a major cut after a hotfix diffs against the hotfix.
+          # Beta tags are excluded by the anchors, deliberately: a beta's notes
+          # should cover everything since the last REAL release (that's what
+          # testers need to exercise), and the eventual vN then still lists the
+          # whole span rather than only what changed since the last beta.
           PREV=$(git tag -l 'v*' | { grep -E '^v[0-9]+(\.[0-9]+)?$' || true; } | sort -V | tail -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prev=$PREV" >> "$GITHUB_OUTPUT"
-          echo "Next release: $TAG (version $VERSION), prev ${PREV:-<none>}"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Next release: $TAG (version $VERSION), prev ${PREV:-<none>}, prerelease=$PRERELEASE"
       # Create the release up front so desktop + android can upload to it in
       # parallel. tauri-action finds this existing release by tagName; the
       # android job uploads via `gh release upload`. (Previously tauri-action
@@ -71,12 +95,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.v.outputs.tag }}
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
         run: |
-          gh release create "$TAG" \
-            --draft \
-            --target "${{ github.sha }}" \
-            --title "Vellum $TAG" \
-            --notes "Building…"
+          set -euo pipefail
+          FLAGS=(--draft --target "${{ github.sha }}" --title "Vellum $TAG" --notes "Building…")
+          # A pre-release is what keeps a beta out of /releases/latest/, so this
+          # flag is the feature — not cosmetic.
+          if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+          gh release create "$TAG" "${FLAGS[@]}"
 
   # macOS desktop: .app/.dmg + signed updater artifacts + latest.json, via
   # tauri-action (which also creates the GitHub Release for the tag).
@@ -110,7 +136,7 @@ jobs:
           releaseName: "Vellum ${{ needs.prepare.outputs.tag }}"
           releaseBody: "Building…"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           args: --target aarch64-apple-darwin
       # tauri-action attaches a version-stamped dmg (Vellum_N.0.0_aarch64.dmg),
       # whose name changes every release. Attach a stable-named copy too so the
@@ -200,6 +226,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
           PREV: ${{ needs.prepare.outputs.prev }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
           # The vN tag doesn't exist until the draft is published below, so diff
           # up to the release's target commit instead (avoids a compare 404).
           HEAD: ${{ github.sha }}
@@ -208,4 +235,5 @@ jobs:
           cat notes.md
           # Publish the draft now that both builds succeeded and all artifacts
           # are attached.
-          gh release edit "$TAG" --repo "$REPO" --notes-file notes.md --draft=false
+          gh release edit "$TAG" --repo "$REPO" --notes-file notes.md \
+            --draft=false --prerelease="$PRERELEASE"
