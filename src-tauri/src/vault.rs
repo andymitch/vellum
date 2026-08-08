@@ -855,6 +855,163 @@ pub(crate) async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> 
     Ok(list_entries(doc).await?.into_iter().map(|e| e.path).collect())
 }
 
+// ============================ search + tags ============================
+
+/// Deleted notes are moved here rather than tombstoned, so they must be kept out
+/// of listings, search results and tag counts. (The MCP `delete_note` tool is
+/// what puts them there; a real delete would propagate to every synced device.)
+pub(crate) const TRASH: &str = ".trash";
+
+/// Notes are scanned one at a time, and each scan is a blob read plus a CRDT
+/// merge — so cap the work rather than stalling on a huge vault.
+pub(crate) const SEARCH_SCAN_LIMIT: usize = 2000;
+
+/// Keys that aren't user-visible notes: folder markers and anything trashed.
+pub(crate) fn is_hidden_path(path: &str) -> bool {
+    path.ends_with(KEEP)
+        || path.ends_with('/')
+        || path == TRASH
+        || path.starts_with(&format!("{TRASH}/"))
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchHit {
+    pub path: String,
+    /// Matching lines as `{line_number}: {text}`, at most 3 per note.
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TagCount {
+    pub tag: String,
+    /// How many notes carry the tag (not how many times it occurs).
+    pub count: usize,
+}
+
+fn is_tag_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '/'
+}
+
+/// Pull inline `#tag`s out of a note body, in order of appearance, de-duplicated
+/// case-insensitively.
+///
+/// Tags live in the Markdown itself (no sidecar storage), so they sync through
+/// the same CRDT as the text and survive export/import. The rules exist to keep
+/// them from colliding with ordinary Markdown:
+///
+/// - `#` must start the line or follow whitespace, so `example.com/#anchor` and
+///   `C#` inside a word are not tags.
+/// - The next character must be alphanumeric, which is exactly what separates a
+///   tag from an ATX heading — `# Heading` has a space and is not a tag.
+/// - `_`, `-` and `/` continue a tag (so `#in/progress`, `#q3-goals` work), but
+///   trailing ones are trimmed so `#work.` and `#work/` both yield `work`.
+pub(crate) fn extract_tags(text: &str) -> Vec<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].1 != '#' || !(i == 0 || chars[i - 1].1.is_whitespace()) {
+            i += 1;
+            continue;
+        }
+        let body = i + 1;
+        let mut j = body;
+        while j < chars.len() && is_tag_char(chars[j].1) {
+            j += 1;
+        }
+        // `j > body` rules out a bare "#"; the alphanumeric test rules out
+        // "# Heading" and oddities like "#-".
+        if j > body && chars[body].1.is_alphanumeric() {
+            let end = chars.get(j).map_or(text.len(), |(p, _)| *p);
+            let tag = text[chars[body].0..end].trim_end_matches(['-', '/', '_']);
+            if !tag.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                out.push(tag.to_string());
+            }
+        }
+        i = j.max(body);
+    }
+    out
+}
+
+/// Case-insensitive substring search across a vault's notes.
+///
+/// Deliberately not a regex and not indexed: every note has to be merged out of
+/// the CRDT to be read at all, so the scan dominates either way, and a personal
+/// vault is small. Shared by the in-app search and the MCP `search_notes` tool
+/// so the two can't drift.
+pub(crate) async fn search(
+    node: &Node,
+    vault: &str,
+    query: &str,
+    path_contains: Option<&str>,
+    max: usize,
+) -> Result<Vec<SearchHit>> {
+    let doc = open(node, vault).await?;
+    let needle = query.to_lowercase();
+    let filter = path_contains.map(str::to_lowercase);
+    let mut hits = Vec::new();
+    let mut scanned = 0usize;
+    for entry in list_entries(&doc).await? {
+        if hits.len() >= max || scanned >= SEARCH_SCAN_LIMIT {
+            break;
+        }
+        if is_hidden_path(&entry.path) {
+            continue;
+        }
+        if filter.as_ref().is_some_and(|p| !entry.path.to_lowercase().contains(p)) {
+            continue;
+        }
+        scanned += 1;
+        // Not synced yet — the entry exists but its content blob hasn't landed.
+        let Some(text) = read_note_text(node, &doc, entry.path.as_bytes()).await? else {
+            continue;
+        };
+        let lines: Vec<String> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.to_lowercase().contains(&needle))
+            .take(3)
+            .map(|(i, l)| format!("{}: {}", i + 1, l.trim()))
+            .collect();
+        if !lines.is_empty() {
+            hits.push(SearchHit {
+                path: entry.path,
+                lines,
+            });
+        }
+    }
+    Ok(hits)
+}
+
+/// Every tag in a vault with the number of notes carrying it, most-used first
+/// (ties broken alphabetically so the order is stable).
+pub(crate) async fn tags_in_vault(node: &Node, vault: &str) -> Result<Vec<TagCount>> {
+    let doc = open(node, vault).await?;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut scanned = 0usize;
+    for entry in list_entries(&doc).await? {
+        if scanned >= SEARCH_SCAN_LIMIT {
+            break;
+        }
+        if is_hidden_path(&entry.path) {
+            continue;
+        }
+        scanned += 1;
+        let Some(text) = read_note_text(node, &doc, entry.path.as_bytes()).await? else {
+            continue;
+        };
+        for tag in extract_tags(&text) {
+            *counts.entry(tag).or_default() += 1;
+        }
+    }
+    let mut out: Vec<TagCount> = counts
+        .into_iter()
+        .map(|(tag, count)| TagCount { tag, count })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+    Ok(out)
+}
+
 async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
     // single_latest_per_key drops tombstones, and content_len 0 catches any
     // residual empty record — so a *deleted* note's key counts as free. A raw
@@ -1140,6 +1297,33 @@ pub async fn list_tree(state: State<'_, VaultManager>, vault: String) -> Result<
         }
         .await,
     )
+}
+
+/// Search a vault's notes (#15). Case-insensitive substring match; see `search`.
+#[tauri::command]
+pub async fn search_notes(
+    state: State<'_, VaultManager>,
+    vault: String,
+    query: String,
+    max: Option<usize>,
+) -> Result<Vec<SearchHit>, String> {
+    let node = state.node().await?;
+    // An empty query would match every line of every note — return nothing
+    // rather than the whole vault while the user is still typing.
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    map_err(search(node, &vault, &query, None, max.unwrap_or(20).clamp(1, 100)).await)
+}
+
+/// Every inline `#tag` in a vault, with how many notes use it (#15).
+#[tauri::command]
+pub async fn list_tags(
+    state: State<'_, VaultManager>,
+    vault: String,
+) -> Result<Vec<TagCount>, String> {
+    let node = state.node().await?;
+    map_err(tags_in_vault(node, &vault).await)
 }
 
 #[tauri::command]
@@ -1921,6 +2105,99 @@ mod tests {
         // A note named like the folder ("proj.md") and an unrelated sibling stay.
         assert!(after.contains(&"proj.md".to_string()), "prefix over-matched proj.md");
         assert!(after.contains(&"other.md".to_string()), "sibling deleted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tag extraction (#15) has to coexist with ordinary Markdown: the only
+    /// thing separating `#tag` from an ATX heading is the space.
+    #[test]
+    fn extract_tags_handles_markdown_lookalikes() {
+        assert_eq!(extract_tags("Buy milk #errands #urgent"), ["errands", "urgent"]);
+        // A heading is not a tag, at any level.
+        assert!(extract_tags("# Heading\n## Sub").is_empty());
+        // Nor is a URL fragment, or a '#' mid-word.
+        assert!(extract_tags("see https://example.com/#anchor").is_empty());
+        assert!(extract_tags("wrote it in C#").is_empty());
+        // Nested and hyphenated tags survive intact.
+        assert_eq!(extract_tags("#in/progress #q3-goals"), ["in/progress", "q3-goals"]);
+        // Trailing punctuation and separators are trimmed off.
+        assert_eq!(extract_tags("done #work. next #home, then #a/"), ["work", "home", "a"]);
+        // Start of line counts as a boundary; repeats collapse (per note).
+        assert_eq!(extract_tags("#top\nmore #top #TOP"), ["top"]);
+        // A bare '#' or '# ' yields nothing.
+        assert!(extract_tags("# \n#\nnot # a tag").is_empty());
+        // Non-ASCII must not panic or split a codepoint.
+        assert_eq!(extract_tags("café #café #日本語"), ["café", "日本語"]);
+    }
+
+    /// Search reports 1-based line numbers, ignores case, honours the cap, and
+    /// never surfaces trashed notes.
+    #[tokio::test]
+    async fn search_finds_matches_and_skips_trash() {
+        let dir = std::env::temp_dir().join(format!("notes-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+        let vault = doc.id().to_string();
+
+        for (k, v) in [
+            ("one.md", "alpha\nbeta\ngamma\n"),
+            ("two.md", "nothing here\n"),
+            ("notes/three.md", "BETA rising\n"),
+            (".trash/old.md", "beta in the bin\n"),
+        ] {
+            doc.set_bytes(node.author, k.as_bytes().to_vec(), fresh_note(v))
+                .await
+                .expect("set");
+        }
+
+        let hits = search(&node, &vault, "beta", None, 20).await.expect("search");
+        assert_eq!(hits.len(), 2, "case-insensitive across both live notes: {hits:?}",);
+        let one = hits.iter().find(|h| h.path == "one.md").expect("one.md");
+        assert_eq!(one.lines, ["2: beta"], "1-based line numbers");
+        assert!(
+            !hits.iter().any(|h| h.path.starts_with(".trash/")),
+            "trashed notes must not surface in search"
+        );
+
+        // path_contains narrows to a folder, and max caps the result set.
+        let scoped = search(&node, &vault, "beta", Some("notes/"), 20).await.expect("scoped");
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].path, "notes/three.md");
+        assert_eq!(search(&node, &vault, "beta", None, 1).await.expect("cap").len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tag counts are per-note (not per-occurrence), most-used first, and skip
+    /// the trash.
+    #[tokio::test]
+    async fn tags_in_vault_counts_notes() {
+        let dir = std::env::temp_dir().join(format!("notes-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+        let vault = doc.id().to_string();
+
+        for (k, v) in [
+            ("a.md", "# Heading\ntask #work #urgent\nmore #work\n"),
+            ("b.md", "another #work item\n"),
+            ("c.md", "untagged\n"),
+            (".trash/d.md", "#work #ghost\n"),
+        ] {
+            doc.set_bytes(node.author, k.as_bytes().to_vec(), fresh_note(v))
+                .await
+                .expect("set");
+        }
+
+        let tags = tags_in_vault(&node, &vault).await.expect("tags");
+        let pairs: Vec<(&str, usize)> = tags.iter().map(|t| (t.tag.as_str(), t.count)).collect();
+        assert_eq!(
+            pairs,
+            [("work", 2), ("urgent", 1)],
+            "counted per note, most-used first, trash excluded"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

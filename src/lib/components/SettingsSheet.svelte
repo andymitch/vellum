@@ -49,6 +49,7 @@
     { keys: ["Mod", ","], label: "Open settings" },
     { keys: ["Mod", "N"], label: "New note" },
     { keys: ["Mod", "Shift", "N"], label: "New folder" },
+    { keys: ["Mod", "F"], label: "Search notes" },
     { keys: ["Mod", "P"], label: "Toggle source / preview" },
     { keys: ["Mod", "B"], label: "Bold" },
     { keys: ["Mod", "I"], label: "Italic" },

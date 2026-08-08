@@ -14,10 +14,13 @@
     // Open an internal link's resolved note path, optionally scrolling to a
     // heading anchor (#45). A same-note `[[#heading]]` link is handled here.
     oninternallink,
+    // Clicking a #tag chip opens the search palette filtered to that tag (#15).
+    ontag,
   }: {
     value?: string;
     notePaths?: string[];
     oninternallink?: (path: string, fragment?: string) => void;
+    ontag?: (tag: string) => void;
   } = $props();
 
   const escHtml = (s: string) =>
@@ -54,6 +57,36 @@
     },
   };
 
+  // Inline `#tag` -> a clickable chip. The rules mirror `extract_tags` in
+  // vault.rs (which is what search and the tag list use), so what renders as a
+  // tag is what is findable as one: the character after `#` must be
+  // alphanumeric — which is exactly what separates a tag from an ATX heading,
+  // since `# Heading` has a space. `_`, `-` and `/` continue a tag; trailing
+  // ones are trimmed. marked only offers us the start of an inline token, so
+  // the "preceded by whitespace" half of the rule is enforced by `start`
+  // returning a boundary-anchored match.
+  const TAG_RE = /^#([\p{L}\p{N}][\p{L}\p{N}_/-]*)/u;
+  const tagChip: TokenizerAndRendererExtension = {
+    name: "tagchip",
+    level: "inline",
+    start(src) {
+      const m = /(?:^|\s)#[\p{L}\p{N}]/u.exec(src);
+      if (!m) return;
+      // Point at the '#', not at the whitespace before it.
+      return m.index + (m[0].startsWith("#") ? 0 : 1);
+    },
+    tokenizer(src) {
+      const m = TAG_RE.exec(src);
+      if (!m) return;
+      const tag = m[1].replace(/[-/_]+$/, "");
+      if (!tag) return;
+      return { type: "tagchip", raw: m[0], tag };
+    },
+    renderer(token) {
+      return `<a href="#" class="tagchip" data-tag="${escAttr(token.tag)}">#${escHtml(token.tag)}</a>`;
+    },
+  };
+
   // Local Marked instance with highlight.js. We emit hljs token classes and
   // style them via our --code-* vars (same palette as the editor), so no
   // highlight.js theme stylesheet is imported.
@@ -67,7 +100,7 @@
       },
     }),
   );
-  marked.use({ extensions: [wikiLink] });
+  marked.use({ extensions: [wikiLink, tagChip] });
 
   // Content is the user's own local notes, rendered in a desktop app — no
   // untrusted input — so we render marked output directly. GFM task-list
@@ -163,6 +196,12 @@
   function onClick(e: MouseEvent) {
     const a = (e.target as HTMLElement | null)?.closest("a");
     if (!a) return;
+    if (a.classList.contains("tagchip")) {
+      e.preventDefault();
+      const tag = a.dataset.tag;
+      if (tag) ontag?.(tag);
+      return;
+    }
     if (a.classList.contains("wikilink")) {
       e.preventDefault();
       const path = a.dataset.path;
@@ -341,6 +380,21 @@
     color: var(--editor-muted);
     border-bottom-style: dashed;
     cursor: help;
+  }
+
+  /* #tags: a subtle pill, tinted with the accent so they read as metadata
+     rather than prose, and clearly clickable. */
+  .md-preview :global(a.tagchip) {
+    text-decoration: none;
+    color: var(--editor-accent);
+    background: color-mix(in srgb, var(--editor-accent) 12%, transparent);
+    border-radius: 0.375rem;
+    padding: 0.05em 0.4em;
+    font-size: 0.9em;
+    cursor: pointer;
+  }
+  .md-preview :global(a.tagchip:hover) {
+    background: color-mix(in srgb, var(--editor-accent) 22%, transparent);
   }
 
   /* Tailwind's preflight resets list-style to none, so restore markers. */

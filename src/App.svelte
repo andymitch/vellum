@@ -7,6 +7,7 @@
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
+  import SearchPalette from "$lib/components/SearchPalette.svelte";
   import { checkForUpdate, checkForUpdateMobile } from "$lib/updater";
   import Fab from "$lib/components/Fab.svelte";
   import {
@@ -242,6 +243,10 @@
   }
 
   let activeVault = $state<string | null>(null);
+  // Search palette (#15). `searchInitial` seeds the query when opened from a
+  // tag chip in the preview, so the tag is pre-filtered.
+  let searchOpen = $state(false);
+  let searchInitial = $state("");
   let activePath = $state<string | null>(null);
   let content = $state("");
   let lastLoaded = $state("");
@@ -823,6 +828,13 @@
       // New note (in the current note's folder).
       e.preventDefault();
       newNoteHere();
+    } else if (key === "f") {
+      // Search this vault (#15). Cmd+F is the browser's find-in-page, which is
+      // useless here — the note is a CodeMirror document, not page text — so
+      // taking it is an upgrade rather than a loss.
+      e.preventDefault();
+      searchInitial = "";
+      searchOpen = true;
     } else if (key === "p") {
       // Toggle source <-> preview (only meaningful with a note open).
       if (activePath) {
@@ -1033,6 +1045,10 @@
           bind:value={content}
           {notePaths}
           oninternallink={openInternalLink}
+          ontag={(tag) => {
+            searchInitial = `#${tag} `;
+            searchOpen = true;
+          }}
         />
       {:else}
         {#key openToken}
@@ -1059,6 +1075,13 @@
 {#if mobile && mode === "source" && activePath && editorFocused && editorView && kbOpen}
   <MarkdownToolbar view={editorView} />
 {/if}
+
+<SearchPalette
+  bind:open={searchOpen}
+  vault={activeVault}
+  initial={searchInitial}
+  onopen={(path) => activeVault && handleOpen(activeVault, path)}
+/>
 
 <SettingsSheet
   bind:open={settingsOpen}
