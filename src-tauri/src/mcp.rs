@@ -66,17 +66,10 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
-use crate::vault::{self, Node, VaultChange, VaultManager, KEEP};
+use crate::vault::{self, Node, VaultChange, VaultManager, KEEP, TRASH};
 
-/// Deleted notes are moved here rather than tombstoned: a real delete
-/// propagates to every synced device, and an agent shouldn't be able to do that
-/// irreversibly. Also hidden from `list_notes` / `search_notes` by default.
-const TRASH: &str = ".trash";
 /// URI scheme for this server's resources.
 const SCHEME: &str = "vellum://";
-/// Cap on notes scanned by `search_notes` — each one is a blob read plus a CRDT
-/// merge, so an unbounded scan on a large vault would stall the session.
-const SEARCH_SCAN_LIMIT: usize = 2000;
 
 // ============================ config ============================
 
@@ -169,12 +162,6 @@ fn clean_note_path(raw: &str) -> Result<String, ErrorData> {
     Ok(if p.ends_with(".md") { p } else { format!("{p}.md") })
 }
 
-/// Is this key hidden from note listings? Folder markers aren't notes, and
-/// trashed notes shouldn't surface unless asked for.
-fn is_hidden(path: &str) -> bool {
-    path.ends_with(KEEP) || path.ends_with('/') || path == TRASH || path.starts_with(&format!("{TRASH}/"))
-}
-
 fn bad_request(msg: impl Into<String>) -> ErrorData {
     ErrorData::invalid_params(msg.into(), None)
 }
@@ -249,7 +236,7 @@ async fn op_list_notes(
     Ok(vault::list_entries(&doc)
         .await?
         .into_iter()
-        .filter(|e| want_trash || !is_hidden(&e.path))
+        .filter(|e| want_trash || !vault::is_hidden_path(&e.path))
         .filter(|e| !e.path.ends_with(KEEP) && !e.path.ends_with('/'))
         .filter(|e| prefix.as_ref().is_none_or(|p| e.path.starts_with(p)))
         .filter(|e| modified_since_ms.is_none_or(|since| ms(e.modified_us) >= since))
@@ -267,6 +254,8 @@ async fn op_read_note(node: &Node, vault: &str, path: &str) -> Result<Option<Str
     vault::read_note_text(node, &doc, path.as_bytes()).await
 }
 
+/// Thin wrapper over the shared `vault::search` — the in-app search (#15) uses
+/// the same implementation, so the two can't drift apart.
 async fn op_search_notes(
     node: &Node,
     vault: &str,
@@ -274,39 +263,14 @@ async fn op_search_notes(
     path_contains: Option<&str>,
     max: usize,
 ) -> Result<Vec<SearchHit>> {
-    let doc = vault::open(node, vault).await?;
-    let needle = query.to_lowercase();
-    let mut hits = Vec::new();
-    let mut scanned = 0usize;
-    for entry in vault::list_entries(&doc).await? {
-        if hits.len() >= max || scanned >= SEARCH_SCAN_LIMIT {
-            break;
-        }
-        if is_hidden(&entry.path) {
-            continue;
-        }
-        if path_contains.is_some_and(|p| !entry.path.to_lowercase().contains(&p.to_lowercase())) {
-            continue;
-        }
-        scanned += 1;
-        let Some(text) = vault::read_note_text(node, &doc, entry.path.as_bytes()).await? else {
-            continue; // not synced yet
-        };
-        let lines: Vec<String> = text
-            .lines()
-            .enumerate()
-            .filter(|(_, l)| l.to_lowercase().contains(&needle))
-            .take(3)
-            .map(|(i, l)| format!("{}: {}", i + 1, l.trim()))
-            .collect();
-        if !lines.is_empty() {
-            hits.push(SearchHit {
-                path: entry.path,
-                lines,
-            });
-        }
-    }
-    Ok(hits)
+    Ok(vault::search(node, vault, query, path_contains, max)
+        .await?
+        .into_iter()
+        .map(|h| SearchHit {
+            path: h.path,
+            lines: h.lines,
+        })
+        .collect())
 }
 
 /// Create a note, de-duplicating the filename against existing siblings the way

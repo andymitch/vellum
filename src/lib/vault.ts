@@ -74,3 +74,17 @@ export type McpStatus = {
 export const mcpStatus = () => invoke<McpStatus>("mcp_status");
 export const setMcpEnabled = (enabled: boolean) =>
   invoke<McpStatus>("set_mcp_enabled", { enabled });
+
+// ---- search + tags (#15) ----
+// Both scan every note in the vault (each read is a CRDT merge), so callers
+// should debounce rather than fire per keystroke.
+export type SearchHit = {
+  path: string;
+  /// Matching lines as "{line}: {text}", at most 3 per note.
+  lines: string[];
+};
+export type TagCount = { tag: string; count: number };
+
+export const searchNotes = (vault: string, query: string, max?: number) =>
+  invoke<SearchHit[]>("search_notes", { vault, query, max });
+export const listTags = (vault: string) => invoke<TagCount[]>("list_tags", { vault });
