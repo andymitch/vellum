@@ -45,6 +45,7 @@
     import { portal } from "$lib/portal";
     import { drag } from "$lib/dnd";
     import { createAndOpenNote, duplicateNote } from "$lib/notes";
+    import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
     // The native camera scanner only exists on mobile; gate the Scan button on it.
     const canScan = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -87,6 +88,9 @@
         });
     }
 
+    // Note type chosen in the new-note dialog (#104). Reset each time it opens.
+    let chosenType = $state<NoteType>("markdown");
+
     let vaults = $state<VaultInfo[]>([]);
     let activeVault = $state<string | null>(null);
     let tree = $state<TreeNode[]>([]);
@@ -111,6 +115,9 @@
               // (create + open) by handing focus to the keyboard-keeper input on
               // submit, so a new note's editor inherits an already-open keyboard.
               keep?: boolean;
+              // When set, the dialog also offers a note-type picker (#104) and
+              // the chosen type is read back off the dialog on submit.
+              noteType?: NoteType;
               resolve: (v: string | null) => void;
           }
         | { kind: "confirm"; title: string; resolve: (v: boolean) => void }
@@ -133,9 +140,22 @@
     // submit and the new note's editor mounting (see resolveDialog).
     let kbKeeper: HTMLInputElement | undefined;
 
-    const askText = (title: string, value = "", keep = false): Promise<string | null> =>
+    const askText = (
+        title: string,
+        value = "",
+        keep = false,
+        withType = false,
+    ): Promise<string | null> =>
         new Promise(
-            (resolve) => (dialog = { kind: "text", title, value, keep, resolve }),
+            (resolve) =>
+                (dialog = {
+                    kind: "text",
+                    title,
+                    value,
+                    keep,
+                    noteType: withType ? "markdown" : undefined,
+                    resolve,
+                }),
         );
     const askJoin = (): Promise<string | null> =>
         new Promise(
@@ -326,11 +346,15 @@
     // independent, so we prompt for a name up front (createNote de-dupes).
     async function newNoteIn(vault: string, dir: string) {
         // keep=true: hold the keyboard open so the new note's editor gets focus
-        // with the keyboard already up (#50).
-        const name = (await askText("New note name", "", true))?.trim();
+        // with the keyboard already up (#50). withType=true offers the note-type
+        // picker alongside the name (#104).
+        chosenType = "markdown";
+        const name = (await askText("New note name", "", true, true))?.trim();
+        // Read the picker's value before resolveDialog tears the dialog down.
+        const type = chosenType;
         if (!name) return;
         if (dir) expanded[dir] = true;
-        await createAndOpenNote(vault, dir, name, onopen);
+        await createAndOpenNote(vault, dir, name, onopen, type);
         await refreshTree();
     }
 
@@ -366,6 +390,22 @@
         if (!name) return;
         await createFolder(activeVault, name);
         await refreshTree();
+    }
+
+    // One-tap typed note from the FAB's hold-to-pick (#104). Mirrors
+    // newUntitledNote: no name prompt, since the gesture already committed to
+    // creating something — the name is edited later from the breadcrumb.
+    export async function newTypedNote(dir: string, type: NoteType) {
+        if (!activeVault) return;
+        if (dir) expanded[dir] = true;
+        await createAndOpenNote(activeVault, dir, "Untitled", onopen, type);
+        await refreshTree();
+    }
+
+    // Confirm dialog for callers outside the sidebar (App's TODO sweep, #104),
+    // so there's one dialog implementation rather than two.
+    export function confirmAction(title: string): Promise<boolean> {
+        return askConfirm(title);
     }
 
     // Imperative hooks for global hotkeys (App owns the keydown listener).
@@ -864,6 +904,22 @@ Delete this note whenever you're ready. Happy writing!
                         else if (e.key === "Escape") resolveDialog(null);
                     }}
                 />
+                {#if d.noteType !== undefined}
+                    <!-- Note type (#104). Markdown is preselected, so anyone who
+                         ignores this gets exactly today's behaviour. -->
+                    <div class="mb-3 flex gap-1">
+                        {#each NOTE_TYPES as t (t.id)}
+                            <button
+                                type="button"
+                                class="flex-1 rounded border px-2 py-1 text-xs transition-colors {chosenType ===
+                                t.id
+                                    ? 'border-primary bg-primary text-primary-foreground'
+                                    : 'border-border text-muted-foreground hover:bg-muted'}"
+                                onclick={() => (chosenType = t.id)}>{t.label}</button
+                            >
+                        {/each}
+                    </div>
+                {/if}
                 <div class="flex justify-end gap-2">
                     <button
                         class="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-muted"

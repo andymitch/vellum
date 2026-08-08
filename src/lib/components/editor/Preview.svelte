@@ -7,6 +7,7 @@
   import type { Mermaid } from "mermaid";
 
   import { slugify } from "$lib/slug";
+  import { parseNote } from "$lib/note-type";
 
   let {
     value = $bindable(""),
@@ -106,8 +107,14 @@
   // untrusted input — so we render marked output directly. GFM task-list
   // checkboxes are rendered `disabled` by marked; strip that so they're
   // interactive (toggling rewrites the source — see onToggle).
+  // The frontmatter block carries the note's type (#104) and is chrome, not
+  // content — strip it before rendering. Only a LEADING block is stripped, so a
+  // scratchpad's `---` separators still render as thematic breaks.
   const html = $derived(
-    (marked.parse(value) as string).replace(/(<input\b[^>]*?)\s+disabled(?:="")?/g, "$1"),
+    (marked.parse(parseNote(value).body) as string).replace(
+      /(<input\b[^>]*?)\s+disabled(?:="")?/g,
+      "$1",
+    ),
   );
 
   // Flip the source marker for the checkbox that changed. Task checkboxes render

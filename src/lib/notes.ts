@@ -1,4 +1,5 @@
 import { createNote, writeNote, readNote, type TreeNode } from "./vault";
+import { newNoteContent, type NoteType } from "./note-type";
 
 /// Create an empty note named `name` in `dir` (empty string = vault root) and
 /// open it. The filename is independent of the content — callers prompt for the
@@ -8,9 +9,14 @@ export async function createAndOpenNote(
   dir: string,
   name: string,
   open: (vault: string, path: string, focus?: boolean) => void,
+  type: NoteType = "markdown",
 ): Promise<string> {
   const file = name.endsWith(".md") ? name : `${name}.md`;
   const path = await createNote(vault, dir ? `${dir}/${file}` : file);
+  // Seed the type's frontmatter + starter body (#104). "markdown" seeds nothing,
+  // so an ordinary note is created exactly as it always was.
+  const seed = newNoteContent(type);
+  if (seed) await writeNote(vault, path, seed);
   // A brand-new note opens in source mode with the editor focused so the user
   // can type immediately (#50).
   open(vault, path, true);
