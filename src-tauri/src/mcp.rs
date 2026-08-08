@@ -1233,6 +1233,8 @@ pub fn start_if_enabled(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::vault::init;
 
@@ -1479,6 +1481,69 @@ mod tests {
             Some("second")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Seed a vault with a few notes into a chosen data dir, for manual
+    /// end-to-end testing of the server against a real app *without* touching
+    /// your own vaults. Run with:
+    ///   VELLUM_DATA_DIR=/tmp/e2e/Library/Application\ Support/com.andymitch.vellum \
+    ///     cargo test seed_smoke_vault -- --ignored --nocapture
+    /// then launch the app with HOME=/tmp/e2e.
+    #[tokio::test]
+    #[ignore]
+    async fn seed_smoke_vault() {
+        let dir = PathBuf::from(std::env::var("VELLUM_DATA_DIR").expect("set VELLUM_DATA_DIR"));
+        std::fs::create_dir_all(&dir).expect("create data dir");
+        let node = init(dir).await.expect("node");
+        let doc = node.docs().create().await.expect("create vault");
+        let vault = doc.id().to_string();
+        // Give it a name the way create_vault does, so it isn't "pending".
+        doc.set_bytes(
+            node.author(),
+            b"\x00meta/name".to_vec(),
+            {
+                let mut v = vec![0x01u8];
+                v.extend_from_slice(b"Smoke Test");
+                v
+            },
+        )
+        .await
+        .expect("name");
+        op_create_note(&node, &vault, "journal/2026-08-08.md", "# Today\n\nran the smoke test\n")
+            .await
+            .unwrap();
+        op_create_note(&node, &vault, "ideas.md", "- ship the MCP server\n")
+            .await
+            .unwrap();
+        // This process is about to exit, milliseconds after the last write. The
+        // docs actor commits to redb on its own schedule, so give it a moment to
+        // land before flushing blobs and dropping everything — otherwise the
+        // final note is silently missing when the app next opens the dir. (The
+        // app itself doesn't need this: it stays alive long after a write, and
+        // its writes survive even an abrupt kill.)
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        node.flush_blobs().await;
+        println!("VAULT={vault}");
+    }
+
+    /// Print every key in the vaults of a data dir, for debugging a smoke run.
+    /// The app must not be running against that dir (the store is single-writer).
+    ///   VELLUM_DATA_DIR=… cargo test dump_smoke_vault -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn dump_smoke_vault() {
+        let dir = PathBuf::from(std::env::var("VELLUM_DATA_DIR").expect("set VELLUM_DATA_DIR"));
+        let node = init(dir).await.expect("node");
+        for v in vault::all_vaults(&node).await.expect("vaults") {
+            println!("vault {} ({})", v.id, v.name);
+            let doc = vault::open(&node, &v.id).await.expect("open");
+            for e in vault::list_entries(&doc).await.expect("entries") {
+                let body = vault::read_note_text(&node, &doc, e.path.as_bytes())
+                    .await
+                    .expect("read");
+                println!("  {:?} -> {:?}", e.path, body);
+            }
+        }
     }
 
     #[tokio::test]

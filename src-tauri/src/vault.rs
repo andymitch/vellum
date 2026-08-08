@@ -130,6 +130,15 @@ impl Node {
     pub(crate) fn docs(&self) -> &Docs {
         &self.docs
     }
+
+    /// Flush the blob store. Only the MCP seed helper needs this: a short-lived
+    /// process that writes and exits leaves entries in redb whose content blobs
+    /// were never written, so the notes read back as "not synced yet".
+    #[cfg(test)]
+    pub(crate) async fn flush_blobs(&self) {
+        // FsStore derefs to the blobs Store, which owns the flush.
+        let _ = self.blobs.shutdown().await;
+    }
 }
 
 /// Managed Tauri state. Builds the node lazily on first use (see module docs).
