@@ -5,6 +5,7 @@
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
+  import { mcp } from "$lib/mcp.svelte";
   import {
     checkForUpdateInteractive,
     checkForUpdateMobile,
@@ -15,6 +16,19 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { marked } from "marked";
   import { portal } from "$lib/portal";
+
+  // Transient "Copied" confirmation on the MCP connect command.
+  let copiedMcp = $state(false);
+  async function copyMcpCommand() {
+    if (!mcp.command) return;
+    try {
+      await navigator.clipboard.writeText(mcp.command);
+      copiedMcp = true;
+      setTimeout(() => (copiedMcp = false), 1500);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
 
   // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
   // only surface its toggle on a touch device — matching the Scan button gate.
@@ -465,6 +479,41 @@
               onchange={(e) => (liveSync.enabled = e.currentTarget.checked)}
             />
           </label>
+
+          <!-- Agent access (#164). Desktop only: the MCP server is hosted by
+               this app on loopback, and a phone has nothing that could reach it. -->
+          <div class="my-4 border-t border-border"></div>
+          <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Agents
+          </p>
+          <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+            <span class="flex flex-col">
+              <span class="text-sm">Agent access (MCP)</span>
+              <span class="text-xs text-muted-foreground">
+                Let Claude Code and other MCP clients read and write your notes.
+                Listens on this Mac only (127.0.0.1) and requires the token below.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 shrink-0 accent-primary"
+              disabled={mcp.busy}
+              checked={mcp.enabled}
+              onchange={(e) => mcp.toggle(e.currentTarget.checked)}
+            />
+          </label>
+          {#if mcp.enabled && mcp.command}
+            <div class="mt-1 flex items-center justify-between gap-3 py-1.5">
+              <code class="truncate text-xs text-muted-foreground">{mcp.url}</code>
+              <button
+                class="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                onclick={() => copyMcpCommand()}
+              >
+                <Copy class="h-3 w-3" />
+                {copiedMcp ? "Copied" : "Copy connect command"}
+              </button>
+            </div>
+          {/if}
         {/if}
 
         <div class="my-4 border-t border-border"></div>

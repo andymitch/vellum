@@ -52,7 +52,7 @@ const MARKER: u8 = 0x01;
 // single text type rooted under TEXT_ROOT.
 const TAG_YRS: u8 = 0x02;
 const TEXT_ROOT: &str = "t";
-const KEEP: &str = ".keep";
+pub(crate) const KEEP: &str = ".keep";
 // How often to sweep orphaned content blobs (old note versions no longer
 // referenced by any entry). Blobs referenced by current entries are protected.
 const GC_INTERVAL: Duration = Duration::from_secs(600);
@@ -77,6 +77,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// A mutation observed on an armed vault, broadcast to in-process listeners
+/// (the MCP server's resource subscriptions — see `mcp.rs`). `path` is the note
+/// key when the event carries one; `None` for events that only say "something in
+/// this vault changed" (e.g. `ContentReady`, which carries a blob hash we can't
+/// map back to a key), so listeners refresh the vault rather than one note.
+#[derive(Clone, Debug)]
+pub struct VaultChange {
+    pub vault: NamespaceId,
+    pub path: Option<String>,
+}
+
+// Bounded: a slow subscriber lags rather than growing the queue without limit.
+// Lagged receivers get a `RecvError::Lagged` they treat as "refresh everything".
+const CHANGE_CHANNEL_CAP: usize = 64;
+
 /// The live iroh node (handles into the running protocols).
 pub struct Node {
     blobs: FsStore,
@@ -92,6 +107,38 @@ pub struct Node {
     peers: std::sync::Arc<Mutex<PeerMap>>,
     // Local per-user vault name overrides (#120). Never synced.
     names: std::sync::Arc<Mutex<NameMap>>,
+    // In-process fanout of the same mutations that drive the `vault-changed`
+    // Tauri event. The frontend uses the event; the MCP server needs the entry
+    // key too (to name the resource that changed), which the event doesn't carry.
+    changes: tokio::sync::broadcast::Sender<VaultChange>,
+}
+
+impl Node {
+    /// Subscribe to vault mutations. Only *armed* vaults emit (see `arm_vault`).
+    pub fn subscribe_changes(&self) -> tokio::sync::broadcast::Receiver<VaultChange> {
+        self.changes.subscribe()
+    }
+
+    /// This device's author id — the identity every write is signed with.
+    pub(crate) fn author(&self) -> AuthorId {
+        self.author
+    }
+
+    /// The docs protocol handle. Only the MCP tests need it — everything else
+    /// goes through `open`/`all_vaults`.
+    #[cfg(test)]
+    pub(crate) fn docs(&self) -> &Docs {
+        &self.docs
+    }
+
+    /// Flush the blob store. Only the MCP seed helper needs this: a short-lived
+    /// process that writes and exits leaves entries in redb whose content blobs
+    /// were never written, so the notes read back as "not synced yet".
+    #[cfg(test)]
+    pub(crate) async fn flush_blobs(&self) {
+        // FsStore derefs to the blobs Store, which owns the flush.
+        let _ = self.blobs.shutdown().await;
+    }
 }
 
 /// Managed Tauri state. Builds the node lazily on first use (see module docs).
@@ -110,7 +157,7 @@ impl VaultManager {
 
     /// Returns the node, building it on first call. A failed build is not
     /// cached, so the next command retries.
-    async fn node(&self) -> Result<&Node, String> {
+    pub(crate) async fn node(&self) -> Result<&Node, String> {
         self.node
             .get_or_try_init(|| init(self.dir.clone()))
             .await
@@ -124,15 +171,15 @@ impl VaultManager {
 
 #[derive(Serialize)]
 pub struct VaultInfo {
-    id: String,
-    name: String,
+    pub(crate) id: String,
+    pub(crate) name: String,
     // True when the vault has no synced meta yet — i.e. it was joined from a
     // ticket but no peer has come online to sync its contents. The UI shows a
     // "waiting for a peer" state instead of a misleading generated vault (#4).
-    pending: bool,
+    pub(crate) pending: bool,
     // First 6 hex chars of the id; shown after the name to disambiguate vaults
     // that share a local display name (#120).
-    hash: String,
+    pub(crate) hash: String,
 }
 
 #[derive(Serialize)]
@@ -218,7 +265,7 @@ fn doc_text(doc: &Doc) -> String {
 }
 
 /// Encode a note doc's full state for storage, tagged 0x02.
-fn encode_doc(doc: &Doc) -> Vec<u8> {
+pub(crate) fn encode_doc(doc: &Doc) -> Vec<u8> {
     let txn = doc.transact();
     let state = txn.encode_state_as_update_v1(&StateVector::default());
     let mut v = Vec::with_capacity(state.len() + 1);
@@ -229,7 +276,7 @@ fn encode_doc(doc: &Doc) -> Vec<u8> {
 
 /// A fresh note value (tagged 0x02) holding `s` — used when creating a note or
 /// writing one to a new key (rename/import).
-fn fresh_note(s: &str) -> Vec<u8> {
+pub(crate) fn fresh_note(s: &str) -> Vec<u8> {
     let mut v = Vec::with_capacity(s.len() + 1);
     v.push(TAG_YRS);
     v.extend_from_slice(&seed_update(s));
@@ -273,7 +320,7 @@ fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &st
 /// `client_id` identifies edits we are about to make on the returned doc (use 0
 /// for a read-only merge). Tombstones and not-yet-downloaded blobs are skipped.
 /// Returns the doc and whether any content was applied.
-async fn merged_note(
+pub(crate) async fn merged_note(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     key: &[u8],
@@ -304,7 +351,7 @@ async fn merged_note(
 
 /// Current merged text of a note, or `None` if the note is deleted or no entry's
 /// content is available yet.
-async fn read_note_text(
+pub(crate) async fn read_note_text(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     key: &[u8],
@@ -327,7 +374,7 @@ async fn read_note_text(
 /// `<<<<<<<`/`>>>>>>>` markers — surfaced, never silently dropped. The resulting
 /// delta is applied relative to `cur`, so yrs offsets are always in bounds even
 /// when a remote edit shifted them.
-async fn write_note_merged(
+pub(crate) async fn write_note_merged(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     key: &[u8],
@@ -687,14 +734,15 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
         our_id,
         peers,
         names,
+        changes: tokio::sync::broadcast::channel(CHANGE_CHANNEL_CAP).0,
     })
 }
 
-fn parse_id(id: &str) -> Result<NamespaceId> {
+pub(crate) fn parse_id(id: &str) -> Result<NamespaceId> {
     NamespaceId::from_str(id).map_err(|e| anyhow!("bad vault id: {e}"))
 }
 
-async fn open(node: &Node, id: &str) -> Result<iroh_docs::api::Doc> {
+pub(crate) async fn open(node: &Node, id: &str) -> Result<iroh_docs::api::Doc> {
     let nsid = parse_id(id)?;
     node.docs
         .open(nsid)
@@ -762,10 +810,18 @@ fn vault_info(
     }
 }
 
-/// Collect all visible note keys (paths) in a vault.
-async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
+/// A visible entry in a vault: its path plus the metadata a caller can use
+/// without reading (and CRDT-merging) the content itself.
+pub(crate) struct NoteEntry {
+    pub path: String,
+    /// Entry timestamp, microseconds since the unix epoch (iroh-docs' unit).
+    pub modified_us: u64,
+}
+
+/// Collect all visible entries in a vault, newest first.
+pub(crate) async fn list_entries(doc: &iroh_docs::api::Doc) -> Result<Vec<NoteEntry>> {
     let mut stream = Box::pin(doc.get_many(Query::single_latest_per_key()).await?);
-    let mut keys = Vec::new();
+    let mut out = Vec::new();
     while let Some(entry) = stream.next().await {
         let entry = entry?;
         let key = entry.key();
@@ -773,10 +829,19 @@ async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
             continue; // reserved meta keys
         }
         if let Ok(s) = std::str::from_utf8(key) {
-            keys.push(s.to_string());
+            out.push(NoteEntry {
+                path: s.to_string(),
+                modified_us: entry.timestamp(),
+            });
         }
     }
-    Ok(keys)
+    out.sort_by(|a, b| b.modified_us.cmp(&a.modified_us));
+    Ok(out)
+}
+
+/// Collect all visible note keys (paths) in a vault.
+pub(crate) async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
+    Ok(list_entries(doc).await?.into_iter().map(|e| e.path).collect())
 }
 
 async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
@@ -790,7 +855,7 @@ async fn key_exists(doc: &iroh_docs::api::Doc, key: &str) -> Result<bool> {
 
 /// Find a free key by inserting/incrementing a numeric suffix before the
 /// extension: `Untitled.md` → `Untitled 1.md` → `Untitled 2.md` …
-async fn free_key(doc: &iroh_docs::api::Doc, path: &str) -> Result<String> {
+pub(crate) async fn free_key(doc: &iroh_docs::api::Doc, path: &str) -> Result<String> {
     if !key_exists(doc, path).await? {
         return Ok(path.to_string());
     }
@@ -868,24 +933,25 @@ fn map_err<T>(r: Result<T>) -> Result<T, String> {
 
 // ============================ commands ============================
 
+/// Every vault this device holds, with its effective display name. Shared by the
+/// `list_vaults` command and the MCP server.
+pub(crate) async fn all_vaults(node: &Node) -> Result<Vec<VaultInfo>> {
+    let mut stream = node.docs.list().await?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        let (id, _cap) = item?;
+        let doc = node.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
+        let meta_name = vault_meta_name(node, &doc).await;
+        let override_name = node.names.lock().unwrap().get(&id).cloned();
+        out.push(vault_info(id, meta_name, override_name));
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo>, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let mut stream = node.docs.list().await?;
-            let mut out = Vec::new();
-            while let Some(item) = stream.next().await {
-                let (id, _cap) = item?;
-                let doc = node.docs.open(id).await?.ok_or_else(|| anyhow!("open failed"))?;
-                let meta_name = vault_meta_name(node, &doc).await;
-                let override_name = node.names.lock().unwrap().get(&id).cloned();
-                out.push(vault_info(id, meta_name, override_name));
-            }
-            Ok(out)
-        }
-        .await,
-    )
+    map_err(all_vaults(node).await)
 }
 
 #[tauri::command]
@@ -1034,26 +1100,32 @@ pub async fn rename_vault(
     Ok(())
 }
 
+/// Build the vault's folder tree from its keys. Shared by the `list_tree`
+/// command and the MCP server's tree resource.
+pub(crate) async fn build_tree(doc: &iroh_docs::api::Doc) -> Result<Vec<TreeNode>> {
+    let keys = list_keys(doc).await?;
+    let mut root = Builder::default();
+    for key in &keys {
+        let segments: Vec<&str> = key.split('/').collect();
+        if segments.last() == Some(&KEEP) {
+            let dir_segments = &segments[..segments.len() - 1];
+            if !dir_segments.is_empty() {
+                insert_path(&mut root, dir_segments, "", false);
+            }
+        } else {
+            insert_path(&mut root, &segments, key, true);
+        }
+    }
+    Ok(to_nodes(&root, ""))
+}
+
 #[tauri::command]
 pub async fn list_tree(state: State<'_, VaultManager>, vault: String) -> Result<Vec<TreeNode>, String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            let keys = list_keys(&doc).await?;
-            let mut root = Builder::default();
-            for key in &keys {
-                let segments: Vec<&str> = key.split('/').collect();
-                if segments.last() == Some(&KEEP) {
-                    let dir_segments = &segments[..segments.len() - 1];
-                    if !dir_segments.is_empty() {
-                        insert_path(&mut root, dir_segments, "", false);
-                    }
-                } else {
-                    insert_path(&mut root, &segments, key, true);
-                }
-            }
-            Ok(to_nodes(&root, ""))
+            build_tree(&doc).await
         }
         .await,
     )
@@ -1227,18 +1299,95 @@ pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: St
     )
 }
 
+/// Create a folder by writing its `.keep` marker (folders are implicit from key
+/// prefixes, so an empty one needs a marker entry to exist at all).
+pub(crate) async fn create_folder_key(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    path: &str,
+) -> Result<()> {
+    let key = format!("{}/{}", path.trim_end_matches('/'), KEEP);
+    doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_folder(state: State<'_, VaultManager>, vault: String, path: String) -> Result<(), String> {
     let node = state.node().await?;
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            let key = format!("{}/{}", path.trim_end_matches('/'), KEEP);
-            doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
-            Ok(())
+            create_folder_key(node, &doc, &path).await
         }
         .await,
     )
+}
+
+/// Move a note or folder to a new key. Copies the merged CRDT state to the new
+/// key (preserving edit history), then tombstones the old one. A note whose
+/// content blob hasn't synced yet reads as empty (`merged_note` `found == false`);
+/// copying it would write a blank note and the tombstone would lose the original,
+/// so we abort instead and let the caller retry once sync catches up.
+pub(crate) async fn rename_key(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    from: &str,
+    to: &str,
+    is_dir: bool,
+) -> Result<()> {
+    if is_dir {
+        let from_prefix = format!("{}/", from.trim_end_matches('/'));
+        let to_prefix = format!("{}/", to.trim_end_matches('/'));
+        let keys = list_keys(doc).await?;
+        // Stage every child first; bail before mutating if any isn't ready.
+        let mut staged = Vec::new();
+        for key in keys.iter().filter(|k| k.starts_with(&from_prefix)) {
+            let new_key = format!("{}{}", to_prefix, &key[from_prefix.len()..]);
+            let (ydoc, found) = merged_note(node, doc, key.as_bytes(), 0).await?;
+            if !found {
+                return Err(anyhow!("folder contents still syncing; try again"));
+            }
+            staged.push((new_key, encode_doc(&ydoc)));
+        }
+        for (new_key, val) in staged {
+            doc.set_bytes(node.author, new_key.into_bytes(), val).await?;
+        }
+        doc.del(node.author, from_prefix.into_bytes()).await?;
+    } else {
+        let (ydoc, found) = merged_note(node, doc, from.as_bytes(), 0).await?;
+        if !found {
+            return Err(anyhow!("note content still syncing; try again"));
+        }
+        doc.set_bytes(node.author, to.as_bytes().to_vec(), encode_doc(&ydoc)).await?;
+        doc.del(node.author, from.as_bytes().to_vec()).await?;
+    }
+    Ok(())
+}
+
+/// Tombstone a note, or every entry under a folder.
+pub(crate) async fn delete_key(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    path: &str,
+    is_dir: bool,
+) -> Result<()> {
+    if is_dir {
+        // Recursively tombstone every entry under the folder. A prefix del only
+        // clears *our* author's entries; deleting each key explicitly lets the
+        // tombstone win across authors (peer-created notes) by timestamp, so the
+        // folder's contents fully disappear.
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let keys = list_keys(doc).await?;
+        for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
+            doc.del(node.author, key.clone().into_bytes()).await?;
+        }
+        // Also clear the folder marker key itself (e.g. an empty folder whose
+        // only entry is "work/").
+        doc.del(node.author, prefix.into_bytes()).await?;
+    } else {
+        doc.del(node.author, path.as_bytes().to_vec()).await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1253,38 +1402,7 @@ pub async fn rename_path(
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            // Copy the merged CRDT state to the new key (preserving edit history),
-            // then tombstone the old one. A note whose content blob hasn't synced
-            // yet reads as empty (merged_note `found == false`); copying it would
-            // write a blank note and the tombstone would lose the original, so we
-            // abort the rename instead and let the user retry once sync catches up.
-            if is_dir {
-                let from_prefix = format!("{}/", from.trim_end_matches('/'));
-                let to_prefix = format!("{}/", to.trim_end_matches('/'));
-                let keys = list_keys(&doc).await?;
-                // Stage every child first; bail before mutating if any isn't ready.
-                let mut staged = Vec::new();
-                for key in keys.iter().filter(|k| k.starts_with(&from_prefix)) {
-                    let new_key = format!("{}{}", to_prefix, &key[from_prefix.len()..]);
-                    let (ydoc, found) = merged_note(node, &doc, key.as_bytes(), 0).await?;
-                    if !found {
-                        return Err(anyhow!("folder contents still syncing; try again"));
-                    }
-                    staged.push((new_key, encode_doc(&ydoc)));
-                }
-                for (new_key, val) in staged {
-                    doc.set_bytes(node.author, new_key.into_bytes(), val).await?;
-                }
-                doc.del(node.author, from_prefix.into_bytes()).await?;
-            } else {
-                let (ydoc, found) = merged_note(node, &doc, from.as_bytes(), 0).await?;
-                if !found {
-                    return Err(anyhow!("note content still syncing; try again"));
-                }
-                doc.set_bytes(node.author, to.into_bytes(), encode_doc(&ydoc)).await?;
-                doc.del(node.author, from.into_bytes()).await?;
-            }
-            Ok(())
+            rename_key(node, &doc, &from, &to, is_dir).await
         }
         .await,
     )
@@ -1301,23 +1419,7 @@ pub async fn delete_path(
     map_err(
         async {
             let doc = open(node, &vault).await?;
-            if is_dir {
-                // Recursively tombstone every entry under the folder. A prefix
-                // del only clears *our* author's entries; deleting each key
-                // explicitly lets the tombstone win across authors (peer-created
-                // notes) by timestamp, so the folder's contents fully disappear.
-                let prefix = format!("{}/", path.trim_end_matches('/'));
-                let keys = list_keys(&doc).await?;
-                for key in keys.iter().filter(|k| k.starts_with(&prefix)) {
-                    doc.del(node.author, key.clone().into_bytes()).await?;
-                }
-                // Also clear the folder marker key itself (e.g. an empty folder
-                // whose only entry is "work/").
-                doc.del(node.author, prefix.into_bytes()).await?;
-            } else {
-                doc.del(node.author, path.into_bytes()).await?;
-            }
-            Ok(())
+            delete_key(node, &doc, &path, is_dir).await
         }
         .await,
     )
@@ -1328,7 +1430,11 @@ pub async fn delete_path(
 /// changes and learns new peers. Idempotent — a vault already armed is a no-op,
 /// so it's safe to call from both `watch_vault` (the open vault) and
 /// `set_live_sync` (every vault).
-async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<(), String> {
+pub(crate) async fn arm_vault(
+    app: &AppHandle,
+    node: &Node,
+    nsid: NamespaceId,
+) -> Result<(), String> {
     {
         let mut watched = node.watched.lock().unwrap();
         if !watched.insert(nsid) {
@@ -1351,6 +1457,7 @@ async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<()
     let peers = node.peers.clone();
     let dir = node.dir.clone();
     let our_id = node.our_id;
+    let changes = node.changes.clone();
     let app = app.clone();
     // Initial nudge: on join the vault name (and other meta) can finish syncing
     // in the gap between join reading it and this subscription starting, so that
@@ -1372,6 +1479,17 @@ async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<()
                 }
                 _ => {}
             }
+            // The insert events carry the entry, so in-process listeners can be
+            // told exactly which note changed. Everything else (ContentReady,
+            // sync/neighbor events) only identifies the vault.
+            let path = match &ev {
+                LiveEvent::InsertLocal { entry } | LiveEvent::InsertRemote { entry, .. } => {
+                    std::str::from_utf8(entry.key()).ok().map(str::to_string)
+                }
+                _ => None,
+            };
+            // Errs only when nobody is subscribed — the common case.
+            let _ = changes.send(VaultChange { vault: nsid, path });
             let _ = app.emit("vault-changed", &vault_id);
         }
     });

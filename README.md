@@ -21,6 +21,24 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 
 Each vault is an [iroh-docs](https://github.com/n0-computer/iroh) document; notes are entries keyed by their path. Sharing a vault produces a write-capability *ticket* (rendered as a QR code) — any device that joins it gets equal, full read/write access. Peers are remembered by their stable node ID and re-dialed through iroh's discovery, so sync survives IP changes, network switches, and restarts. There is no central authority: every synced device holds a complete copy.
 
+## Agent access (MCP)
+
+Vellum can host a local [MCP](https://modelcontextprotocol.io) server so agents — Claude Code, Claude Desktop, any MCP client — can read and write your notes. Turn it on in **Settings → Agents → Agent access**, then copy the connect command it shows:
+
+```sh
+claude mcp add --transport http vellum http://127.0.0.1:PORT/mcp \
+  --header "Authorization: Bearer TOKEN"
+```
+
+Agents get tools to list, read, search, create, edit, append, move and delete notes, resources for live-reading a vault, and two prompts (`daily_note`, `vault_review`). Edits go through the same CRDT path the editor uses, so an agent's change appears in your open editor immediately and syncs to your other devices on its own — a note written by Claude on your Mac is on your phone seconds later.
+
+Some details worth knowing:
+
+- **It's off by default**, and listens on `127.0.0.1` only, with a bearer token — so it's reachable by programs on this machine that have the token, and nothing else. The port and token live in `mcp.json` in the [app data directory](#where-your-notes-live-macos).
+- **Deletes are soft.** `delete_note` moves the note to `.trash/` rather than deleting it, because a real delete propagates to every synced device.
+- **Concurrent edits are safe.** Agents never supply a merge base; the server reads the note's current state and merges against it, so an edit you're making on another device isn't clobbered.
+- **Desktop only.** The Claude mobile app's connectors are dialled from Anthropic's servers rather than from your phone, so a loopback server on the phone would be unreachable — and Android freezes the app when it's backgrounded. Point an agent at your Mac instead and let sync carry the result to your phone.
+
 ## Install
 
 [![Download for macOS](https://img.shields.io/badge/Download-macOS%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/andymitch/vellum/releases/latest/download/Vellum_aarch64.dmg)

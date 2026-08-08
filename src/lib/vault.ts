@@ -57,3 +57,20 @@ export const onVaultChanged = (cb: (vaultId: string) => void): Promise<UnlistenF
 // toggle (e.g. "Turn off background sync" from the desktop tray).
 export const onBackgroundSyncChanged = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
   listen<boolean>("background-sync", (e) => cb(e.payload));
+
+// ---- local MCP server (#164) ----
+// Lets agents (Claude Code, Claude Desktop, …) CRUD notes over a loopback,
+// token-authenticated MCP endpoint hosted by this app. Desktop only — the
+// mobile build answers with a disabled status.
+export type McpStatus = {
+  enabled: boolean;
+  port: number | null;
+  url: string | null;
+  token: string;
+  /// Ready-to-paste `claude mcp add …` line; null while stopped.
+  command: string | null;
+};
+
+export const mcpStatus = () => invoke<McpStatus>("mcp_status");
+export const setMcpEnabled = (enabled: boolean) =>
+  invoke<McpStatus>("set_mcp_enabled", { enabled });

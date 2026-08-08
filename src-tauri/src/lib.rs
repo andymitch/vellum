@@ -1,3 +1,5 @@
+#[cfg(desktop)]
+mod mcp;
 mod vault;
 
 use tauri::Manager;
@@ -238,6 +240,41 @@ fn hub_enabled_at_launch(app: &tauri::AppHandle) -> bool {
     app.autolaunch().is_enabled().unwrap_or(false)
 }
 
+/// Current state of the local MCP server, for the Settings panel: whether it's
+/// listening, on which port, and the ready-to-paste connect command.
+#[cfg(desktop)]
+#[tauri::command]
+fn mcp_status(app: tauri::AppHandle) -> mcp::McpStatus {
+    mcp::status(&app)
+}
+
+/// Toggle the local MCP server (the Agent access setting). Starting it binds a
+/// loopback port; stopping it drops the listener and any live agent sessions.
+/// The choice is persisted, so a relaunch restores it.
+#[cfg(desktop)]
+#[tauri::command]
+async fn set_mcp_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<mcp::McpStatus, String> {
+    mcp::set_enabled(&app, enabled).await
+}
+
+// Mobile has no MCP server (see mcp.rs for why), but the command surface stays
+// uniform so `generate_handler!` doesn't have to be duplicated per platform.
+// The Settings row that calls these is desktop-only anyway.
+#[cfg(not(desktop))]
+#[tauri::command]
+fn mcp_status() -> serde_json::Value {
+    serde_json::json!({ "enabled": false, "port": null, "url": null, "token": "", "command": null })
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn set_mcp_enabled(_enabled: bool) -> Result<serde_json::Value, String> {
+    Err("the MCP server is desktop-only".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
@@ -331,7 +368,14 @@ pub fn run() {
             // on Android it must start after tao initializes the JNI context,
             // which happens once the event loop runs — after setup.
             let dir = app.path().app_data_dir()?;
-            app.manage(vault::VaultManager::new(dir));
+            app.manage(vault::VaultManager::new(dir.clone()));
+            // Local MCP server (#164). Off unless the user turned it on; the
+            // listener is loopback-only and token-authenticated either way.
+            #[cfg(desktop)]
+            {
+                app.manage(mcp::McpServer::new(dir));
+                mcp::start_if_enabled(app.handle());
+            }
             #[cfg(desktop)]
             setup_tray(app)?;
             #[cfg(target_os = "macos")]
@@ -392,6 +436,8 @@ pub fn run() {
             vault::delete_path,
             vault::watch_vault,
             set_background_sync,
+            mcp_status,
+            set_mcp_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

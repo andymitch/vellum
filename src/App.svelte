@@ -24,6 +24,7 @@
   import { exportVaultZip, importVaultZip, exportNoteMd, importNoteMd } from "$lib/transfer";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
+  import { initMcp } from "$lib/mcp.svelte";
   import { Code, Eye, PanelLeft, NotebookPen, Settings } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -169,6 +170,9 @@
   // Re-apply the Background sync setting on launch (re-arm the hub + restart the
   // platform keep-alive if it was left enabled).
   onMount(() => initLiveSync());
+  // Read the MCP server's state (the backend restarts it on launch if it was
+  // left on), so the Settings toggle shows the truth.
+  onMount(() => void initMcp());
   // Keep the Settings toggle in step when background sync is changed from the
   // desktop tray ("Turn off background sync").
   onMount(() => {
