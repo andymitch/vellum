@@ -9,17 +9,36 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 ## Features
 
 - **Markdown editor** (CodeMirror 6) with live source/preview modes, syntax highlighting, and formatting shortcuts — plus a formatting toolbar on mobile.
+- **Note types** beyond Markdown — a **TODO list** that's a real checklist (tick, reorder by dragging, sweep away completed items) and a **Journal** that starts a new dated section each day. Typed notes have a single view: no source/preview toggle to think about.
+- **Search & tags** — `Cmd`/`Ctrl+F` searches every note in the vault; write `#tags` anywhere in a note and click one to filter.
 - **Vaults** — collections of notes organized in folders. Create as many as you like.
 - **P2P sync** — share a vault to another device by scanning a QR code; edits then flow both ways automatically. Works over the internet (via relays) or directly on the same Wi-Fi (via mDNS).
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
 - **Eight themes & several fonts** — including a GitHub theme, and on Android 12+ a Material You theme that follows your wallpaper.
 - **Cross-platform** — macOS desktop and Android, from one codebase (iOS scaffolded).
-- **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store).
+- **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store). Opt in to **beta updates** in Settings to track pre-releases.
 
 ## How sync works (in brief)
 
 Each vault is an [iroh-docs](https://github.com/n0-computer/iroh) document; notes are entries keyed by their path. Sharing a vault produces a write-capability *ticket* (rendered as a QR code) — any device that joins it gets equal, full read/write access. Peers are remembered by their stable node ID and re-dialed through iroh's discovery, so sync survives IP changes, network switches, and restarts. There is no central authority: every synced device holds a complete copy.
+
+## Note types
+
+Every note is Markdown on disk, so nothing here changes how a note syncs, exports, or reads in another tool. The *type* just changes how Vellum presents it, and is recorded in a small frontmatter block at the top:
+
+```
+---
+type: todo
+---
+- [ ] buy milk
+```
+
+- **Markdown** (the default) — the editor you already know, with the source/preview toggle.
+- **TODO list** — a checklist. Tick items, drag to reorder, and sweep completed ones away with one button. Stored as ordinary `- [ ]` task lines.
+- **Journal** — a running log that cuts a new dated section the first time you write on a new day, rendered as a full-width rule with the date inline. Sections alternate a faint background so they read as distinct entries.
+
+Pick a type when naming a new note, or hold the **+** button and slide onto one.
 
 ## Agent access (MCP)
 
