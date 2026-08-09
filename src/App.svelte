@@ -298,7 +298,17 @@
     if (daySectionFor === activePath) return;
     daySectionFor = activePath;
     const next = ensureDaySection(content);
-    if (next !== content) content = next;
+    if (next === content) return;
+    content = next;
+    // The caret was placed at the old end of the document when the editor
+    // focused, which is now BEFORE the heading we just appended — so typing
+    // would land in front of it ("first## 2026-08-08"). Move it to the end once
+    // the editor has taken the new text, so writing continues under today's
+    // heading.
+    tick().then(() => {
+      const v = editorView;
+      if (v) v.dispatch({ selection: { anchor: v.state.doc.length } });
+    });
   });
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
