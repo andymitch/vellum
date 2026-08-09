@@ -19,7 +19,7 @@
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
   import { taskCheckboxes } from "./task-checkbox";
-  import { blockBands } from "./block-bands";
+  import { daySections } from "./day-sections";
   import { noteTypeOf, taskContinuation } from "$lib/note-type";
 
   // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
@@ -150,7 +150,7 @@
           history(),
           frontmatterBadge,
           taskCheckboxes,
-          blockBands,
+          daySections,
           keymap.of([
             taskEnter,
             ...styleKeymap,
