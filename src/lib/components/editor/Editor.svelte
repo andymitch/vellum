@@ -18,6 +18,8 @@
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
+  import { taskCheckboxes } from "./task-checkbox";
+  import { blockBands } from "./block-bands";
   import { noteTypeOf, taskContinuation } from "$lib/note-type";
 
   // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
@@ -147,6 +149,8 @@
         extensions: [
           history(),
           frontmatterBadge,
+          taskCheckboxes,
+          blockBands,
           keymap.of([
             taskEnter,
             ...styleKeymap,

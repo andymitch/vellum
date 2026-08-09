@@ -58,6 +58,29 @@ const thingsEditorTheme = (dark: boolean) =>
     background: "color-mix(in srgb, var(--editor-muted) 15%, transparent)",
     userSelect: "none",
   },
+  // Editor task checkboxes (#174). Sized and spaced to sit on the text baseline
+  // rather than pushing the line around.
+  ".cm-task-checkbox": {
+    appearance: "none",
+    width: "1em",
+    height: "1em",
+    verticalAlign: "-0.12em",
+    marginRight: "0.15em",
+    border: "1.5px solid var(--editor-muted)",
+    borderRadius: "0.25em",
+    cursor: "pointer",
+  },
+  ".cm-task-checkbox:checked": {
+    background: "var(--editor-accent)",
+    borderColor: "var(--editor-accent)",
+  },
+  // Alternating scratchpad blocks (#177). Derived from the editor foreground so
+  // it lands correctly in all eight themes and in both light and dark, rather
+  // than being a hardcoded grey that only works in one of them. Deliberately
+  // faint: this is banding to aid scanning, not a highlight.
+  ".cm-block-band": {
+    background: "color-mix(in srgb, var(--editor-fg) 4%, transparent)",
+  },
   ".cm-activeLine": {
     backgroundColor: "transparent",
   },
