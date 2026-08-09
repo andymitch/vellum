@@ -496,6 +496,7 @@ pub fn run() {
             vault::read_note,
             vault::search_notes,
             vault::list_tags,
+            vault::list_note_types,
             vault::write_note,
             vault::create_note,
             vault::export_vault,

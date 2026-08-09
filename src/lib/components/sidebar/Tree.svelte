@@ -2,7 +2,14 @@
   import Self from "./Tree.svelte";
   import type { TreeNode } from "$lib/vault";
   import { drag } from "$lib/dnd";
-  import { ChevronRight, ChevronDown, FileText, Folder } from "@lucide/svelte";
+  import {
+    ChevronRight,
+    ChevronDown,
+    FileText,
+    Folder,
+    ListChecks,
+    NotepadText,
+  } from "@lucide/svelte";
 
   let {
     nodes,
@@ -13,6 +20,7 @@
     onmove,
     dnd = false,
     depth = 0,
+    noteTypes = {},
   }: {
     nodes: TreeNode[];
     activePath: string | null;
@@ -22,7 +30,20 @@
     onmove?: (from: string, isDir: boolean, toDir: string) => void;
     dnd?: boolean;
     depth?: number;
+    // path -> note type, for the per-type icon (#180/#181). Absent means plain
+    // Markdown, which is the default and the vast majority.
+    noteTypes?: Record<string, string>;
   } = $props();
+
+  // Icon per note type, so a TODO and a journal are distinguishable at a glance
+  // in the tree rather than all reading as generic documents.
+  const ICONS: Record<string, typeof FileText> = {
+    todo: ListChecks,
+    journal: NotepadText,
+    // `scratchpad` is the pre-#181 name, still readable from beta-era notes.
+    scratchpad: NotepadText,
+  };
+  const iconFor = (path: string) => ICONS[noteTypes[path]] ?? FileText;
 
   // Path currently hovered as a drop target (for highlight). Each Tree instance
   // tracks its own; only one node sits under the cursor at a time.
@@ -94,7 +115,8 @@
       {/if}
       <Folder class="h-[18px] w-[18px] shrink-0 opacity-80 md:h-3.5 md:w-3.5" />
     {:else}
-      <FileText class="ml-[18px] h-[18px] w-[18px] shrink-0 opacity-70 md:ml-[14px] md:h-3.5 md:w-3.5" />
+      {@const Icon = iconFor(node.path)}
+      <Icon class="ml-[18px] h-[18px] w-[18px] shrink-0 opacity-70 md:ml-[14px] md:h-3.5 md:w-3.5" />
     {/if}
     <span class="truncate">{node.is_dir ? node.name : node.name.replace(/\.md$/, "")}</span>
   </button>
@@ -108,6 +130,7 @@
       {onmenu}
       {onmove}
       {dnd}
+      {noteTypes}
       depth={depth + 1}
     />
   {/if}

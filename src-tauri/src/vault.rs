@@ -933,6 +933,61 @@ pub(crate) fn extract_tags(text: &str) -> Vec<String> {
     out
 }
 
+/// A note's declared type, read from a leading YAML frontmatter block (#104).
+///
+/// Deliberately not a YAML parser: we own this block and read one scalar from
+/// it. Only a LEADING block counts, so a `---` thematic break inside a note is
+/// never mistaken for frontmatter — the same rule the frontend applies.
+pub(crate) fn note_type_of(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n"))?;
+    let end = rest.find("\n---")?;
+    for line in rest[..end].lines() {
+        if let Some(value) = line.trim().strip_prefix("type:") {
+            let v = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[derive(Debug, Serialize)]
+pub struct NoteTypeEntry {
+    pub path: String,
+    pub note_type: String,
+}
+
+/// Every note in the vault that declares a type, so the file tree can show a
+/// matching icon (#180/#181). Plain Markdown notes are omitted — they are the
+/// default and the overwhelming majority, so sending them would be noise.
+pub(crate) async fn note_types(node: &Node, vault: &str) -> Result<Vec<NoteTypeEntry>> {
+    let doc = open(node, vault).await?;
+    let mut out = Vec::new();
+    let mut scanned = 0usize;
+    for entry in list_entries(&doc).await? {
+        if scanned >= SEARCH_SCAN_LIMIT {
+            break;
+        }
+        if is_hidden_path(&entry.path) {
+            continue;
+        }
+        scanned += 1;
+        let Some(text) = read_note_text(node, &doc, entry.path.as_bytes()).await? else {
+            continue;
+        };
+        if let Some(t) = note_type_of(&text) {
+            if t != "markdown" {
+                out.push(NoteTypeEntry {
+                    path: entry.path,
+                    note_type: t,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Case-insensitive substring search across a vault's notes.
 ///
 /// Deliberately not a regex and not indexed: every note has to be merged out of
@@ -1314,6 +1369,17 @@ pub async fn search_notes(
         return Ok(Vec::new());
     }
     map_err(search(node, &vault, &query, None, max.unwrap_or(20).clamp(1, 100)).await)
+}
+
+/// Note types for the file tree's icons (#180/#181). Only typed notes; plain
+/// Markdown is the default and is omitted.
+#[tauri::command]
+pub async fn list_note_types(
+    state: State<'_, VaultManager>,
+    vault: String,
+) -> Result<Vec<NoteTypeEntry>, String> {
+    let node = state.node().await?;
+    map_err(note_types(node, &vault).await)
 }
 
 /// Every inline `#tag` in a vault, with how many notes use it (#15).
@@ -2107,6 +2173,21 @@ mod tests {
         assert!(after.contains(&"other.md".to_string()), "sibling deleted");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reading a note's type must only ever look at a LEADING frontmatter
+    /// block — a `---` inside a journal is a thematic break the user typed.
+    #[test]
+    fn note_type_reads_only_leading_frontmatter() {
+        assert_eq!(note_type_of("---\ntype: todo\n---\n- [ ] x").as_deref(), Some("todo"));
+        assert_eq!(note_type_of("---\ntype: journal\n---\nx").as_deref(), Some("journal"));
+        assert_eq!(note_type_of("---\nfoo: bar\ntype: todo\n---\nx").as_deref(), Some("todo"));
+        assert_eq!(note_type_of("---\ntype: \"todo\"\n---\nx").as_deref(), Some("todo"));
+        // No frontmatter, and a mid-document rule, are both untyped.
+        assert_eq!(note_type_of("plain note"), None);
+        assert_eq!(note_type_of("text\n\n---\n\ntype: todo\n"), None);
+        // A block with no type key.
+        assert_eq!(note_type_of("---\nfoo: bar\n---\nx"), None);
     }
 
     /// Tag extraction (#15) has to coexist with ordinary Markdown: the only

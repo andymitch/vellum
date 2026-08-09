@@ -456,8 +456,15 @@
     return offset;
   }
 
+  // Quick edit is a Markdown-note affordance: tap the preview to jump into
+  // source. A typed note (#180/#181) has a single operational mode, so there is
+  // nothing to jump to — and letting these run swallowed taps on the checklist's
+  // own controls, which is why a TODO note felt dead on mobile (#174 again, from
+  // a different direction).
+  const quickEditable = $derived(mobile && editorSettings.quickEdit && !singleView);
+
   function onPreviewPointerDown(e: PointerEvent) {
-    if (!(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    if (!(quickEditable && mode === "preview")) return;
     tapStart = { x: e.clientX, y: e.clientY, t: e.timeStamp };
   }
   // A recognized scroll/gesture fires pointercancel (not pointerup); clear the
@@ -468,7 +475,7 @@
   function onPreviewPointerUp(e: PointerEvent) {
     const s = tapStart;
     tapStart = null;
-    if (!s || !(mobile && editorSettings.quickEdit && mode === "preview")) return;
+    if (!s || !(quickEditable && mode === "preview")) return;
     // A drag (selection/scroll) or long-press isn't a "tap" — leave it in preview.
     if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || e.timeStamp - s.t > 500) return;
     // Links and task checkboxes have their own tap behavior; don't hijack them.
@@ -487,7 +494,7 @@
   // so unlike mobile there's no auto-return on keyboard-dismiss — the focus-on-
   // mount effect places the caret; quickEditActive just marks it for ESC.
   function onPreviewDblClick(e: MouseEvent) {
-    if (mobile || mode !== "preview" || !activePath) return;
+    if (mobile || singleView || mode !== "preview" || !activePath) return;
     // Links and task checkboxes have their own behavior; don't hijack them.
     if ((e.target as HTMLElement | null)?.closest("a, input")) return;
     quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
@@ -1102,7 +1109,7 @@
       bind:this={mainEl}
       class="min-w-0 flex-1 overflow-auto"
       style={mobile
-        ? `padding-top:${mode === "preview" ? headerH : 0}px;`
+        ? `padding-top:${view === "preview" || view === "todo" ? headerH : 0}px;`
         : ""}
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}

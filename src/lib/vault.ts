@@ -88,3 +88,10 @@ export type TagCount = { tag: string; count: number };
 export const searchNotes = (vault: string, query: string, max?: number) =>
   invoke<SearchHit[]>("search_notes", { vault, query, max });
 export const listTags = (vault: string) => invoke<TagCount[]>("list_tags", { vault });
+
+// Note types for the file tree's icons (#180/#181). Only typed notes come back —
+// plain Markdown is the default and would be noise. This scans every note, so
+// callers should debounce rather than refetch on each vault-changed event.
+export type NoteTypeEntry = { path: string; note_type: string };
+export const listNoteTypes = (vault: string) =>
+  invoke<NoteTypeEntry[]>("list_note_types", { vault });
