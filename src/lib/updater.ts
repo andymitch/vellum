@@ -6,11 +6,16 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { betaChannel } from "./beta-channel.svelte";
 
 const REPO = "andymitch/vellum";
 // Public repo, so the GitHub Releases API needs no auth. `fetch` reaches it from
 // the webview on both desktop and Android (CSP is null; the API sends CORS).
 const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+// All releases, newest first — used to find the newest PRE-release for the beta
+// channel (#175). /releases/latest deliberately excludes pre-releases, which is
+// what keeps a beta away from stable users, so the beta channel has to look here.
+const RELEASES_API = `https://api.github.com/repos/${REPO}/releases`;
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 
 export type LatestRelease = { version: string; tag: string; notes: string; url: string };
@@ -83,6 +88,12 @@ async function promptAndInstall(update: Update): Promise<void> {
 // Silent check on launch: prompt only if an update is available. Skips dev
 // builds (v0) so a locally-built 0.x app isn't nagged every launch (#110).
 export async function checkForUpdate(): Promise<void> {
+  // Beta testers check the pre-release channel instead; the stable endpoint
+  // would report nothing, since their version is already ahead of it (#175).
+  if (betaChannel.enabled) {
+    await checkForBetaUpdate();
+    return;
+  }
   let update;
   try {
     update = await check();
@@ -109,6 +120,10 @@ export async function checkForUpdateInteractive(): Promise<void> {
       title: "Check for updates",
       kind: "info",
     });
+    return;
+  }
+  if (betaChannel.enabled) {
+    await checkForBetaUpdate(true);
     return;
   }
   let update;
@@ -176,4 +191,80 @@ export async function checkForUpdateMobile(interactive = false): Promise<void> {
   );
   // open_update_page routes to the Komi Store app if installed, else the browser.
   if (ok) await invoke("open_update_page", { url: latest.url });
+}
+
+
+// ---- beta channel (#175) ----
+
+// Newest pre-release, with the URL of the updater manifest attached to it. The
+// updater's compiled-in endpoint points at /releases/latest/, which excludes
+// pre-releases — so a beta tester would otherwise never be offered the next
+// beta. Only the Rust builder can override that endpoint, so we resolve the URL
+// here (the releases API is already used for the changelog) and hand it over.
+async function latestPrerelease(): Promise<{ tag: string; version: string; manifest: string } | null> {
+  try {
+    const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+    if (!res.ok) return null;
+    const all = await res.json();
+    for (const r of all) {
+      if (!r.prerelease || r.draft) continue;
+      const asset = (r.assets ?? []).find((a: { name: string }) => a.name === "latest.json");
+      if (!asset) continue; // a pre-release with no manifest can't be updated to
+      return {
+        tag: r.tag_name,
+        version: String(r.tag_name).replace(/^v/, ""),
+        manifest: asset.browser_download_url,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/// Check the beta channel and offer the update. `interactive` reports status
+/// even when there's nothing to do (the Settings button); the launch check is
+/// silent. Returns true if an update was offered.
+export async function checkForBetaUpdate(interactive = false): Promise<boolean> {
+  const pre = await latestPrerelease();
+  if (!pre) {
+    if (interactive)
+      await message("No beta release is available right now.", {
+        title: "Check for updates",
+        kind: "info",
+      });
+    return false;
+  }
+  let available: string | null = null;
+  try {
+    available = await invoke<string | null>("check_update_at", { url: pre.manifest });
+  } catch (e) {
+    if (interactive)
+      await message(`Couldn't check the beta channel: ${e}`, {
+        title: "Check for updates",
+        kind: "error",
+      });
+    return false;
+  }
+  if (!available) {
+    if (interactive)
+      await message(
+        "You're on the latest beta. Note that while you're on a beta, the stable " +
+          "channel will report nothing to install until it overtakes your version.",
+        { title: "Check for updates", kind: "info" },
+      );
+    return false;
+  }
+  const yes = await ask(`Vellum ${pre.tag} is available. Install and restart?`, {
+    title: "Beta update available",
+    kind: "info",
+  });
+  if (!yes) return true;
+  try {
+    await invoke("install_update_at", { url: pre.manifest });
+    await relaunch();
+  } catch (e) {
+    await message(`Update failed: ${e}`, { title: "Beta update", kind: "error" });
+  }
+  return true;
 }

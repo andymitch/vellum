@@ -275,6 +275,73 @@ fn set_mcp_enabled(_enabled: bool) -> Result<serde_json::Value, String> {
     Err("the MCP server is desktop-only".into())
 }
 
+/// Check for an update at a specific endpoint (#175).
+///
+/// The updater's endpoint is compiled into tauri.conf.json and points at
+/// /releases/latest/, which EXCLUDES pre-releases — that is what keeps a beta
+/// away from stable users, and the reason a beta tester can't be updated to the
+/// next beta by the normal path. Only the Rust builder can override the
+/// endpoint (the JS `check()` takes no such option), so the beta channel has to
+/// come through here.
+///
+/// The caller resolves the URL, because the frontend already queries the GitHub
+/// releases API for the changelog — doing it there keeps an HTTP client out of
+/// the Rust side entirely.
+///
+/// Returns the available version, or None when already up to date.
+#[cfg(desktop)]
+#[tauri::command]
+async fn check_update_at(app: tauri::AppHandle, url: String) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let endpoint = url.parse().map_err(|e| format!("bad update url: {e}"))?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    Ok(update.map(|u| u.version))
+}
+
+/// Download and install the update at `url`, then the caller relaunches.
+/// Re-checks rather than caching the Update between commands, so a stale handle
+/// can never be installed after the user sat on the prompt.
+#[cfg(desktop)]
+#[tauri::command]
+async fn install_update_at(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let endpoint = url.parse().map_err(|e| format!("bad update url: {e}"))?;
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Err("no update available".into());
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// Mobile has no in-app updater at all, so these keep the command surface uniform
+// rather than forking generate_handler! per platform (same reasoning as the MCP
+// commands above).
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn check_update_at(_url: String) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn install_update_at(_url: String) -> Result<(), String> {
+    Err("updates are desktop-only".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // iroh's networking stack uses rustls with no built-in provider; install one
@@ -440,6 +507,8 @@ pub fn run() {
             set_background_sync,
             mcp_status,
             set_mcp_enabled,
+            check_update_at,
+            install_update_at,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
