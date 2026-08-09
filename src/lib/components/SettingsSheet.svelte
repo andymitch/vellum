@@ -6,6 +6,7 @@
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
   import { mcp } from "$lib/mcp.svelte";
+  import { betaChannel } from "$lib/beta-channel.svelte";
   import {
     checkForUpdateInteractive,
     checkForUpdateMobile,
@@ -478,6 +479,23 @@
               class="h-4 w-4 shrink-0 accent-primary"
               checked={liveSync.enabled}
               onchange={(e) => (liveSync.enabled = e.currentTarget.checked)}
+            />
+          </label>
+
+          <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+            <span class="flex flex-col">
+              <span class="text-sm">Beta updates</span>
+              <span class="text-xs text-muted-foreground">
+                Receive pre-release builds. While you're on a beta the stable
+                channel reports nothing to install, since your version is already
+                ahead of it — you'll move back onto stable when it overtakes you.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 shrink-0 accent-primary"
+              checked={betaChannel.enabled}
+              onchange={(e) => (betaChannel.enabled = e.currentTarget.checked)}
             />
           </label>
 
