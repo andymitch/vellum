@@ -8,6 +8,7 @@
         forgetVault,
         renameVault,
         listTree,
+        listNoteTypes,
         readNote,
         createNote,
         writeNote,
@@ -94,6 +95,30 @@
     let vaults = $state<VaultInfo[]>([]);
     let activeVault = $state<string | null>(null);
     let tree = $state<TreeNode[]>([]);
+    // path -> note type, for the tree's per-type icons (#180/#181). Fetched
+    // separately from the tree because it reads every note (a blob read plus a
+    // CRDT merge each), and refreshTree runs on every vault-changed event — so
+    // it is debounced rather than refetched on each keystroke's autosave.
+    let noteTypes = $state<Record<string, string>>({});
+    let typesTimer: ReturnType<typeof setTimeout> | undefined;
+    function refreshNoteTypes() {
+        clearTimeout(typesTimer);
+        typesTimer = setTimeout(async () => {
+            const v = activeVault;
+            if (!v) {
+                noteTypes = {};
+                return;
+            }
+            try {
+                const entries = await listNoteTypes(v);
+                // Ignore a result that arrived after the vault changed.
+                if (v !== activeVault) return;
+                noteTypes = Object.fromEntries(entries.map((e) => [e.path, e.note_type]));
+            } catch {
+                noteTypes = {};
+            }
+        }, 600);
+    }
     let expanded = $state<Record<string, boolean>>({});
     let menu = $state<{ x: number; y: number; node: TreeNode } | null>(null);
     let vaultSheet = $state(false);
@@ -244,6 +269,7 @@
     async function refreshTree() {
         tree = activeVault ? await listTree(activeVault) : [];
         ontree?.(tree);
+        refreshNoteTypes();
     }
 
     function treeHasFile(nodes: TreeNode[], path: string): boolean {
@@ -644,6 +670,7 @@ Delete this note whenever you're ready. Happy writing!
                 onselect={(node) => onopen(activeVault!, node.path)}
                 onmenu={openMenu}
                 onmove={moveTo}
+                {noteTypes}
             />
         {:else if activeVault}
             <p class="px-2 py-4 text-sm text-muted-foreground">Empty vault.</p>
