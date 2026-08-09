@@ -265,11 +265,11 @@
   const typeInfo = $derived(noteTypeInfo(noteType));
   const singleView = $derived(!!activePath && typeInfo.singleView);
   const checkedCount = $derived(noteType === "todo" ? countChecked(content) : 0);
-  // Which view actually renders: a TODO is always the interactive checklist, a
-  // scratchpad is always the editor, and Markdown follows the mode toggle.
-  const view = $derived(
-    noteType === "todo" ? "preview" : noteType === "scratchpad" ? "source" : mode,
-  );
+  // Which view actually renders. Typed notes are always the editor: a TODO note
+  // needs text entry as much as it needs tickable boxes, and forcing it to
+  // preview left it with no way to add an item at all (#174). The checkboxes are
+  // drawn in the editor instead, by the taskCheckboxes decoration.
+  const view = $derived(singleView ? "source" : mode);
 
   // Remove every ticked item. Behind a confirm because a delete propagates to
   // every synced device — there is no undo that would work across sync. The
