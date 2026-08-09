@@ -34,6 +34,7 @@ use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use axum::{
@@ -498,6 +499,14 @@ pub struct FolderArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TriageArgs {
+    /// Vault id, from `list_vaults`.
+    pub vault: String,
+    /// Note to watch, e.g. `Backlog.md`. Omit to be told which one to use.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DailyNoteArgs {
     /// Vault id, from `list_vaults`.
     pub vault: String,
@@ -743,6 +752,24 @@ impl Vellum {
         )])
     }
 
+    /// Watch a note and act on requests written into it.
+    #[prompt(name = "triage")]
+    async fn triage_prompt(
+        &self,
+        Parameters(args): Parameters<TriageArgs>,
+    ) -> Result<Vec<PromptMessage>, ErrorData> {
+        let note = args
+            .note
+            .unwrap_or_else(|| "the note the user names".to_string());
+        Ok(vec![PromptMessage::new_text(
+            Role::User,
+            format!(
+                "You are on triage duty for Vellum vault `{vault}`, watching `{note}`.\n\n                 That note is a work queue: unchecked `- [ ]` items are requests for you, and                  checked ones are already handled. Subscribe to the note's resource so you are                  told when it changes.\n\n                 Judge for yourself when to act. A change notification means the user typed                  something, NOT that they finished — Vellum saves as you type, so edits arrive                  while a thought is still half-written. Wait until the note has settled before                  doing anything, and prefer acting on a whole batch of items over reacting to                  each keystroke. How long to wait is your call; err toward letting them finish.\n\n                 For each unchecked item:\n                 1. Read it in full and work out what is actually being asked. Ask the user if it                  is ambiguous rather than guessing.\n                 2. Do the work.\n                 3. Tick its checkbox (`- [ ]` -> `- [x]`) with edit_note, so the user can see it                  was picked up and delete the line. Tick it only once the work is genuinely                  captured — a tick is a claim that it was handled.\n\n                 Leave items you did not action unticked, and say which ones you skipped and why.",
+                vault = args.vault,
+            ),
+        )])
+    }
+
     /// Review recent notes and surface loose ends.
     #[prompt(name = "vault_review")]
     async fn vault_review_prompt(
@@ -882,31 +909,21 @@ impl ServerHandler for Vellum {
             .collect();
         let list_changed = context.accepted().resources_list_changed == Some(true);
         loop {
-            tokio::select! {
+            // Cancellation stays responsive while waiting out the quiet period.
+            let batch = tokio::select! {
                 _ = context.cancelled() => return Ok(()),
-                event = rx.recv() => {
-                    let change = match event {
-                        Ok(c) => c,
-                        // Lagged: we dropped notifications. Nudge the client to
-                        // re-read rather than pretending nothing happened.
-                        Err(RecvError::Lagged(_)) => {
-                            if list_changed {
-                                let _ = context.sink().notify_resource_list_changed().await;
-                            }
-                            continue;
-                        }
-                        Err(RecvError::Closed) => return Ok(()),
-                    };
-                    for uri in changed_uris(&change) {
-                        if watched.contains(&uri) {
-                            let _ = context.sink().notify_resource_updated(uri).await;
-                        }
-                    }
-                    // A new or removed note changes the vault's listing.
-                    if list_changed && change.path.is_some() {
-                        let _ = context.sink().notify_resource_list_changed().await;
-                    }
+                b = next_batch(&mut rx) => match b {
+                    Some(b) => b,
+                    None => return Ok(()),
+                },
+            };
+            for uri in batch.uris {
+                if watched.contains(&uri) {
+                    let _ = context.sink().notify_resource_updated(uri).await;
                 }
+            }
+            if list_changed && batch.list_changed {
+                let _ = context.sink().notify_resource_list_changed().await;
             }
         }
     }
@@ -945,15 +962,10 @@ impl ServerHandler for Vellum {
         let peer: Peer<RoleServer> = context.peer.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                let change = match rx.recv().await {
-                    Ok(c) => c,
-                    Err(RecvError::Lagged(_)) => {
-                        let _ = peer.notify_resource_list_changed().await;
-                        continue;
-                    }
-                    Err(RecvError::Closed) => return,
+                let Some(batch) = next_batch(&mut rx).await else {
+                    return;
                 };
-                for uri in changed_uris(&change) {
+                for uri in batch.uris {
                     if subscribed.lock().unwrap().contains(&uri) {
                         // A send error means the session is gone — stop pumping.
                         let param = ResourceUpdatedNotificationParam::new(uri);
@@ -962,7 +974,7 @@ impl ServerHandler for Vellum {
                         }
                     }
                 }
-                if change.path.is_some() && peer.notify_resource_list_changed().await.is_err() {
+                if batch.list_changed && peer.notify_resource_list_changed().await.is_err() {
                     return;
                 }
             }
@@ -979,6 +991,76 @@ impl ServerHandler for Vellum {
         self.subscribed.lock().unwrap().remove(&request.uri);
         Ok(())
     }
+}
+
+/// How long the notification pump waits for quiet before sending (#194).
+///
+/// A note's autosave fires on every keystroke, so without this a subscriber
+/// receives one `resources/updated` per character — and each one invites a
+/// re-read of the whole note, which is a CRDT merge. This window exists purely
+/// to stop that waste.
+///
+/// It is deliberately SHORT, and deliberately not a policy. How long to wait
+/// before acting on a change — whether the user has finished writing a request,
+/// whether to batch several notes together — is the agent's judgement, not the
+/// server's. The `triage` prompt describes that job; a server-side timeout
+/// would only impose one answer on every client. Live collaboration will want
+/// events sooner still, and the underlying broadcast already stays immediate
+/// for the editor's own rebase.
+const NOTIFY_QUIET: Duration = Duration::from_millis(600);
+
+/// A settled batch of changes: what to tell the client after typing stopped.
+struct Batch {
+    /// Resource URIs to report, de-duplicated across the whole burst.
+    uris: HashSet<String>,
+    /// Whether the vault's listing changed (a note added or removed).
+    list_changed: bool,
+}
+
+/// Collect changes until the stream goes quiet, then return them as one batch.
+///
+/// Returns `None` when the channel closes. A lagged receiver is reported
+/// immediately rather than waited out — it already means "you missed changes",
+/// so holding it back only makes the client staler.
+///
+/// Deliberately NOT a debounce on the underlying broadcast: that stays
+/// immediate, because the editor's own rebase depends on it and live
+/// collaboration will want per-keystroke events.
+async fn next_batch(rx: &mut tokio::sync::broadcast::Receiver<VaultChange>) -> Option<Batch> {
+    let mut batch = Batch {
+        uris: HashSet::new(),
+        list_changed: false,
+    };
+    // Block for the first change — no timer until something actually happens.
+    match rx.recv().await {
+        Ok(change) => absorb(&mut batch, change),
+        Err(RecvError::Lagged(_)) => {
+            batch.list_changed = true;
+            return Some(batch);
+        }
+        Err(RecvError::Closed) => return None,
+    }
+    // Then keep absorbing until the stream is quiet for NOTIFY_QUIET.
+    loop {
+        match tokio::time::timeout(NOTIFY_QUIET, rx.recv()).await {
+            Ok(Ok(change)) => absorb(&mut batch, change),
+            Ok(Err(RecvError::Lagged(_))) => {
+                batch.list_changed = true;
+                return Some(batch);
+            }
+            Ok(Err(RecvError::Closed)) => return Some(batch),
+            // Quiet period elapsed — the user stopped typing.
+            Err(_) => return Some(batch),
+        }
+    }
+}
+
+fn absorb(batch: &mut Batch, change: VaultChange) {
+    // A new or removed note changes the vault's listing.
+    if change.path.is_some() {
+        batch.list_changed = true;
+    }
+    batch.uris.extend(changed_uris(&change));
 }
 
 /// The resource URIs a vault mutation invalidates. A change always invalidates
@@ -1240,6 +1322,47 @@ mod tests {
         other[0] ^= 1;
         assert!(!ct_eq(&other, token.as_bytes()));
         assert_ne!(new_token(), new_token(), "tokens must not repeat");
+    }
+
+    /// A burst of edits — one per keystroke — must settle into a single
+    /// notification per URI, not one per character (#194).
+    #[tokio::test(start_paused = true)]
+    async fn notifications_coalesce_until_typing_stops() {
+        use iroh_docs::NamespaceId;
+        let (tx, mut rx) = tokio::sync::broadcast::channel(64);
+        let vault = NamespaceId::from(&[7u8; 32]);
+
+        // Ten "keystrokes" on the same note, faster than the quiet window.
+        for _ in 0..10 {
+            tx.send(VaultChange {
+                vault,
+                path: Some("notes/a.md".into()),
+            })
+            .unwrap();
+        }
+        let batch = next_batch(&mut rx).await.expect("batch");
+        assert_eq!(
+            batch.uris.len(),
+            2,
+            "one note URI + the vault's tree URI, however many keystrokes: {:?}",
+            batch.uris
+        );
+        assert!(batch.list_changed, "an insert changes the listing");
+
+        // Two different notes in one burst still settle together, one URI each.
+        for p in ["notes/a.md", "notes/b.md"] {
+            tx.send(VaultChange {
+                vault,
+                path: Some(p.into()),
+            })
+            .unwrap();
+        }
+        let batch = next_batch(&mut rx).await.expect("batch");
+        assert_eq!(batch.uris.len(), 3, "two notes + the tree: {:?}", batch.uris);
+
+        // A closed channel ends the pump rather than spinning.
+        drop(tx);
+        assert!(next_batch(&mut rx).await.is_none());
     }
 
     #[test]
