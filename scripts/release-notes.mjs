@@ -4,8 +4,15 @@
 // label of the issue it closes (so you only label issues, not PRs); if the PR
 // closes no labeled issue, it falls back to the PR's own labels, else "Other".
 //
+// When cutting a STABLE release after a beta cycle, work that was both raised
+// and resolved inside that cycle is folded away (#182): a bug introduced by a
+// beta never reached anyone on stable, and an enhancement refining a beta
+// feature belongs to that feature's final state rather than to a line of its
+// own. See `cycleStart` below.
+//
 // Env: REPO (owner/name), TAG (e.g. v3), PREV (previous tag, or empty for the
-// first release). Auth via the gh CLI. Prints markdown to stdout.
+// first release). Auth via the gh CLI. Prints markdown to stdout; notes about
+// dropped entries go to stderr so a release never silently omits anything.
 import { execFileSync } from "node:child_process";
 
 // HEAD is the commit to diff up to. In CI the vN tag doesn't exist yet (the
@@ -20,6 +27,35 @@ const ghJson = (args) =>
     // lookup throws and we skip it, no need to surface gh's error.
     execFileSync("gh", args, { encoding: "utf8", maxBuffer: 1 << 24, stdio: ["ignore", "pipe", "ignore"] }),
   );
+
+// An issue labelled this is kept even if it was raised during the beta cycle —
+// the escape hatch for a genuinely pre-existing bug that merely happened to be
+// DISCOVERED while testing a beta.
+const FORCE_LABEL = "changelog-include";
+
+// Start of the current beta cycle: when the earliest vN-beta.* for this major
+// was published. Null when cutting a beta itself (a beta's notes should list
+// everything since the last stable, so testers see the whole surface they are
+// being asked to exercise) or when the release had no betas.
+const cycleStart = (() => {
+  if (/-beta\./.test(TAG)) return null;
+  const major = /^v(\d+)/.exec(TAG)?.[1];
+  if (!major) return null;
+  let dates = [];
+  try {
+    dates = ghJson([
+      "api",
+      `repos/${REPO}/releases`,
+      "--paginate",
+      "--jq",
+      `[.[] | select(.tag_name | startswith("v${major}-beta.")) | .published_at]`,
+    ]);
+  } catch {
+    return null;
+  }
+  return dates.length ? dates.sort()[0] : null;
+})();
+if (cycleStart) process.stderr.write(`Beta cycle started ${cycleStart}; folding in-cycle work.\n`);
 
 // Label -> section. First match wins; order defines section order in the notes.
 const CATEGORIES = [
@@ -59,11 +95,13 @@ for (const msg of messages) {
 }
 
 const sections = {};
+// Entries folded away by the beta-cycle rule, reported at the end.
+const dropped = [];
 // Issues a PR already closes — so the same work merged via both a PR and a
 // later local branch merge isn't listed twice.
 const coveredByPr = new Set();
 for (const n of [...prNums].sort((a, b) => a - b)) {
-  const query = `query{repository(owner:"${OWNER}",name:"${NAME}"){pullRequest(number:${n}){title author{login} labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number labels(first:20){nodes{name}}}}}}}`;
+  const query = `query{repository(owner:"${OWNER}",name:"${NAME}"){pullRequest(number:${n}){title createdAt author{login} labels(first:20){nodes{name}} closingIssuesReferences(first:10){nodes{number createdAt labels(first:20){nodes{name}}}}}}}`;
   let pr;
   try {
     pr = ghJson(["api", "graphql", "-f", `query=${query}`]).data.repository.pullRequest;
@@ -72,6 +110,17 @@ for (const n of [...prNums].sort((a, b) => a - b)) {
   }
   if (!pr) continue;
   for (const i of pr.closingIssuesReferences.nodes) coveredByPr.add(i.number);
+  // Fold away work raised entirely within the beta cycle. A PR closing no issue
+  // has nothing to date, so fall back to when the PR itself was opened.
+  if (cycleStart) {
+    const issues = pr.closingIssuesReferences.nodes;
+    const forced = issues.some((i) => i.labels.nodes.some((l) => l.name === FORCE_LABEL));
+    const raised = issues.length ? issues.map((i) => i.createdAt) : [pr.createdAt];
+    if (!forced && raised.every((d) => d > cycleStart)) {
+      dropped.push(`#${n} ${pr.title}`);
+      continue;
+    }
+  }
   const prLabels = pr.labels.nodes.map((x) => x.name);
   const issueLabels = pr.closingIssuesReferences.nodes.flatMap((i) =>
     i.labels.nodes.map((x) => x.name),
@@ -103,4 +152,11 @@ for (const cat of [...CATEGORIES.map((c) => c.title), OTHER]) {
   if (sections[cat]?.length) md += `### ${cat}\n${sections[cat].join("\n")}\n\n`;
 }
 md += `**Full Changelog**: https://github.com/${REPO}/commits/${TAG}\n`;
+if (dropped.length) {
+  process.stderr.write(
+    `Folded ${dropped.length} in-cycle entries (raised and resolved during the beta):\n` +
+      dropped.map((d) => `  - ${d}`).join("\n") +
+      `\nLabel an issue "${FORCE_LABEL}" to keep it.\n`,
+  );
+}
 process.stdout.write(md);
