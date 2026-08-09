@@ -764,7 +764,23 @@ impl Vellum {
         Ok(vec![PromptMessage::new_text(
             Role::User,
             format!(
-                "You are on triage duty for Vellum vault `{vault}`, watching `{note}`.\n\n                 That note is a work queue: unchecked `- [ ]` items are requests for you, and                  checked ones are already handled. Subscribe to the note's resource so you are                  told when it changes.\n\n                 Judge for yourself when to act. A change notification means the user typed                  something, NOT that they finished — Vellum saves as you type, so edits arrive                  while a thought is still half-written. Wait until the note has settled before                  doing anything, and prefer acting on a whole batch of items over reacting to                  each keystroke. How long to wait is your call; err toward letting them finish.\n\n                 For each unchecked item:\n                 1. Read it in full and work out what is actually being asked. Ask the user if it                  is ambiguous rather than guessing.\n                 2. Do the work.\n                 3. Tick its checkbox (`- [ ]` -> `- [x]`) with edit_note, so the user can see it                  was picked up and delete the line. Tick it only once the work is genuinely                  captured — a tick is a claim that it was handled.\n\n                 Leave items you did not action unticked, and say which ones you skipped and why.",
+                // A raw literal starting at column 0: the previous version used
+                // line continuations that did not survive, so every client was
+                // served the source indentation as runs of spaces mid-sentence.
+                r#"You are on triage duty for Vellum vault `{vault}`, watching `{note}`.
+
+That note is a work queue: unchecked `- [ ]` items are requests for you, and checked ones are already handled. Subscribe to the note's resource so you are told when it changes.
+
+Judge for yourself when to act. A change notification means the user typed something, NOT that they finished — Vellum saves as you type, so edits arrive while a thought is still half-written. Wait until the note has settled before doing anything, and prefer acting on a whole batch of items over reacting to each keystroke. How long to wait is your call; err toward letting them finish.
+
+Keep the subscription alive. If a request comes back 404 the session is gone — re-initialize and re-subscribe rather than retrying with the old session id. A subscriber that only reconnects the stream goes permanently deaf while still looking healthy, and silently misses everything written after that.
+
+For each unchecked item:
+1. Read it in full and work out what is actually being asked. Ask the user if it is ambiguous rather than guessing.
+2. Do the work.
+3. Tick its checkbox (`- [ ]` -> `- [x]`) with edit_note, so the user can see it was picked up and delete the line. Tick it only once the work is genuinely captured — a tick is a claim that it was handled.
+
+Leave items you did not action unticked, and say which ones you skipped and why."#,
                 vault = args.vault,
             ),
         )])
@@ -808,7 +824,9 @@ impl ServerHandler for Vellum {
              Start with list_vaults to get a vault id. Use edit_note or append_note for changes \
              rather than write_note, so concurrent edits from the user's other devices are \
              preserved. delete_note is a soft delete to .trash. Notes sync peer-to-peer, so a \
-             write here reaches the user's other devices on its own."
+             write here reaches the user's other devices on its own. If a request returns \
+             404 the session has ended: re-initialize and re-subscribe rather than \
+             reusing the old session id, or a subscription will go silently deaf."
                 .to_string(),
         );
         info
