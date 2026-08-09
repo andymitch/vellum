@@ -124,17 +124,13 @@
       return;
     }
     const chosen = active >= 0 ? NOTE_TYPES[active] : undefined;
-    const moved = Math.hypot(reach.x, reach.y) >= DEAD_ZONE;
     reset();
-    if (chosen) {
-      ontype?.(chosen.id);
-    } else if (!moved) {
-      // Held but never moved: that is a slow click, not a cancelled dial.
-      // Treat it as an ordinary tap rather than swallowing it — the click
-      // event is suppressed once a hold has fired.
-      onclick();
-    }
-    // Released away from every option after moving = deliberate cancel.
+    // Once the dial is open, releasing anywhere that isn't an option does
+    // NOTHING. The button has turned into an ✕ by this point, so creating a
+    // note would contradict what it says — and an earlier version did exactly
+    // that, treating a release in the dead zone as a slow click and quietly
+    // creating a Markdown note.
+    if (chosen) ontype?.(chosen.id);
   }
 </script>
 
