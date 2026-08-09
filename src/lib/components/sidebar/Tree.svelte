@@ -8,7 +8,7 @@
     FileText,
     Folder,
     ListChecks,
-    NotepadText,
+    NotebookPen,
   } from "@lucide/svelte";
 
   let {
@@ -39,9 +39,12 @@
   // in the tree rather than all reading as generic documents.
   const ICONS: Record<string, typeof FileText> = {
     todo: ListChecks,
-    journal: NotepadText,
+    // NotebookPen, not NotepadText: at tree size a lined pad reads almost
+    // identically to the plain-note page icon (#190). This is the same icon the
+    // empty state uses as its watermark, so it's already familiar.
+    journal: NotebookPen,
     // `scratchpad` is the pre-#181 name, still readable from beta-era notes.
-    scratchpad: NotepadText,
+    scratchpad: NotebookPen,
   };
   const iconFor = (path: string) => ICONS[noteTypes[path]] ?? FileText;
 
