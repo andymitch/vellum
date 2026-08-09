@@ -426,7 +426,10 @@ pub struct NoteArgs {
 pub struct SearchArgs {
     /// Vault id, from `list_vaults`.
     pub vault: String,
-    /// Text to find. Case-insensitive substring match — not a regex.
+    /// Text to find. Case-insensitive substring match — not a regex. A query of
+    /// the form `#tag` instead matches that tag exactly: `#work` finds notes
+    /// carrying `#work` and not `#workout`, and notes carrying a plain-text
+    /// query as a tag are returned first.
     pub query: String,
     /// Only search notes whose path contains this (case-insensitive).
     pub path_contains: Option<String>,

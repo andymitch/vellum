@@ -635,6 +635,14 @@
   // A `[[note#heading]]` link: open the note (unless already open) and scroll
   // the preview to the heading. Headings get their slug ids after Preview
   // renders, so retry across a few frames until the anchor exists (#45).
+  // Clicking a #tag — in preview or in source mode (#202) — opens search on it.
+  // The query is exactly "#tag": the backend reads that as a tag query and
+  // matches whole tags, so no trailing space may be added here.
+  function openTagSearch(tag: string) {
+    searchInitial = `#${tag}`;
+    searchOpen = true;
+  }
+
   function openInternalLink(path: string, fragment: string | undefined) {
     if (!activeVault) return;
     if (path !== activePath) handleOpen(activeVault, path);
@@ -1135,10 +1143,7 @@
           bind:value={content}
           {notePaths}
           oninternallink={openInternalLink}
-          ontag={(tag) => {
-            searchInitial = `#${tag} `;
-            searchOpen = true;
-          }}
+          ontag={openTagSearch}
         />
       {:else}
         {#key openToken}
@@ -1148,6 +1153,7 @@
             bind:focused={editorFocused}
             {notePaths}
             focusOnMount={focusNewNote}
+            ontag={openTagSearch}
           />
         {/key}
       {/if}
