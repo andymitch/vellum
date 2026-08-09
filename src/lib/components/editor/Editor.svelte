@@ -18,9 +18,7 @@
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
-  import { taskCheckboxes } from "./task-checkbox";
   import { daySections } from "./day-sections";
-  import { noteTypeOf, taskContinuation } from "$lib/note-type";
 
   // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
   // same actions as the mobile toolbar). Bound ahead of the default keymap so
@@ -34,32 +32,6 @@
     // Toggle a task-list checkbox on each selected line.
     { key: "Mod--", run: (v: EditorView) => (toggleLinePrefix(v, "- [ ] "), true) },
   ];
-
-  // In a TODO note (#104), Enter at the end of a task line starts the next item,
-  // the way a list behaves in any todo app. Gated on the note's own type so an
-  // ordinary Markdown note's Enter is untouched, and it returns false on an
-  // empty task line so the list can be ended by pressing Enter twice.
-  const taskEnter = {
-    key: "Enter",
-    run: (v: EditorView) => {
-      const state = v.state;
-      if (noteTypeOf(state.doc.sliceString(0, Math.min(state.doc.length, 1024))) !== "todo")
-        return false;
-      const { from, to } = state.selection.main;
-      if (from !== to) return false;
-      const line = state.doc.lineAt(from);
-      // Only at end-of-line, so Enter mid-line still just splits it.
-      if (from !== line.to) return false;
-      const cont = taskContinuation(line.text);
-      if (!cont) return false;
-      v.dispatch({
-        changes: { from, insert: "\n" + cont },
-        selection: { anchor: from + 1 + cont.length },
-        scrollIntoView: true,
-      });
-      return true;
-    },
-  };
 
   // Theme lives in a compartment so light/dark (and OS) changes can reconfigure
   // it without recreating the editor.
@@ -149,10 +121,8 @@
         extensions: [
           history(),
           frontmatterBadge,
-          taskCheckboxes,
           daySections,
           keymap.of([
-            taskEnter,
             ...styleKeymap,
             ...closeBracketsKeymap,
             ...completionKeymap,

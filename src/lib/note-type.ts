@@ -128,16 +128,33 @@ export function sweepChecked(text: string): string {
   return frontmatter + kept.join("\n");
 }
 
-/// The `- [ ] ` continuation for pressing Enter on a task line, or null when the
-/// cursor isn't on one (so Enter behaves normally).
-export function taskContinuation(line: string): string | null {
-  const m = TASK_LINE.exec(line);
-  if (!m) return null;
-  // An empty task line means "stop the list" — the same convention editors use
-  // for bullets — so Enter there ends it rather than adding another empty box.
-  if (/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\][ \t]*$/.test(line)) return null;
-  const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
-  return `${indent}- [ ] `;
+/// One row of a TODO note. A row that isn't a task keeps its raw text, so prose
+/// (or anything a peer wrote) survives editing rather than being destroyed.
+export type TodoRow = { task: boolean; checked: boolean; text: string };
+
+const TASK_ROW = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]?(.*)$/;
+
+/// Split a TODO note's body into rows for the checklist UI.
+export function parseTodoRows(text: string): TodoRow[] {
+  const { body } = parseNote(text);
+  // A single trailing newline is an artifact of the format, not an empty row.
+  const lines = body.replace(/\n$/, "").split("\n");
+  if (lines.length === 1 && lines[0] === "") return [];
+  return lines.map((line) => {
+    const m = TASK_ROW.exec(line);
+    return m
+      ? { task: true, checked: m[1] !== " ", text: m[2] }
+      : { task: false, checked: false, text: line };
+  });
+}
+
+/// Rebuild the note from its rows, preserving the frontmatter untouched.
+export function serializeTodoRows(original: string, rows: TodoRow[]): string {
+  const { frontmatter } = parseNote(original);
+  const body = rows
+    .map((r) => (r.task ? `- [${r.checked ? "x" : " "}] ${r.text}` : r.text))
+    .join("\n");
+  return frontmatter + body + (body ? "\n" : "");
 }
 
 // ---- Scratchpad helpers ----
