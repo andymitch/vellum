@@ -24,8 +24,9 @@
     journal: NotebookPen,
   };
 
-  // Hold-to-pick (#176/#192). Touch only: holding a button isn't a desktop
-  // idiom, and a mouse gets the ordinary click.
+  // Hold-to-pick (#176/#192/#197). Works with a mouse as well as a thumb: it
+  // was touch-only, which made it invisible on desktop and impossible to test
+  // there. A slow click still creates a plain note (see onPointerUp).
   const HOLD_MS = 350;
   const RADIUS = 104;
   // Selection is ANGULAR, not distance-to-a-small-circle — a thumb sweeping the
@@ -70,7 +71,7 @@
   }
 
   function onPointerDown(e: PointerEvent) {
-    if (disabled || !ontype || e.pointerType !== "touch") return;
+    if (disabled || !ontype) return;
     clearTimeout(holdTimer);
     pressing = true; // immediate feedback that a hold is being registered
     holdTimer = setTimeout(() => {
@@ -123,10 +124,17 @@
       return;
     }
     const chosen = active >= 0 ? NOTE_TYPES[active] : undefined;
+    const moved = Math.hypot(reach.x, reach.y) >= DEAD_ZONE;
     reset();
-    // Releasing in the dead zone cancels — a hold you thought better of
-    // shouldn't create anything.
-    if (chosen) ontype?.(chosen.id);
+    if (chosen) {
+      ontype?.(chosen.id);
+    } else if (!moved) {
+      // Held but never moved: that is a slow click, not a cancelled dial.
+      // Treat it as an ordinary tap rather than swallowing it — the click
+      // event is suppressed once a hold has fired.
+      onclick();
+    }
+    // Released away from every option after moving = deliberate cancel.
   }
 </script>
 
@@ -233,7 +241,7 @@
     {disabled}
     aria-label="New note"
     title="New note"
-    class="relative flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-lg transition-transform duration-200 disabled:opacity-40 {picking
+    class="relative flex h-14 w-14 touch-none items-center justify-center rounded-full text-primary-foreground shadow-lg transition-transform duration-200 disabled:opacity-40 {picking
       ? 'scale-90 bg-transparent shadow-none'
       : pressing
         ? 'scale-95 bg-primary'
