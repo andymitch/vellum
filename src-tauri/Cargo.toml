@@ -63,11 +63,19 @@ paranoid-android = "0.2"
 tauri-plugin-barcode-scanner = "2.4.5"
 
 # macOS: nudge the Overlay-titlebar traffic lights down so they center in our
-# taller web header (#156). Versions match what tauri already resolves.
+# taller web header (#156), and show the native share sheet (#105).
+# Versions match what tauri already resolves.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = [
+  "NSWindow",
+  "NSButton",
+  "NSView",
+  "NSResponder",
+  # NSSharingServicePicker lives in this module too — there is no separate feature.
+  "NSSharingService",
+] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString"] }
 
 # Desktop-only: in-app auto-update (Tauri's updater is desktop-only; mobile
 # updates ship via the APK/stores). process is used to relaunch after update.

@@ -16,6 +16,7 @@
     writeNote,
     renamePath,
     deletePath,
+    shareNote,
     onVaultChanged,
     onBackgroundSyncChanged,
     type TreeNode,
@@ -1195,6 +1196,8 @@
   onrename={() => sidebar?.renameActive()}
   onexportnote={() =>
     activeVault && activePath && exportNoteMd(activeVault, activePath).catch(reportTransferError)}
+  onsharenote={() =>
+    activeVault && activePath && shareNote(activeVault, activePath).catch(reportTransferError)}
   onexportvault={() => activeVault && exportVaultZip(activeVault, "").catch(reportTransferError)}
   onimportvault={() => activeVault && importVaultZip(activeVault).catch(reportTransferError)}
   onimportnote={onImportNote}
