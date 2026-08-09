@@ -4,11 +4,11 @@
 // label of the issue it closes (so you only label issues, not PRs); if the PR
 // closes no labeled issue, it falls back to the PR's own labels, else "Other".
 //
-// When cutting a STABLE release after a beta cycle, work that was both raised
-// and resolved inside that cycle is folded away (#182): a bug introduced by a
-// beta never reached anyone on stable, and an enhancement refining a beta
-// feature belongs to that feature's final state rather than to a line of its
-// own. See `cycleStart` below.
+// When cutting a STABLE release after a beta cycle, BUGS both raised and fixed
+// inside that cycle are folded away (#182/#198): a bug a beta introduced never
+// reached anyone on stable. Features and enhancements raised in-cycle are kept —
+// they are new capability, and dropping them made the notes describe software
+// that never shipped. See `cycleStart` below.
 //
 // Env: REPO (owner/name), TAG (e.g. v3), PREV (previous tag, or empty for the
 // first release). Auth via the gh CLI. Prints markdown to stdout; notes about
@@ -110,9 +110,25 @@ for (const n of [...prNums].sort((a, b) => a - b)) {
   }
   if (!pr) continue;
   for (const i of pr.closingIssuesReferences.nodes) coveredByPr.add(i.number);
-  // Fold away work raised entirely within the beta cycle. A PR closing no issue
-  // has nothing to date, so fall back to when the PR itself was opened.
-  if (cycleStart) {
+  const prLabels0 = pr.labels.nodes.map((x) => x.name);
+  const issueLabels0 = pr.closingIssuesReferences.nodes.flatMap((i) =>
+    i.labels.nodes.map((x) => x.name),
+  );
+  let cat0 = categoryFor(issueLabels0);
+  if (cat0 === OTHER) cat0 = categoryFor(prLabels0);
+
+  // Fold away BUGS raised entirely within the beta cycle: a bug a beta
+  // introduced and a beta patched never reached a stable user, so it is noise.
+  //
+  // Features and enhancements raised in-cycle are KEPT, even though they are
+  // also "new since the last beta" — they are new capability, not restatements.
+  // Folding them produced a v8 changelog announcing a "Scratchpad" type that had
+  // since been replaced, while never mentioning the Journal that replaced it or
+  // the beta-updates toggle at all (#198).
+  //
+  // A PR closing no issue has nothing to date, so fall back to when the PR
+  // itself was opened.
+  if (cycleStart && cat0 === "🐛 Fixes") {
     const issues = pr.closingIssuesReferences.nodes;
     const forced = issues.some((i) => i.labels.nodes.some((l) => l.name === FORCE_LABEL));
     const raised = issues.length ? issues.map((i) => i.createdAt) : [pr.createdAt];
@@ -121,13 +137,8 @@ for (const n of [...prNums].sort((a, b) => a - b)) {
       continue;
     }
   }
-  const prLabels = pr.labels.nodes.map((x) => x.name);
-  const issueLabels = pr.closingIssuesReferences.nodes.flatMap((i) =>
-    i.labels.nodes.map((x) => x.name),
-  );
-  // Issue label first, then the PR's own label.
-  let cat = categoryFor(issueLabels);
-  if (cat === OTHER) cat = categoryFor(prLabels);
+  // Issue label first, then the PR's own label (computed above).
+  const cat = cat0;
   const author = pr.author?.login ? ` @${pr.author.login}` : "";
   (sections[cat] ??= []).push(`- ${pr.title} (#${n})${author}`);
 }
