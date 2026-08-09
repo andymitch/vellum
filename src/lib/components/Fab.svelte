@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus, FileText, ListChecks, NotepadText } from "@lucide/svelte";
+  import { Plus, FileText, ListChecks, NotebookPen } from "@lucide/svelte";
   import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
   // `hidden` slides the button off the bottom edge (auto-hide on scroll, #85);
@@ -20,23 +20,25 @@
   const ICONS: Record<NoteType, typeof FileText> = {
     markdown: FileText,
     todo: ListChecks,
-    journal: NotepadText,
+    // Matches the tree (#190) — a bound notebook, not another lined page.
+    journal: NotebookPen,
   };
 
-  // Hold-to-pick (#176). Touch only: holding a button isn't a desktop idiom, and
-  // a mouse gets the ordinary click.
+  // Hold-to-pick (#176/#192). Touch only: holding a button isn't a desktop
+  // idiom, and a mouse gets the ordinary click.
   const HOLD_MS = 350;
   const RADIUS = 104;
-  // Selection is ANGULAR, not distance-to-a-small-circle. The first version
-  // required landing within 44px of a 48px target, which is why it barely
-  // functioned — a thumb sweeping the arc fell between options and armed
-  // nothing. Now anything past a small dead zone picks the nearest option by
-  // angle, so the whole quadrant is live and precision stops mattering.
+  // Selection is ANGULAR, not distance-to-a-small-circle — a thumb sweeping the
+  // arc used to fall between options and arm nothing (#176). Anything past the
+  // dead zone picks the nearest option by angle, so the whole quadrant is live.
   const DEAD_ZONE = 28;
 
   let picking = $state(false);
   let pressing = $state(false);
   let active = $state(-1);
+  // Where the thumb is, relative to the button's centre — drives the connector
+  // stretched out toward the armed option (#192).
+  let reach = $state({ x: 0, y: 0 });
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   // Set when a hold fires, so the click that follows the release is swallowed —
   // otherwise letting go would both pick a type AND create a plain note.
@@ -44,7 +46,6 @@
   let btn: HTMLButtonElement;
 
   // Options fan out up and to the left, where a right thumb naturally travels.
-  // Index 0 sits directly above the button, the last one directly left.
   function angleFor(i: number): number {
     const step = Math.PI / 2 / Math.max(NOTE_TYPES.length - 1, 1);
     return Math.PI / 2 + i * step; // 90° (up) → 180° (left)
@@ -54,12 +55,18 @@
     return { x: Math.cos(a) * RADIUS, y: -Math.sin(a) * RADIUS };
   }
 
+  // The connector: a rounded bar from the centre toward the thumb, capped at the
+  // dial radius so it reaches the target rather than overshooting past it.
+  const reachLen = $derived(Math.min(Math.hypot(reach.x, reach.y), RADIUS));
+  const reachDeg = $derived((Math.atan2(reach.y, reach.x) * 180) / Math.PI);
+
   function reset() {
     clearTimeout(holdTimer);
     holdTimer = undefined;
     picking = false;
     pressing = false;
     active = -1;
+    reach = { x: 0, y: 0 };
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -71,8 +78,8 @@
       // Nothing armed until the thumb moves, so releasing straight away cancels
       // rather than picking whichever option happened to be first.
       active = -1;
+      reach = { x: 0, y: 0 };
       suppressClick = true;
-      // Keep receiving moves once the thumb leaves the button's own box.
       btn?.setPointerCapture?.(e.pointerId);
     }, HOLD_MS);
   }
@@ -83,16 +90,25 @@
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     const dx = e.clientX - cx;
-    const dy = cy - e.clientY; // screen y grows downward; flip it for maths
+    const dy = e.clientY - cy;
+    reach = { x: dx, y: dy };
     if (Math.hypot(dx, dy) < DEAD_ZONE) {
-      active = -1; // back at the button = nothing armed, so it's an easy cancel
+      active = -1; // back at the button = nothing armed, an easy cancel
       return;
     }
-    const a = Math.atan2(dy, dx);
+    // Maths convention (y up). Flip at the source rather than negating dy: with
+    // the thumb exactly level, `-dy` is NEGATIVE zero, and atan2(-0, negative)
+    // returns -π instead of +π — which armed the first option when sweeping
+    // straight left, the most natural path to the last one.
+    const a = Math.atan2(cy - e.clientY, dx);
     let best = 0;
     let bestDiff = Infinity;
     NOTE_TYPES.forEach((_, i) => {
-      const d = Math.abs(a - angleFor(i));
+      // Shortest angular distance, wrapped into [-π, π]. Without the wrap, a
+      // thumb just below horizontal (a ≈ -π) reads as maximally far from the
+      // last option (≈ +π) when it is in fact adjacent to it.
+      const raw = a - angleFor(i);
+      const d = Math.abs(Math.atan2(Math.sin(raw), Math.cos(raw)));
       if (d < bestDiff) {
         bestDiff = d;
         best = i;
@@ -122,22 +138,72 @@
   {#if picking}
     <!-- Dim the page so the dial reads as a mode, not decoration. -->
     <div class="fixed inset-0 -z-10 bg-black/30"></div>
-    {#each NOTE_TYPES as t, i (t.id)}
-      {@const o = offset(i)}
-      {@const Icon = ICONS[t.id]}
+
+    <!-- The gooey filter, applied ONLY to the shapes layer below. Blurring and
+         re-thresholding an icon would destroy it, so the icons sit in a separate
+         unfiltered layer on top. -->
+    <svg width="0" height="0" class="absolute" aria-hidden="true">
+      <defs>
+        <filter id="vellum-dial-goo">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur" />
+          <!-- Re-sharpen the alpha so blurred edges snap back to solid shapes —
+               that ramp is what makes touching blobs merge into one. -->
+          <feColorMatrix
+            in="blur"
+            mode="matrix"
+            values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
+          />
+        </filter>
+      </defs>
+    </svg>
+
+    <!-- Shapes: option blobs plus the connector being dragged out. -->
+    <div class="pointer-events-none absolute inset-0" style="filter: url(#vellum-dial-goo);">
+      <!-- Anchor blob under the button, so the connector always has something to
+           merge with at its origin. -->
       <div
-        class="dial-option pointer-events-none absolute flex h-14 w-14 items-center justify-center rounded-full border shadow-lg transition-colors duration-150 {active ===
-        i
-          ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border bg-popover text-muted-foreground'}"
-        style="left: calc(50% + {o.x}px - 1.75rem); top: calc(50% + {o.y}px - 1.75rem); animation-delay: {i *
-          30}ms; {active === i ? 'scale: 1.15;' : ''}"
-      >
-        <Icon size={22} />
-      </div>
-    {/each}
-    <!-- Name only the armed option: three labels at once is noise, and the icon
-         carries the meaning once the set is familiar. -->
+        class="absolute h-14 w-14 rounded-full bg-primary"
+        style="left: calc(50% - 1.75rem); top: calc(50% - 1.75rem);"
+      ></div>
+
+      {#if reachLen > DEAD_ZONE / 2}
+        <div
+          class="absolute h-10 rounded-full bg-primary"
+          style="left: 50%; top: calc(50% - 1.25rem); width: {reachLen}px; transform-origin: 0 50%; transform: rotate({reachDeg}deg);"
+        ></div>
+      {/if}
+
+      {#each NOTE_TYPES as t, i (t.id)}
+        {@const o = offset(i)}
+        <div
+          class="dial-blob absolute h-14 w-14 rounded-full transition-colors duration-150 {active ===
+          i
+            ? 'bg-primary'
+            : 'bg-popover'}"
+          style="left: calc(50% + {o.x}px - 1.75rem); top: calc(50% + {o.y}px - 1.75rem); animation-delay: {i *
+            30}ms;"
+        ></div>
+      {/each}
+    </div>
+
+    <!-- Icons: identical positions, no filter. -->
+    <div class="pointer-events-none absolute inset-0">
+      {#each NOTE_TYPES as t, i (t.id)}
+        {@const o = offset(i)}
+        {@const Icon = ICONS[t.id]}
+        <div
+          class="absolute flex h-14 w-14 items-center justify-center transition-colors duration-150 {active ===
+          i
+            ? 'text-primary-foreground'
+            : 'text-muted-foreground'}"
+          style="left: calc(50% + {o.x}px - 1.75rem); top: calc(50% + {o.y}px - 1.75rem);"
+        >
+          <Icon size={22} />
+        </div>
+      {/each}
+    </div>
+
+    <!-- Name only the armed option: three labels at once is noise. -->
     {#if active >= 0}
       <div
         class="pointer-events-none absolute whitespace-nowrap rounded-full bg-popover px-2.5 py-1 text-xs font-medium shadow-lg"
@@ -167,11 +233,11 @@
     {disabled}
     aria-label="New note"
     title="New note"
-    class="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform duration-200 disabled:opacity-40 {picking
-      ? 'scale-90'
+    class="relative flex h-14 w-14 items-center justify-center rounded-full text-primary-foreground shadow-lg transition-transform duration-200 disabled:opacity-40 {picking
+      ? 'scale-90 bg-transparent shadow-none'
       : pressing
-        ? 'scale-95'
-        : 'active:scale-95'}"
+        ? 'scale-95 bg-primary'
+        : 'bg-primary active:scale-95'}"
     style="transform: {hidden
       ? 'translateY(calc(100% + 1.5rem + env(safe-area-inset-bottom)))'
       : 'none'};"
@@ -184,8 +250,8 @@
 </div>
 
 <style>
-  /* Options scale up out of the button rather than snapping into place. */
-  .dial-option {
+  /* Options grow out of the button rather than snapping into place. */
+  .dial-blob {
     animation: dial-in 150ms ease-out backwards;
   }
   @keyframes dial-in {

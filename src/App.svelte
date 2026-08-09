@@ -34,7 +34,14 @@
     sweepChecked,
     ensureDaySection,
   } from "$lib/note-type";
-  import { Code, Eye, PanelLeft, NotebookPen, Settings, Brush } from "@lucide/svelte";
+  import {
+    Code,
+    Eye,
+    PanelLeft,
+    NotebookPen,
+    Settings,
+    BrushCleaning,
+  } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
   let mode = $state<Mode>(session.mode);
@@ -1000,7 +1007,7 @@
           title="Remove {checkedCount} completed item{checkedCount === 1 ? '' : 's'}"
           onclick={sweepDone}
         >
-          <Brush size={chromeIcon} />
+          <BrushCleaning size={chromeIcon} />
         </button>
       {/if}
       <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit.
