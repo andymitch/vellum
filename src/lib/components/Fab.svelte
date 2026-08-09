@@ -20,7 +20,7 @@
   const ICONS: Record<NoteType, typeof FileText> = {
     markdown: FileText,
     todo: ListChecks,
-    scratchpad: NotepadText,
+    journal: NotepadText,
   };
 
   // Hold-to-pick (#176). Touch only: holding a button isn't a desktop idiom, and

@@ -14,7 +14,7 @@
 // This module is the only place that knows about the block. Everything else
 // treats a note as ordinary Markdown.
 
-export type NoteType = "markdown" | "todo" | "scratchpad";
+export type NoteType = "markdown" | "todo" | "journal";
 
 export type NoteTypeInfo = {
   id: NoteType;
@@ -28,14 +28,19 @@ export type NoteTypeInfo = {
 export const NOTE_TYPES: NoteTypeInfo[] = [
   { id: "markdown", label: "Markdown", initialBody: "", singleView: false },
   { id: "todo", label: "TODO list", initialBody: "- [ ] ", singleView: true },
-  { id: "scratchpad", label: "Scratchpad", initialBody: "", singleView: true },
+  { id: "journal", label: "Journal", initialBody: "", singleView: true },
 ];
 
 export const noteTypeInfo = (t: NoteType): NoteTypeInfo =>
   NOTE_TYPES.find((n) => n.id === t) ?? NOTE_TYPES[0];
 
-const isKnownType = (s: string): s is NoteType =>
-  NOTE_TYPES.some((t) => t.id === s);
+// `scratchpad` was the name in the v8 betas before the type was simplified into
+// Journal (#181). Read it as an alias so a beta-era note keeps working rather
+// than silently reverting to plain Markdown.
+const ALIASES: Record<string, NoteType> = { scratchpad: "journal" };
+
+const asType = (s: string): NoteType | null =>
+  NOTE_TYPES.some((t) => t.id === s) ? (s as NoteType) : (ALIASES[s] ?? null);
 
 export type ParsedNote = {
   type: NoteType;
@@ -47,7 +52,7 @@ export type ParsedNote = {
 };
 
 // A frontmatter block only counts at the very start of the note. This matters:
-// scratchpad separators are `---` thematic breaks, and one of those mid-document
+// a `---` mid-document is a thematic break the user typed, and one of those
 // must never be mistaken for frontmatter.
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
@@ -64,7 +69,7 @@ export function parseNote(text: string): ParsedNote {
   // key from it. Anything else in there is preserved untouched by `withType`.
   const typeLine = /^[ \t]*type[ \t]*:[ \t]*(\S+)[ \t]*$/m.exec(m[1]);
   const raw = typeLine?.[1]?.replace(/^["']|["']$/g, "") ?? "";
-  return { type: isKnownType(raw) ? raw : "markdown", body, frontmatter };
+  return { type: asType(raw) ?? "markdown", body, frontmatter };
 }
 
 /// The type of a note, without needing the rest of the split.
@@ -144,12 +149,24 @@ export function localDay(d: Date = new Date()): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/// A manual separator: a plain thematic break, so it renders as a divider and
-/// survives export as ordinary Markdown.
-export const SEPARATOR = "\n\n---\n\n";
+/// A day section is a single heading line. Dropping the `---` the scratchpad
+/// used to write removes the ambiguity with the frontmatter fence entirely, and leaves
+/// one line to decorate as the dated rule rather than two.
+export const daySeparator = (day: string = localDay()) => `\n\n## ${day}\n\n`;
 
-/// The dated separator that opens a new day's section.
-export const daySeparator = (day: string = localDay()) => `\n\n---\n\n## ${day}\n\n`;
+/// A section heading line, e.g. `## 2026-08-08`. The ISO date stays in the file
+/// so the note still sorts and greps; only the rendering is human-formatted.
+export const DAY_HEADING = /^##[ \t]+(\d{4})-(\d{2})-(\d{2})[ \t]*$/;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// `2026-01-01` -> `Jan 01, 2026`, for the inline label on the rule.
+export function formatDay(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const month = MONTHS[Number(m[2]) - 1] ?? m[2];
+  return `${month} ${m[3]}, ${m[1]}`;
+}
 
 /// Whether the note already carries a section for `day`.
 export const hasDaySection = (text: string, day: string = localDay()): boolean =>
@@ -164,7 +181,7 @@ export const hasDaySection = (text: string, day: string = localDay()): boolean =
 export function ensureDaySection(text: string, day: string = localDay()): string {
   if (hasDaySection(text, day)) return text;
   const { body, frontmatter } = parseNote(text);
-  // A brand-new scratchpad opens straight into its first day, with no leading
+  // A brand-new journal opens straight into its first day, with no leading
   // rule above it.
   if (!body.trim()) return `${frontmatter}## ${day}\n\n`;
   return text.replace(/\s*$/, "") + daySeparator(day);

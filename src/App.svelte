@@ -31,10 +31,9 @@
     noteTypeOf,
     countChecked,
     sweepChecked,
-    SEPARATOR,
     ensureDaySection,
   } from "$lib/note-type";
-  import { Code, Eye, PanelLeft, NotebookPen, Settings, Brush, Minus } from "@lucide/svelte";
+  import { Code, Eye, PanelLeft, NotebookPen, Settings, Brush } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
   let mode = $state<Mode>(session.mode);
@@ -281,20 +280,14 @@
     content = sweepChecked(content);
   }
 
-  // Insert a plain thematic break at the end of a scratchpad — a divider that
-  // renders as one and survives export as ordinary Markdown.
-  function insertSeparator() {
-    content = content.replace(/\s*$/, "") + SEPARATOR;
-  }
-
-  // Start a new dated section when the user focuses a scratchpad to write
+  // Start a new dated section when the user focuses a journal to write
   // (#104, absorbing the journal idea). On focus rather than on open: opening a
   // note must never mutate it, since that would sync a change to every device
   // just from looking at it. The insert is idempotent, so two devices reaching
   // this on the same morning can't produce a duplicate heading.
   let daySectionFor = $state<string | null>(null);
   $effect(() => {
-    if (noteType !== "scratchpad" || !activePath || !editorFocused) return;
+    if (noteType !== "journal" || !activePath || !editorFocused) return;
     if (daySectionFor === activePath) return;
     daySectionFor = activePath;
     const next = ensureDaySection(content);
@@ -1000,19 +993,6 @@
           onclick={sweepDone}
         >
           <Brush size={chromeIcon} />
-        </button>
-      {/if}
-      {#if noteType === "scratchpad"}
-        <button
-          type="button"
-          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
-            ? 'p-1'
-            : 'p-2'}"
-          aria-label="Add separator"
-          title="Add separator"
-          onclick={insertSeparator}
-        >
-          <Minus size={chromeIcon} />
         </button>
       {/if}
       <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit.
