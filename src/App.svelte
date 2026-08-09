@@ -4,6 +4,7 @@
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
+  import TodoList from "$lib/components/editor/TodoList.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
@@ -268,7 +269,7 @@
   // needs text entry as much as it needs tickable boxes, and forcing it to
   // preview left it with no way to add an item at all (#174). The checkboxes are
   // drawn in the editor instead, by the taskCheckboxes decoration.
-  const view = $derived(singleView ? "source" : mode);
+  const view = $derived(noteType === "todo" ? "todo" : singleView ? "source" : mode);
 
   // Remove every ticked item. Behind a confirm because a delete propagates to
   // every synced device — there is no undo that would work across sync. The
@@ -1113,6 +1114,8 @@
           <NotebookPen size={40} class="opacity-30" />
           <p class="text-sm">Select or create a note.</p>
         </div>
+      {:else if view === "todo"}
+        <TodoList bind:value={content} />
       {:else if view === "preview"}
         <Preview
           bind:value={content}
