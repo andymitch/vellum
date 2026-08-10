@@ -105,6 +105,18 @@ const thingsEditorTheme = (dark: boolean) =>
   ".cm-day-rule::after": {
     flex: "0 0 1.5rem",
   },
+  // Inline #tags in source mode (#202). Deliberately a lighter treatment than
+  // the preview chip: no pill background and no padding, because this decorates
+  // live text — shifting glyph positions would make the caret appear to drift as
+  // it moves through a tag. Colour plus a hover underline is enough to read as a
+  // link while every character stays exactly where it was typed.
+  ".cm-tag": {
+    color: "var(--editor-accent)",
+    cursor: "pointer",
+  },
+  ".cm-tag:hover": {
+    textDecoration: "underline",
+  },
   ".cm-activeLine": {
     backgroundColor: "transparent",
   },

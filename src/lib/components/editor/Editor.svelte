@@ -19,6 +19,7 @@
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
   import { daySections } from "./day-sections";
+  import { tagMarks } from "./tag-marks";
 
   // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
   // same actions as the mobile toolbar). Bound ahead of the default keymap so
@@ -48,6 +49,7 @@
     focused = $bindable(false),
     notePaths = [],
     focusOnMount = false,
+    ontag,
   }: {
     value?: string;
     // Exposed so a sibling (the mobile markdown toolbar) can dispatch commands.
@@ -55,6 +57,9 @@
     focused?: boolean;
     // Vault note paths, for [[wiki link]] autocomplete.
     notePaths?: string[];
+    // Clicking an inline #tag. Same callback the preview chips use, so source
+    // and preview open the search palette identically (#202).
+    ontag?: (tag: string) => void;
     // Focus the editor as soon as it mounts (a new note opened — #50). Done here
     // (not via an effect in the parent) so it targets this fresh instance at the
     // right moment, transferring the soft keyboard the name dialog held open.
@@ -122,6 +127,9 @@
           history(),
           frontmatterBadge,
           daySections,
+          // Reads `ontag` at click time (not now), so a changed prop is picked
+          // up without recreating the view.
+          tagMarks((t) => ontag?.(t)),
           keymap.of([
             ...styleKeymap,
             ...closeBracketsKeymap,

@@ -30,9 +30,15 @@
   // back to a stale query). Only the latest request may write to `hits`.
   let seq = 0;
 
-  // Tag mode: the query is a bare "#..." with no whitespace yet, so the user is
-  // still picking a tag rather than searching for text containing one.
-  const tagMode = $derived(/^#\S*$/.test(query));
+  // Tag mode: the query is a bare "#..." and the user is still picking a tag
+  // rather than searching for one.
+  //
+  // Picking a tag used to leave this mode by appending a space to the query,
+  // which made the space part of the search needle — and a line ending in a tag
+  // never contains "#tag ", so the last tag on every line was unfindable (#202).
+  // The mode is tracked separately now so the query stays exactly the tag.
+  let mode = $state<"picking" | "searching">("picking");
+  const tagMode = $derived(mode === "picking" && /^#\S*$/.test(query));
   const tagFilter = $derived(tagMode ? query.slice(1).toLowerCase() : "");
   const shownTags = $derived(
     tagMode ? tags.filter((t) => t.tag.toLowerCase().includes(tagFilter)) : [],
@@ -44,6 +50,9 @@
   $effect(() => {
     if (!open) return;
     query = initial;
+    // A seeded query only ever comes from a preview tag chip, which means the
+    // tag is already chosen — open straight into results, not the picker.
+    mode = initial ? "searching" : "picking";
     selected = 0;
     hits = [];
     if (vault) listTags(vault).then((t) => (tags = t)).catch(() => (tags = []));
@@ -80,9 +89,10 @@
     if (tagMode) {
       const t = shownTags[i];
       if (!t) return;
-      // Selecting a tag becomes an ordinary search for it, with the trailing
-      // space taking us out of tag mode.
-      query = `#${t.tag} `;
+      // Selecting a tag searches for it. The query stays exactly "#tag" — the
+      // backend reads that as a tag query and matches whole tags (#202).
+      query = `#${t.tag}`;
+      mode = "searching";
       selected = 0;
       return;
     }
@@ -149,6 +159,7 @@
         <input
           use:focusInput
           bind:value={query}
+          oninput={() => (mode = "picking")}
           onkeydown={onKeydown}
           placeholder="Search notes, or # for tags"
           autocapitalize="off"

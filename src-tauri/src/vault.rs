@@ -933,6 +933,32 @@ pub(crate) fn extract_tags(text: &str) -> Vec<String> {
     out
 }
 
+/// Read a search query as a tag query, returning the bare tag if it is one.
+///
+/// The palette leaves its tag-picker mode by rewriting the query, and a preview
+/// chip seeds the query the same way, so a tag query can arrive with surrounding
+/// whitespace. Trimming here is what stops that whitespace becoming part of the
+/// needle — a raw substring search for `"#baz "` never matches a note whose line
+/// *ends* in `#baz`, which silently hid the last tag on every line (#202).
+///
+/// The tag body is validated with exactly the rules `extract_tags` uses, so a
+/// query only counts as a tag when it could have been produced as one.
+pub(crate) fn as_tag_query(query: &str) -> Option<String> {
+    let s = query.trim();
+    let body = s.strip_prefix('#')?;
+    let mut cs = body.chars();
+    if !cs.next()?.is_alphanumeric() || !cs.all(is_tag_char) {
+        return None;
+    }
+    let tag = body.trim_end_matches(['-', '/', '_']);
+    (!tag.is_empty()).then(|| tag.to_lowercase())
+}
+
+/// Whether `text` carries `tag` as a real inline tag rather than as loose text.
+fn has_tag(text: &str, tag: &str) -> bool {
+    extract_tags(text).iter().any(|t| t.eq_ignore_ascii_case(tag))
+}
+
 /// A note's declared type, read from a leading YAML frontmatter block (#104).
 ///
 /// Deliberately not a YAML parser: we own this block and read one scalar from
@@ -1002,12 +1028,37 @@ pub(crate) async fn search(
     max: usize,
 ) -> Result<Vec<SearchHit>> {
     let doc = open(node, vault).await?;
+    // Two distinct shapes of query (#202):
+    //
+    // - `#work` is a TAG query: it matches tag identity, never raw text. So it
+    //   finds a line-final `#work` (a substring search for the palette's
+    //   `"#work "` never did) and it does not match `#workout`, `x#work` or a
+    //   `…/#work` URL fragment.
+    // - `work` is a TEXT query: ordinary substring search, but notes carrying it
+    //   as a tag rank above notes that merely contain the word.
+    let tag = as_tag_query(query);
     let needle = query.to_lowercase();
+    // For a text query, the tag whose carriers get promoted — only when the
+    // query could be a tag at all ("work" can, "work stuff" cannot).
+    let boost = match tag {
+        Some(_) => None,
+        None => as_tag_query(&format!("#{}", query.trim())),
+    };
     let filter = path_contains.map(str::to_lowercase);
-    let mut hits = Vec::new();
+    // Text queries collect into two buckets, concatenated at the end. Tag
+    // queries only ever fill `tagged`.
+    let mut tagged: Vec<SearchHit> = Vec::new();
+    let mut rest: Vec<SearchHit> = Vec::new();
     let mut scanned = 0usize;
     for entry in list_entries(&doc).await? {
-        if hits.len() >= max || scanned >= SEARCH_SCAN_LIMIT {
+        // Stop early only once the top bucket is full: a note scanned later may
+        // still carry the tag and outrank everything already in `rest`. With no
+        // promotion in play, the first `max` hits are the answer.
+        let done = match (&tag, &boost) {
+            (None, None) => rest.len() >= max,
+            _ => tagged.len() >= max,
+        };
+        if done || scanned >= SEARCH_SCAN_LIMIT {
             break;
         }
         if is_hidden_path(&entry.path) {
@@ -1021,21 +1072,42 @@ pub(crate) async fn search(
         let Some(text) = read_note_text(node, &doc, entry.path.as_bytes()).await? else {
             continue;
         };
+        let carries = tag
+            .as_deref()
+            .or(boost.as_deref())
+            .is_some_and(|t| has_tag(&text, t));
+        // A tag query is satisfied by tag identity alone, so a note that only
+        // contains the characters is not a hit at all — demoting it rather than
+        // dropping it would still surface `#barbecue` under `#bar`.
+        if tag.is_some() && !carries {
+            continue;
+        }
+        // Preview lines follow suit: a tag query shows the lines actually
+        // carrying the tag, not every line the characters appear on.
         let lines: Vec<String> = text
             .lines()
             .enumerate()
-            .filter(|(_, l)| l.to_lowercase().contains(&needle))
+            .filter(|(_, l)| match &tag {
+                Some(t) => has_tag(l, t),
+                None => l.to_lowercase().contains(&needle),
+            })
             .take(3)
             .map(|(i, l)| format!("{}: {}", i + 1, l.trim()))
             .collect();
-        if !lines.is_empty() {
-            hits.push(SearchHit {
-                path: entry.path,
-                lines,
-            });
+        if lines.is_empty() {
+            continue;
+        }
+        let hit = SearchHit {
+            path: entry.path,
+            lines,
+        };
+        if carries {
+            tagged.push(hit);
+        } else if rest.len() < max {
+            rest.push(hit);
         }
     }
-    Ok(hits)
+    Ok(tagged.into_iter().chain(rest).take(max).collect())
 }
 
 /// Every tag in a vault with the number of notes carrying it, most-used first
@@ -1354,7 +1426,8 @@ pub async fn list_tree(state: State<'_, VaultManager>, vault: String) -> Result<
     )
 }
 
-/// Search a vault's notes (#15). Case-insensitive substring match; see `search`.
+/// Search a vault's notes (#15). Case-insensitive substring match, except for a
+/// `#tag` query which matches whole tags only; see `search`.
 #[tauri::command]
 pub async fn search_notes(
     state: State<'_, VaultManager>,
@@ -2210,6 +2283,108 @@ mod tests {
         assert!(extract_tags("# \n#\nnot # a tag").is_empty());
         // Non-ASCII must not panic or split a codepoint.
         assert_eq!(extract_tags("café #café #日本語"), ["café", "日本語"]);
+    }
+
+    /// A tag query has to survive the whitespace the palette adds when it leaves
+    /// tag-picker mode, and must not accept things that could never be tags.
+    #[test]
+    fn as_tag_query_reads_tag_searches() {
+        assert_eq!(as_tag_query("#work").as_deref(), Some("work"));
+        // The palette and preview chips both seed a trailing space (#202).
+        assert_eq!(as_tag_query("#work ").as_deref(), Some("work"));
+        assert_eq!(as_tag_query("  #work  ").as_deref(), Some("work"));
+        // Case is normalised so matching can ignore it.
+        assert_eq!(as_tag_query("#Work").as_deref(), Some("work"));
+        // Same trimming as extraction, so "#a/" and "#a" are one query.
+        assert_eq!(as_tag_query("#in/progress").as_deref(), Some("in/progress"));
+        assert_eq!(as_tag_query("#a/").as_deref(), Some("a"));
+        // Not tag queries: plain text, multiple words, headings, bare '#'.
+        assert_eq!(as_tag_query("work"), None);
+        assert_eq!(as_tag_query("#work stuff"), None);
+        assert_eq!(as_tag_query("# Heading"), None);
+        assert_eq!(as_tag_query("#"), None);
+        assert_eq!(as_tag_query(""), None);
+    }
+
+    /// The bug behind #202: a tag query is tag identity, not a substring, so a
+    /// line-final tag is findable and a longer tag sharing the prefix is not.
+    #[test]
+    fn tag_queries_match_whole_tags_only() {
+        let note = "#foo #bar #baz";
+        // Every tag on the line matches, including the last one — the case the
+        // old trailing-space substring search missed entirely.
+        for q in ["#foo", "#bar", "#baz", "#baz "] {
+            let t = as_tag_query(q).unwrap();
+            assert!(has_tag(note, &t), "{q} should match {note:?}");
+        }
+        // A prefix of a tag is not that tag.
+        assert!(!has_tag("#workout", "work"));
+        assert!(!has_tag("#work-in-progress", "work"));
+        // Nor is a URL fragment that merely contains the text.
+        assert!(!has_tag("see https://example.com/#workflow", "work"));
+    }
+
+    /// End-to-end cover for #202: searching a tag finds the last tag on a line,
+    /// does not match a longer tag sharing its prefix, and puts notes that
+    /// actually carry the tag above notes that merely mention it.
+    #[tokio::test]
+    async fn tag_search_matches_whole_tags_and_ranks_tagged_first() {
+        let dir = std::env::temp_dir().join(format!("notes-tagsearch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+        let vault = doc.id().to_string();
+
+        for (k, v) in [
+            // `#baz` ends the line with no trailing space — the case the old
+            // substring search could never match.
+            ("tagged.md", "shopping\n#foo #bar #baz\n"),
+            // Shares a prefix with `#bar`, and must not match it.
+            ("longer.md", "#barbecue plans\n"),
+            // Contains the characters but carries no tag: mid-word, and a URL
+            // fragment. Neither is a tag, so neither may answer a tag query.
+            ("lookalike.md", "x#baz and https://example.com/#baz\n"),
+            // Carries `baz` only as plain prose, for the text-query ranking.
+            ("prose.md", "baz was mentioned in the meeting\n"),
+        ] {
+            doc.set_bytes(node.author, k.as_bytes().to_vec(), fresh_note(v))
+                .await
+                .expect("set");
+        }
+
+        // Every tag on the line is findable, the trailing space the palette used
+        // to append is tolerated, and case is ignored.
+        for q in ["#foo", "#bar", "#baz", "#baz ", "#BAZ"] {
+            let hits = search(&node, &vault, q, None, 20).await.expect("search");
+            assert!(
+                hits.iter().any(|h| h.path == "tagged.md"),
+                "{q} should find tagged.md, got {hits:?}"
+            );
+        }
+
+        // A tag query is tag identity only: no prefix of a longer tag, and no
+        // mid-word or URL-fragment lookalikes.
+        let bar = search(&node, &vault, "#bar", None, 20).await.expect("search");
+        assert_eq!(
+            bar.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            ["tagged.md"],
+            "#bar must not match #barbecue"
+        );
+        let baz = search(&node, &vault, "#baz", None, 20).await.expect("search");
+        assert_eq!(
+            baz.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            ["tagged.md"],
+            "#baz must not match x#baz or a URL fragment"
+        );
+
+        // A plain text query still matches everything containing the word, but
+        // the note carrying it as a tag ranks first.
+        let text = search(&node, &vault, "baz", None, 20).await.expect("search");
+        let paths: Vec<&str> = text.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths[0], "tagged.md", "tag carrier ranks first: {paths:?}");
+        assert!(paths.contains(&"prose.md"), "plain text still matches: {paths:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Search reports 1-based line numbers, ignores case, honours the cap, and
