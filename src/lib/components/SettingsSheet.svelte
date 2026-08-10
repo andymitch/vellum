@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, fly, slide } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2 } from "@lucide/svelte";
+  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2, Mail } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -167,6 +167,7 @@
     onrename,
     onexportnote,
     onsharenote,
+    onemailnote,
     onexportvault,
     onimportvault,
     onimportnote,
@@ -182,6 +183,7 @@
     onrename: () => void;
     onexportnote: () => void;
     onsharenote: () => void;
+    onemailnote: () => void;
     onexportvault: () => void;
     onimportvault: () => void;
     onimportnote: () => void;
@@ -347,6 +349,17 @@
           >
             <Share2 class="h-4 w-4 shrink-0 text-muted-foreground" />
             <span>Share…</span>
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+            onclick={() => {
+              onemailnote();
+              open = false;
+            }}
+          >
+            <Mail class="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Email…</span>
           </button>
           <button
             type="button"
