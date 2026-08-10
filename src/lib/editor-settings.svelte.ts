@@ -12,6 +12,12 @@ export type EditorSettings = {
   // Mobile only: tapping a previewed note jumps into source view + keyboard,
   // and hiding the keyboard returns to preview (#33).
   quickEdit: boolean;
+  // Preview mode renders a card for a link that sits alone on its line (#62).
+  // Cards for `[[note]]` links are built locally; cards for http(s) links need
+  // the page's Open Graph tags, which means a request to that site — the only
+  // outbound traffic Vellum makes. On by default (an invisible feature is no
+  // feature), off in one tap for anyone who would rather not reach out.
+  linkPreviews: boolean;
 };
 
 const KEY = "vellum-editor";
@@ -23,6 +29,7 @@ const DEFAULTS: EditorSettings = {
   spellcheck: true,
   closeBrackets: true,
   quickEdit: false,
+  linkPreviews: true,
 };
 
 let saved: Partial<EditorSettings> = {};
@@ -90,6 +97,13 @@ export const editorSettings = {
   },
   set quickEdit(v: boolean) {
     state.quickEdit = v;
+    persist();
+  },
+  get linkPreviews() {
+    return state.linkPreviews;
+  },
+  set linkPreviews(v: boolean) {
+    state.linkPreviews = v;
     persist();
   },
 };

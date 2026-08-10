@@ -486,6 +486,21 @@
             />
           </label>
         {/if}
+        <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+          <span class="flex flex-col">
+            <span class="text-sm">Link previews</span>
+            <span class="text-xs text-muted-foreground">
+              Show a card for a link alone on its line. Cards for web links fetch that
+              page — the only request Vellum makes.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            class="h-4 w-4 shrink-0 accent-primary"
+            checked={editorSettings.linkPreviews}
+            onchange={(e) => (editorSettings.linkPreviews = e.currentTarget.checked)}
+          />
+        </label>
 
         {#if !isMobile}
           <div class="my-4 border-t border-border"></div>

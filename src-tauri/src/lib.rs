@@ -1,5 +1,6 @@
 #[cfg(desktop)]
 mod mcp;
+mod link_preview;
 mod share;
 mod vault;
 
@@ -503,6 +504,7 @@ pub fn run() {
             vault::export_vault,
             vault::import_vault,
             share::share_note,
+            link_preview::fetch_link_preview,
             vault::create_folder,
             vault::rename_path,
             vault::delete_path,

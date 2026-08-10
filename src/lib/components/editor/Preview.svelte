@@ -9,6 +9,9 @@
   import { slugify } from "$lib/slug";
   import { parseNote } from "$lib/note-type";
   import { TAG_RE, TAG_START_RE, trimTag } from "$lib/tags";
+  import { noteCard } from "$lib/link-card";
+  import { fetchLinkPreview } from "$lib/vault";
+  import { editorSettings } from "$lib/editor-settings.svelte";
 
   let {
     value = $bindable(""),
@@ -18,11 +21,15 @@
     oninternallink,
     // Clicking a #tag chip opens the search palette filtered to that tag (#15).
     ontag,
+    // Read a note's Markdown, for the excerpt on an internal link's preview card
+    // (#62). Supplied by the parent because the vault id lives there.
+    loadNote,
   }: {
     value?: string;
     notePaths?: string[];
     oninternallink?: (path: string, fragment?: string) => void;
     ontag?: (tag: string) => void;
+    loadNote?: (path: string) => Promise<string>;
   } = $props();
 
   const escHtml = (s: string) =>
@@ -297,6 +304,136 @@
     theme.dark;
     renderMermaid();
   });
+
+  // ---- Link preview cards (#62) -----------------------------------------
+  // A link that sits ALONE on its line becomes a card; a link inside a sentence
+  // stays inline text. That rule is the whole reason this runs on the rendered
+  // DOM rather than in a marked extension: "alone on its line" is exactly "the
+  // paragraph's only content", which marked can only tell us after inline
+  // parsing. It also keeps prose flow untouched, which was the failure mode of
+  // replacing links wherever they appear.
+  let cardSeq = 0;
+
+  /// The single anchor a paragraph consists of, or null if it has any other
+  /// content. Whitespace-only text nodes don't count as content.
+  function loneLink(p: HTMLElement): HTMLAnchorElement | null {
+    let found: HTMLAnchorElement | null = null;
+    for (const node of p.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if ((node.textContent ?? "").trim()) return null;
+        continue;
+      }
+      if (node instanceof HTMLAnchorElement && !found) {
+        found = node;
+        continue;
+      }
+      return null; // a second anchor, or any other element
+    }
+    return found;
+  }
+
+  function cardShell(href: string | null, cls: string): HTMLAnchorElement {
+    const card = document.createElement("a");
+    card.className = `link-card ${cls}`;
+    card.setAttribute("href", href ?? "#");
+    return card;
+  }
+
+  function fillCard(
+    card: HTMLElement,
+    parts: { title: string; body?: string | null; meta?: string | null; image?: string | null },
+  ) {
+    // Built with the DOM API rather than innerHTML: titles and descriptions are
+    // third-party strings from a fetched page, and this is the one place in the
+    // preview where the content isn't the user's own.
+    if (parts.image) {
+      const img = document.createElement("img");
+      img.className = "link-card-img";
+      img.src = parts.image;
+      img.alt = "";
+      img.loading = "lazy";
+      // A broken or blocked image must not leave a torn card.
+      img.onerror = () => img.remove();
+      card.appendChild(img);
+    }
+    const text = document.createElement("span");
+    text.className = "link-card-text";
+    const t = document.createElement("span");
+    t.className = "link-card-title";
+    t.textContent = parts.title;
+    text.appendChild(t);
+    if (parts.body) {
+      const d = document.createElement("span");
+      d.className = "link-card-desc";
+      d.textContent = parts.body;
+      text.appendChild(d);
+    }
+    if (parts.meta) {
+      const m = document.createElement("span");
+      m.className = "link-card-meta";
+      m.textContent = parts.meta;
+      text.appendChild(m);
+    }
+    card.appendChild(text);
+  }
+
+  async function renderLinkCards() {
+    const seq = ++cardSeq;
+    const root = container;
+    if (!root || !editorSettings.linkPreviews) return;
+
+    for (const p of [...root.querySelectorAll<HTMLElement>("p")]) {
+      const a = loneLink(p);
+      if (!a) continue;
+
+      // Internal `[[note]]` — fully local, so the card is built immediately.
+      if (a.classList.contains("wikilink")) {
+        const path = a.dataset.path;
+        // A broken link keeps its inline "broken" styling; a card would imply
+        // the note exists.
+        if (!path || !loadNote) continue;
+        const md = await loadNote(path).catch(() => null);
+        if (seq !== cardSeq) return;
+        if (md === null) continue;
+        const { title, excerpt } = noteCard(md, path);
+        const card = cardShell("#", "internal");
+        card.classList.add("wikilink");
+        card.dataset.path = path;
+        card.dataset.target = a.dataset.target ?? "";
+        card.dataset.fragment = a.dataset.fragment ?? "";
+        fillCard(card, { title, body: excerpt, meta: path.replace(/\.md$/i, "") });
+        p.replaceWith(card);
+        continue;
+      }
+
+      // External http(s) — needs the network, so the plain link stays put until
+      // (and unless) metadata actually comes back.
+      const href = a.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(href)) continue;
+      const meta = await fetchLinkPreview(href).catch(() => null);
+      if (seq !== cardSeq) return;
+      if (!meta) continue; // offline, failed, or nothing worth showing
+      // `p` may have been detached by a newer render; replaceWith on an orphan
+      // is a silent no-op, and the seq check above already covers the common
+      // case, so this is just belt-and-braces.
+      if (!p.isConnected) continue;
+      const card = cardShell(href, "external");
+      fillCard(card, {
+        title: meta.title || href,
+        body: meta.description,
+        meta: meta.site_name,
+        image: meta.image,
+      });
+      p.replaceWith(card);
+    }
+  }
+
+  $effect(() => {
+    html;
+    notePaths;
+    editorSettings.linkPreviews;
+    renderLinkCards();
+  });
 </script>
 
 <!-- onclick delegates link handling to the OS browser; the real <a>s inside are
@@ -304,8 +441,14 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="md-preview" bind:this={container} onchange={onToggle} onclick={onClick}>
-  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-  {@html html}
+  <!-- Keyed on the link-preview setting so turning it OFF restores the plain
+       links. Cards are DOM replacements applied after render, and {@html} only
+       re-runs when the markdown itself changes — without this key, existing
+       cards would linger until the next edit (#62). -->
+  {#key editorSettings.linkPreviews}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    {@html html}
+  {/key}
 </div>
 
 <style>
@@ -399,6 +542,67 @@
   }
   .md-preview :global(a.tagchip:hover) {
     background: color-mix(in srgb, var(--editor-accent) 22%, transparent);
+  }
+
+  /* Link preview cards (#62). Only a link alone on its line becomes one, so a
+     card always occupies a whole block — it never has to flow with text. */
+  .md-preview :global(a.link-card) {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin: 1em 0;
+    padding: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--editor-muted) 30%, transparent);
+    border-radius: 0.5rem;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .md-preview :global(a.link-card:hover) {
+    background: color-mix(in srgb, var(--editor-fg) 4%, transparent);
+    border-color: color-mix(in srgb, var(--editor-accent) 45%, transparent);
+  }
+  /* Fixed box so a slow or differently-shaped thumbnail can't reflow the card
+     as it loads. */
+  .md-preview :global(.link-card-img) {
+    flex: 0 0 auto;
+    width: 4.5rem;
+    height: 4.5rem;
+    object-fit: cover;
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--editor-muted) 12%, transparent);
+  }
+  .md-preview :global(.link-card-text) {
+    display: flex;
+    min-width: 0; /* lets the children actually truncate inside the flex row */
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .md-preview :global(.link-card-title) {
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  /* Two lines of description, then ellipsis — enough to judge the link by,
+     never enough to dominate the note. */
+  .md-preview :global(.link-card-desc) {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-size: 0.9em;
+    color: var(--editor-muted);
+  }
+  .md-preview :global(.link-card-meta) {
+    margin-top: 0.1rem;
+    font-size: 0.8em;
+    color: var(--editor-muted);
+    overflow-wrap: anywhere;
+  }
+  /* An internal card points at another note, so it takes the accent the rest of
+     the wiki links use rather than reading as an outbound link. */
+  .md-preview :global(a.link-card.internal .link-card-title) {
+    color: var(--editor-accent);
   }
 
   /* Tailwind's preflight resets list-style to none, so restore markers. */

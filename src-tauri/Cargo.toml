@@ -50,6 +50,10 @@ tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 yrs = "0.27.2"
 diffy = "0.5.0"
+# Link preview cards (#62): fetch Open Graph tags from external links. rustls
+# (not native-tls) so there's no OpenSSL dep on Android; no default features
+# keeps this to the client we actually use.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "charset", "http2"] }
 
 # Android-only: used to hand the JNI JavaVM + Context to ndk_context so iroh's
 # network monitor works (Tauri doesn't populate ndk_context — see lib.rs).
