@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vellum — local-first Markdown notes that sync peer-to-peer</title>
+    <meta
+      name="description"
+      content="A local-first Markdown notes app that syncs directly between your devices. No account, no server, no cloud. macOS and Android."
+    />
+    <link rel="icon" href="img/logo.svg" type="image/svg+xml" />
+
+    <!-- Open Graph, so a link to this page previews properly anywhere it's shared. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Vellum — local-first Markdown notes" />
+    <meta
+      property="og:description"
+      content="Notes that live on your devices and sync directly between them. No account, no server, no cloud."
+    />
+    <meta property="og:url" content="https://andymitch.github.io/vellum/" />
+    <meta name="twitter:card" content="summary" />
+
+    <style>
+      /* Light is the base palette; only the tokens change in dark, so nothing
+         can end up defined in one mode and missing in the other. */
+      :root {
+        --bg: #fbfbfa;
+        --panel: #ffffff;
+        --fg: #1a1a18;
+        --muted: #6b6b66;
+        --line: #e4e4e0;
+        --accent: #3b6ef5;
+        --accent-fg: #ffffff;
+        --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 5%);
+        --radius: 12px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14140f;
+          --panel: #1c1c19;
+          --fg: #ecebe6;
+          --muted: #9b9a92;
+          --line: #2e2e29;
+          --accent: #7c9bff;
+          --accent-fg: #10100c;
+          --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 30%);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          Roboto, "Helvetica Neue", Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        width: min(1040px, 100% - 3rem);
+        margin-inline: auto;
+      }
+      a {
+        color: var(--accent);
+      }
+
+      /* ---- hero ---- */
+      header {
+        padding: clamp(3.5rem, 10vw, 7rem) 0 clamp(2.5rem, 6vw, 4rem);
+        text-align: center;
+      }
+      .logo {
+        width: 76px;
+        height: 76px;
+        margin-bottom: 1.25rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: clamp(2.4rem, 6vw, 3.6rem);
+        letter-spacing: -0.03em;
+        line-height: 1.05;
+      }
+      .tagline {
+        margin: 0 auto;
+        max-width: 34ch;
+        font-size: clamp(1.05rem, 2.4vw, 1.3rem);
+        color: var(--muted);
+        text-wrap: balance;
+      }
+
+      /* ---- download buttons ---- */
+      .downloads {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        justify-content: center;
+        margin-top: 2rem;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.7rem 1.25rem;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: var(--accent-fg);
+      }
+      .btn-secondary {
+        background: var(--panel);
+        border-color: var(--line);
+        color: var(--fg);
+      }
+      .btn:hover {
+        filter: brightness(1.08);
+      }
+      .platform-note {
+        margin-top: 0.9rem;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      /* ---- shots ---- */
+      .shots {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+        margin: clamp(2rem, 6vw, 3.5rem) 0;
+      }
+      figure {
+        margin: 0;
+      }
+      .shots img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        background: var(--panel);
+      }
+      figcaption {
+        margin-top: 0.6rem;
+        font-size: 0.85rem;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      /* ---- sections ---- */
+      section {
+        padding: clamp(2rem, 6vw, 3.5rem) 0;
+        border-top: 1px solid var(--line);
+      }
+      h2 {
+        margin: 0 0 1.5rem;
+        font-size: clamp(1.4rem, 3vw, 1.9rem);
+        letter-spacing: -0.02em;
+      }
+      .features {
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      }
+      .card {
+        padding: 1.15rem 1.25rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+      .card h3 {
+        margin: 0 0 0.4rem;
+        font-size: 1rem;
+      }
+      .card p {
+        margin: 0;
+        font-size: 0.94rem;
+        color: var(--muted);
+      }
+      .prose {
+        max-width: 68ch;
+      }
+      .prose p {
+        color: var(--muted);
+      }
+      .prose strong {
+        color: var(--fg);
+      }
+      code {
+        padding: 0.12em 0.4em;
+        background: color-mix(in srgb, var(--muted) 16%, transparent);
+        border-radius: 5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9em;
+      }
+      /* A long connect command must scroll inside its own box, never widen the
+         page. */
+      pre {
+        overflow-x: auto;
+        padding: 0.9rem 1rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        font-size: 0.87rem;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+
+      footer {
+        padding: 2.5rem 0 3.5rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.88rem;
+        text-align: center;
+      }
+      footer a {
+        margin-inline: 0.4rem;
+      }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <div class="wrap">
+        <img class="logo" src="img/logo.svg" alt="" width="76" height="76" />
+        <h1>Vellum</h1>
+        <p class="tagline">
+          Markdown notes that live on your devices and sync directly between them.
+        </p>
+
+        <div class="downloads">
+          <a
+            class="btn btn-primary"
+            href="https://github.com/andymitch/vellum/releases/latest/download/Vellum_aarch64.dmg"
+            >Download for macOS</a
+          >
+          <a
+            class="btn btn-secondary"
+            href="https://github.com/andymitch/vellum/releases/latest/download/vellum-release.apk"
+            >Download for Android</a
+          >
+          <a class="btn btn-secondary" href="https://github.com/andymitch/vellum"
+            >View source</a
+          >
+        </div>
+        <p class="platform-note">
+          macOS on Apple Silicon · Android APK · free and
+          <a href="https://github.com/andymitch/vellum/blob/main/LICENSE">MIT licensed</a>
+        </p>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <div class="shots">
+        <figure>
+          <img
+            src="img/preview.png"
+            alt="Vellum on macOS showing a note rendered in preview mode, with the folder tree beside it."
+          />
+          <figcaption>Preview mode</figcaption>
+        </figure>
+        <figure>
+          <img
+            src="img/source.png"
+            alt="The same note in source mode, showing Markdown with syntax highlighting."
+          />
+          <figcaption>Source mode</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <section>
+        <h2>No account. No server. No cloud.</h2>
+        <div class="prose">
+          <p>
+            Most notes apps put your writing on someone else's computer. Vellum doesn't.
+            Every vault lives on your own devices, and syncing happens
+            <strong>directly between them</strong> — over the internet or across the same
+            Wi-Fi. There is nothing to sign up for and nothing to host.
+          </p>
+          <p>
+            Notes are plain Markdown files. If you ever stop using Vellum, you keep
+            everything, in a format every other tool already reads.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>What's inside</h2>
+        <div class="features">
+          <div class="card">
+            <h3>A real Markdown editor</h3>
+            <p>
+              Source and preview modes, syntax highlighting, formatting shortcuts, and a
+              formatting toolbar on mobile.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Note types</h3>
+            <p>
+              A TODO list that's an actual checklist, and a Journal that opens a new dated
+              section each day. Both are still Markdown underneath.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Search and tags</h3>
+            <p>
+              Search every note in a vault, and write <code>#tags</code> anywhere in your
+              writing to pull related notes together.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Peer-to-peer sync</h3>
+            <p>
+              Scan a QR code to share a vault with another device. Edits then flow both
+              ways on their own, and merge cleanly when two devices change the same note.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Themes that suit you</h3>
+            <p>
+              Eight themes and several fonts, including a Material You theme that follows
+              your wallpaper on Android 12+.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Agent access</h3>
+            <p>
+              Turn on a local MCP server and let Claude Code — or any MCP client — read and
+              write your notes.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>How the sync actually works</h2>
+        <div class="prose">
+          <p>
+            Each vault is an
+            <a href="https://github.com/n0-computer/iroh">iroh-docs</a> document, and each
+            note is an entry keyed by its path. Sharing a vault produces a write-capability
+            ticket, rendered as a QR code; any device that joins gets equal, full read/write
+            access.
+          </p>
+          <p>
+            Peers are remembered by a stable node ID and re-dialled through iroh's
+            discovery, so sync survives IP changes, network switches and restarts. There is
+            no central authority — <strong>every synced device holds a complete copy</strong>.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Let an agent use your notes</h2>
+        <div class="prose">
+          <p>
+            Vellum can host a local
+            <a href="https://modelcontextprotocol.io">MCP</a> server, bound to this machine
+            only and protected by a token. Turn it on in
+            <strong>Settings → Agents</strong>, then connect:
+          </p>
+          <pre><code>claude mcp add --transport http vellum http://127.0.0.1:PORT/mcp \
+  --header "Authorization: Bearer TOKEN"</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Get it</h2>
+        <div class="downloads" style="justify-content: flex-start">
+          <a
+            class="btn btn-primary"
+            href="https://github.com/andymitch/vellum/releases/latest/download/Vellum_aarch64.dmg"
+            >Download for macOS</a
+          >
+          <a
+            class="btn btn-secondary"
+            href="https://github.com/andymitch/vellum/releases/latest/download/vellum-release.apk"
+            >Download for Android</a
+          >
+        </div>
+        <p class="platform-note" style="text-align: left">
+          Desktop builds update themselves. Android updates through
+          <a href="https://github.com/kurikomi-labs/komi-store">Komi Store</a>, or by
+          installing a newer APK over the top.
+        </p>
+      </section>
+    </div>
+
+    <footer>
+      <div class="wrap">
+        <a href="https://github.com/andymitch/vellum">GitHub</a>·<a
+          href="https://github.com/andymitch/vellum/releases"
+          >Releases</a
+        >·<a href="https://github.com/andymitch/vellum/issues">Issues</a>
+        <p>Built with Tauri, Svelte and iroh. MIT licensed.</p>
+      </div>
+    </footer>
+  </body>
+</html>

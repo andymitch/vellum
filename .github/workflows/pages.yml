@@ -1,0 +1,45 @@
+name: Pages
+
+# Publishes the static site in site/ to GitHub Pages (#106).
+#
+# Requires a one-time repo setting: Settings → Pages → Source = "GitHub Actions".
+# Without it, the deploy step fails with "Pages site not found" — the workflow
+# cannot enable Pages on its own.
+#
+# Only runs when the site itself changes, so ordinary app commits don't trigger
+# a deploy. workflow_dispatch is kept for re-publishing without a content change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead. `cancel-in-progress: false` because
+# an interrupted deploy would leave the published site half-updated.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
+      # The site is hand-written HTML/CSS with no build step — the directory is
+      # uploaded as-is.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
