@@ -1,0 +1,58 @@
+name: CI
+
+# Runs the checks this repo already had but never ran automatically (#149).
+#
+# Until this existed the only workflow was release.yml, so a release could ship
+# with failing tests or a type error and nothing would have said so. The Rust
+# suite (including the two-node sync tests) and svelte-check both existed and
+# guarded nothing.
+#
+# Deliberately the cheap tier: no emulator, no WebDriver, no built app. Those are
+# worth doing later (see the spike on #149) but this is the part that pays for
+# itself immediately.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes the previous run for the same ref — except on main,
+# where every commit's result is worth keeping.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Type-check
+        run: bun run check
+      # Catches what type-checking can't: a broken import, a Svelte compile
+      # error, or a plugin misconfiguration only the real build hits.
+      - name: Build
+        run: bun run build
+
+  rust:
+    # macOS, matching release.yml's desktop job: the desktop build is the one
+    # that ships, and several modules are behind `#[cfg(desktop)]`. Linux would
+    # be cheaper but has never been built here, so a failure would more likely
+    # mean "we don't support Linux" than "this PR is broken".
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # NB: no `-D warnings` yet. There are pre-existing clippy warnings in
+      # vault.rs; turning them into errors would make this job red on the commit
+      # that introduces it. Clean those up, then add the flag.
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
