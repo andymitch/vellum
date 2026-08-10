@@ -11,7 +11,7 @@
     checkForUpdateInteractive,
     checkForUpdateMobile,
     formatVersion,
-    fetchLatestRelease,
+    fetchChannelRelease,
     type LatestRelease,
   } from "$lib/updater";
   import { openUrl } from "@tauri-apps/plugin-opener";
@@ -120,15 +120,18 @@
   let cheatOpen = $state(false);
   let shortcutsOpen = $state(false);
 
-  // "What's new" (#144): lazily fetch the latest GitHub release notes on first
-  // expand and render them as markdown. "loading"/"error" are sentinel states.
+  // "What's new" (#144): lazily fetch release notes on first expand and render
+  // them as markdown. "loading"/"error" are sentinel states.
+  //
+  // Channel-aware since #210: a beta tester was previously shown the notes for
+  // the newest STABLE release, which is older than the build they are running.
   let whatsNewOpen = $state(false);
   let whatsNew = $state<LatestRelease | "loading" | "error" | null>(null);
   async function toggleWhatsNew() {
     whatsNewOpen = !whatsNewOpen;
     if (whatsNewOpen && whatsNew === null) {
       whatsNew = "loading";
-      whatsNew = (await fetchLatestRelease()) ?? "error";
+      whatsNew = (await fetchChannelRelease()) ?? "error";
     }
   }
   // Release notes are trusted (our own generated changelog), so render markdown
@@ -647,7 +650,15 @@
                 >
               </p>
             {:else}
-              <p class="mb-1 text-xs font-semibold text-muted-foreground">{whatsNew.tag}</p>
+              <p class="mb-1 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                <span>{whatsNew.tag}</span>
+                {#if whatsNew.prerelease}
+                  <span
+                    class="rounded-full bg-muted px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide"
+                    >beta</span
+                  >
+                {/if}
+              </p>
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               <div class="release-notes text-sm text-muted-foreground" onclick={onNotesClick} role="presentation">
                 {@html marked.parse(whatsNew.notes)}
