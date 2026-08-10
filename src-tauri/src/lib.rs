@@ -1,5 +1,6 @@
 #[cfg(desktop)]
 mod mcp;
+mod share;
 mod vault;
 
 use tauri::Manager;
@@ -501,6 +502,7 @@ pub fn run() {
             vault::create_note,
             vault::export_vault,
             vault::import_vault,
+            share::share_note,
             vault::create_folder,
             vault::rename_path,
             vault::delete_path,

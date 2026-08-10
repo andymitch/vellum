@@ -38,6 +38,11 @@ export const createFolder = (vault: string, path: string) =>
 export const exportVault = (vault: string) => invoke<number[]>("export_vault", { vault });
 export const importVault = (vault: string, data: number[]) =>
   invoke<number>("import_vault", { vault, data });
+// Hand a note to the OS share sheet — email, Messages/SMS, AirDrop (#105).
+// Backend-side because it needs AppKit / an Android intent; nothing crosses IPC
+// but the ids, since the backend reads the saved note itself.
+export const shareNote = (vault: string, path: string) =>
+  invoke<void>("share_note", { vault, path });
 export const renamePath = (vault: string, from: string, to: string, isDir: boolean) =>
   invoke<void>("rename_path", { vault, from, to, isDir });
 export const deletePath = (vault: string, path: string, isDir: boolean) =>

@@ -16,6 +16,7 @@
     writeNote,
     renamePath,
     deletePath,
+    shareNote,
     onVaultChanged,
     onBackgroundSyncChanged,
     type TreeNode,
@@ -23,7 +24,13 @@
   import { session } from "$lib/session.svelte";
   import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
-  import { exportVaultZip, importVaultZip, exportNoteMd, importNoteMd } from "$lib/transfer";
+  import {
+    exportVaultZip,
+    importVaultZip,
+    exportNoteMd,
+    importNoteMd,
+    emailNote,
+  } from "$lib/transfer";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
@@ -1195,6 +1202,10 @@
   onrename={() => sidebar?.renameActive()}
   onexportnote={() =>
     activeVault && activePath && exportNoteMd(activeVault, activePath).catch(reportTransferError)}
+  onsharenote={() =>
+    activeVault && activePath && shareNote(activeVault, activePath).catch(reportTransferError)}
+  onemailnote={() =>
+    activeVault && activePath && emailNote(activeVault, activePath).catch(reportTransferError)}
   onexportvault={() => activeVault && exportVaultZip(activeVault, "").catch(reportTransferError)}
   onimportvault={() => activeVault && importVaultZip(activeVault).catch(reportTransferError)}
   onimportnote={onImportNote}
