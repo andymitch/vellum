@@ -15,8 +15,16 @@ on:
   push:
     branches: [main]
 
-# A new push supersedes the previous run for the same ref — except on main,
-# where every commit's result is worth keeping.
+# A new push supersedes the previous run for the same ref. `cancel-in-progress`
+# is false on main so a run that has already started is allowed to finish — but
+# note that a *queued* run is superseded regardless: GitHub keeps only one
+# pending run per group. Merging several PRs in quick succession therefore leaves
+# the earlier main commits showing "cancelled", and only the tip gets built.
+#
+# That is the intended trade here: what matters before a release is that the tip
+# of main is green, and superseding queued duplicates keeps macOS runner minutes
+# down. Giving every main commit its own result would mean keying the group on
+# the SHA for pushes (`github.event_name == 'push' && github.sha || github.ref`).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
