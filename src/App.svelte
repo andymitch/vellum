@@ -48,6 +48,7 @@
     NotebookPen,
     Settings,
     BrushCleaning,
+    Search,
   } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -642,6 +643,14 @@
   // A `[[note#heading]]` link: open the note (unless already open) and scroll
   // the preview to the heading. Headings get their slug ids after Preview
   // renders, so retry across a few frames until the anchor exists (#45).
+  // Open the search palette with an empty query. Shared by Cmd/Ctrl+F and the
+  // mobile search button (#209), so both clear any tag seeded by a previous
+  // open rather than one path forgetting to.
+  function openSearch() {
+    searchInitial = "";
+    searchOpen = true;
+  }
+
   // Clicking a #tag — in preview or in source mode (#202) — opens search on it.
   // The query is exactly "#tag": the backend reads that as a tag query and
   // matches whole tags, so no trailing space may be added here.
@@ -917,8 +926,7 @@
       // useless here — the note is a CodeMirror document, not page text — so
       // taking it is an upgrade rather than a loss.
       e.preventDefault();
-      searchInitial = "";
-      searchOpen = true;
+      openSearch();
     } else if (key === "p") {
       // Toggle source <-> preview (only meaningful with a note open, and only
       // for Markdown notes — typed notes have a single view).
@@ -1054,6 +1062,21 @@
           <Eye size={chromeIcon} />
         </span>
       </button>
+      {/if}
+      <!-- Search (#209). Desktop has Cmd/Ctrl+F; mobile has no hardware keyboard,
+           so without this button the palette — and therefore search and tags —
+           is unreachable there. Shown only where the hotkey isn't available, so
+           the desktop chrome doesn't gain a redundant control. -->
+      {#if mobile && activeVault}
+        <button
+          type="button"
+          class="flex items-center justify-center rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label="Search notes"
+          title="Search notes"
+          onclick={openSearch}
+        >
+          <Search size={chromeIcon} />
+        </button>
       {/if}
       <button
         type="button"
