@@ -18,7 +18,14 @@ const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases`;
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
 
-export type LatestRelease = { version: string; tag: string; notes: string; url: string };
+export type LatestRelease = {
+  version: string;
+  tag: string;
+  notes: string;
+  url: string;
+  /// Whether this is a pre-release, so callers can label it as such.
+  prerelease: boolean;
+};
 
 // Latest published GitHub release (tag like `v3` / `v3.1`, `version` stripped of
 // the leading `v`, plus the markdown release notes). Returns null on any failure
@@ -37,10 +44,62 @@ export async function fetchLatestRelease(): Promise<LatestRelease | null> {
       tag,
       notes: (j.body ?? "").trim(),
       url: j.html_url ?? RELEASES_PAGE,
+      prerelease: false,
     };
   } catch {
     return null;
   }
+}
+
+// Newest PRE-release, as release notes. Separate from `latestPrerelease()`
+// below, which exists to resolve an updater manifest and therefore skips any
+// pre-release without a `latest.json` asset — a release with no manifest still
+// has a changelog worth reading.
+async function newestPrereleaseNotes(): Promise<LatestRelease | null> {
+  try {
+    const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+    if (!res.ok) return null;
+    const all = await res.json();
+    for (const r of all) {
+      if (!r.prerelease || r.draft) continue;
+      const tag: string = r.tag_name ?? "";
+      if (!tag) continue;
+      return {
+        version: tag.replace(/^v/, ""),
+        tag,
+        notes: (r.body ?? "").trim(),
+        url: r.html_url ?? RELEASES_PAGE,
+        prerelease: true,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/// Newest release on the channel the user is actually on (#210).
+///
+/// `/releases/latest` excludes pre-releases by design — that exclusion is what
+/// keeps a beta away from stable users. Reading the changelog through it meant a
+/// beta tester was shown the notes for an OLDER stable release, describing none
+/// of what they were testing.
+export async function fetchChannelRelease(): Promise<LatestRelease | null> {
+  let beta = betaChannel.enabled;
+  if (!beta) {
+    // Also treat a running pre-release as the beta channel. Someone who opted in,
+    // updated, then switched the toggle off is still running a beta until stable
+    // overtakes them, and should not be shown notes for a build older than the
+    // one in front of them.
+    try {
+      beta = (await getVersion()).includes("-");
+    } catch {
+      // Version unavailable (non-Tauri context) — fall back to the toggle alone.
+    }
+  }
+  if (!beta) return fetchLatestRelease();
+  // A tester with no pre-release published yet still deserves a changelog.
+  return (await newestPrereleaseNotes()) ?? fetchLatestRelease();
 }
 
 // Compare dotted numeric versions; missing trailing components count as 0, so
