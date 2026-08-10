@@ -502,14 +502,6 @@ pub struct FolderArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct TriageArgs {
-    /// Vault id, from `list_vaults`.
-    pub vault: String,
-    /// Note to watch, e.g. `Backlog.md`. Omit to be told which one to use.
-    pub note: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DailyNoteArgs {
     /// Vault id, from `list_vaults`.
     pub vault: String,
@@ -755,40 +747,6 @@ impl Vellum {
         )])
     }
 
-    /// Watch a note and act on requests written into it.
-    #[prompt(name = "triage")]
-    async fn triage_prompt(
-        &self,
-        Parameters(args): Parameters<TriageArgs>,
-    ) -> Result<Vec<PromptMessage>, ErrorData> {
-        let note = args
-            .note
-            .unwrap_or_else(|| "the note the user names".to_string());
-        Ok(vec![PromptMessage::new_text(
-            Role::User,
-            format!(
-                // A raw literal starting at column 0: the previous version used
-                // line continuations that did not survive, so every client was
-                // served the source indentation as runs of spaces mid-sentence.
-                r#"You are on triage duty for Vellum vault `{vault}`, watching `{note}`.
-
-That note is a work queue: unchecked `- [ ]` items are requests for you, and checked ones are already handled. Subscribe to the note's resource so you are told when it changes.
-
-Judge for yourself when to act. A change notification means the user typed something, NOT that they finished — Vellum saves as you type, so edits arrive while a thought is still half-written. Wait until the note has settled before doing anything, and prefer acting on a whole batch of items over reacting to each keystroke. How long to wait is your call; err toward letting them finish.
-
-Keep the subscription alive. If a request comes back 404 the session is gone — re-initialize and re-subscribe rather than retrying with the old session id. A subscriber that only reconnects the stream goes permanently deaf while still looking healthy, and silently misses everything written after that.
-
-For each unchecked item:
-1. Read it in full and work out what is actually being asked. Ask the user if it is ambiguous rather than guessing.
-2. Do the work.
-3. Tick its checkbox (`- [ ]` -> `- [x]`) with edit_note, so the user can see it was picked up and delete the line. Tick it only once the work is genuinely captured — a tick is a claim that it was handled.
-
-Leave items you did not action unticked, and say which ones you skipped and why."#,
-                vault = args.vault,
-            ),
-        )])
-    }
-
     /// Review recent notes and surface loose ends.
     #[prompt(name = "vault_review")]
     async fn vault_review_prompt(
@@ -1024,8 +982,8 @@ impl ServerHandler for Vellum {
 /// It is deliberately SHORT, and deliberately not a policy. How long to wait
 /// before acting on a change — whether the user has finished writing a request,
 /// whether to batch several notes together — is the agent's judgement, not the
-/// server's. The `triage` prompt describes that job; a server-side timeout
-/// would only impose one answer on every client. Live collaboration will want
+/// server's; a server-side timeout would only impose one answer on every
+/// client. Live collaboration will want
 /// events sooner still, and the underlying broadcast already stays immediate
 /// for the editor's own rebase.
 const NOTIFY_QUIET: Duration = Duration::from_millis(600);
