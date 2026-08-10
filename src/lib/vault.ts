@@ -94,6 +94,22 @@ export const searchNotes = (vault: string, query: string, max?: number) =>
   invoke<SearchHit[]>("search_notes", { vault, query, max });
 export const listTags = (vault: string) => invoke<TagCount[]>("list_tags", { vault });
 
+// ---- link previews (#62) ----
+// Open Graph metadata for an external link, fetched backend-side (CORS blocks
+// nearly every cross-origin fetch from the webview, and a <meta> scrape needs no
+// DOM). Results are cached in memory per URL. Resolves to null — not an error —
+// for a non-http(s) URL, a failed request, or a page with no usable metadata,
+// so the caller just keeps rendering a plain link.
+export type LinkPreview = {
+  url: string;
+  title: string | null;
+  description: string | null;
+  site_name: string | null;
+  image: string | null;
+};
+export const fetchLinkPreview = (url: string) =>
+  invoke<LinkPreview | null>("fetch_link_preview", { url });
+
 // Note types for the file tree's icons (#180/#181). Only typed notes come back —
 // plain Markdown is the default and would be noise. This scans every note, so
 // callers should debounce rather than refetch on each vault-changed event.

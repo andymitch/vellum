@@ -1151,6 +1151,7 @@
           {notePaths}
           oninternallink={openInternalLink}
           ontag={openTagSearch}
+          loadNote={(path) => readNote(activeVault!, path)}
         />
       {:else}
         {#key openToken}
