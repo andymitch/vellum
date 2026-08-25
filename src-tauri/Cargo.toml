@@ -99,6 +99,9 @@ rmcp = { version = "3.1.2", default-features = false, features = ["server", "mac
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "http2"] }
 rand = "0.10"
 tokio-util = "0.7.19"
+# Linked folders (#219): watch a local mirror directory for changes to push
+# back into the vault.
+notify = "8"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

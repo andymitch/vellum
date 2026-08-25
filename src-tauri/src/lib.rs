@@ -1,4 +1,6 @@
 #[cfg(desktop)]
+mod link;
+#[cfg(desktop)]
 mod mcp;
 mod link_preview;
 mod share;
@@ -277,6 +279,58 @@ fn set_mcp_enabled(_enabled: bool) -> Result<serde_json::Value, String> {
     Err("the MCP server is desktop-only".into())
 }
 
+// Linked folders (#219): mirror a vault folder to a directory on disk, kept in
+// sync both ways. Desktop only — see link.rs's module doc.
+#[cfg(desktop)]
+#[tauri::command]
+async fn list_links(app: tauri::AppHandle) -> Result<Vec<link::LinkInfo>, String> {
+    link::list_links(&app).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn add_link(app: tauri::AppHandle, vault: String, folder: String) -> Result<link::LinkInfo, String> {
+    link::add_link(&app, vault, folder).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn remove_link(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    link::remove_link(&app, id).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn set_link_enabled(app: tauri::AppHandle, id: String, enabled: bool) -> Result<link::LinkInfo, String> {
+    link::set_link_enabled(&app, id, enabled).await
+}
+
+// Mobile has no filesystem watcher / linked folders (see link.rs) — same
+// uniform-surface reasoning as the MCP stubs above.
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn list_links() -> Result<Vec<serde_json::Value>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn add_link(_vault: String, _folder: String) -> Result<serde_json::Value, String> {
+    Err("linked folders are desktop-only".into())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn remove_link(_id: String) -> Result<(), String> {
+    Err("linked folders are desktop-only".into())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn set_link_enabled(_id: String, _enabled: bool) -> Result<serde_json::Value, String> {
+    Err("linked folders are desktop-only".into())
+}
+
 /// Check for an update at a specific endpoint (#175).
 ///
 /// The updater's endpoint is compiled into tauri.conf.json and points at
@@ -442,8 +496,15 @@ pub fn run() {
             // listener is loopback-only and token-authenticated either way.
             #[cfg(desktop)]
             {
-                app.manage(mcp::McpServer::new(dir));
+                app.manage(mcp::McpServer::new(dir.clone()));
                 mcp::start_if_enabled(app.handle());
+            }
+            // Linked folders (#219): resume every link left enabled, mirroring
+            // the MCP server's own start_if_enabled.
+            #[cfg(desktop)]
+            {
+                app.manage(link::LinkManager::new(dir));
+                link::start_enabled_links(app.handle());
             }
             #[cfg(desktop)]
             setup_tray(app)?;
@@ -512,6 +573,10 @@ pub fn run() {
             set_background_sync,
             mcp_status,
             set_mcp_enabled,
+            list_links,
+            add_link,
+            remove_link,
+            set_link_enabled,
             check_update_at,
             install_update_at,
         ])
