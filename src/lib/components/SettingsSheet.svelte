@@ -1,11 +1,13 @@
 <script lang="ts">
   import { fade, fly, slide } from "svelte/transition";
-  import { X, Copy, FolderInput, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2, Mail } from "@lucide/svelte";
+  import { X, Copy, FolderInput, FolderPlus, FolderOpen, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2, Mail } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
   import { mcp } from "$lib/mcp.svelte";
+  import { linkFolders } from "$lib/link-folders.svelte";
+  import { listVaults, type VaultInfo } from "$lib/vault";
   import { betaChannel } from "$lib/beta-channel.svelte";
   import {
     checkForUpdateInteractive,
@@ -14,7 +16,7 @@
     fetchChannelRelease,
     type LatestRelease,
   } from "$lib/updater";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { marked } from "marked";
   import { portal } from "$lib/portal";
 
@@ -26,6 +28,46 @@
       await navigator.clipboard.writeText(mcp.command);
       copiedMcp = true;
       setTimeout(() => (copiedMcp = false), 1500);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
+
+  // Linked folders (#219). The "Add" form's vault list is fetched lazily on
+  // first open, same reasoning as "What's new"'s lazy release-notes fetch.
+  let addLinkOpen = $state(false);
+  let linkVaults = $state<VaultInfo[]>([]);
+  let newLinkVault = $state("");
+  let newLinkFolder = $state("");
+  let addLinkError = $state("");
+  async function openAddLink() {
+    addLinkOpen = true;
+    addLinkError = "";
+    try {
+      linkVaults = await listVaults();
+      if (!newLinkVault && linkVaults.length) newLinkVault = linkVaults[0].id;
+    } catch {
+      linkVaults = [];
+    }
+  }
+  async function submitAddLink() {
+    if (!newLinkVault) return;
+    addLinkError = "";
+    try {
+      await linkFolders.add(newLinkVault, newLinkFolder);
+      newLinkFolder = "";
+      addLinkOpen = false;
+    } catch (e) {
+      addLinkError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  let copiedLinkId = $state<string | null>(null);
+  async function copyLinkPath(path: string, id: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      copiedLinkId = id;
+      setTimeout(() => (copiedLinkId = null), 1500);
     } catch {
       /* clipboard may be unavailable */
     }
@@ -575,6 +617,117 @@
                 <Copy class="h-3 w-3" />
                 {copiedMcp ? "Copied" : "Copy connect command"}
               </button>
+            </div>
+          {/if}
+
+          <!-- Linked folders (#219). Desktop only: the mirror is watched by
+               this app process, and a phone can't watch an arbitrary directory. -->
+          <div class="my-4 border-t border-border"></div>
+          <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Linked folders
+          </p>
+          {#each linkFolders.all as link (link.id)}
+            <div class="flex flex-col gap-1 py-1.5">
+              <div class="flex items-center justify-between gap-3">
+                <span class="flex flex-col overflow-hidden">
+                  <span class="truncate text-sm">
+                    {link.vault_name}{link.folder ? `/${link.folder}` : ""}
+                  </span>
+                  <code class="truncate text-xs text-muted-foreground">{link.path}</code>
+                </span>
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 shrink-0 accent-primary"
+                  disabled={linkFolders.busy}
+                  checked={link.enabled}
+                  onchange={(e) => linkFolders.toggle(link.id, e.currentTarget.checked)}
+                />
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                  onclick={() => copyLinkPath(link.path, link.id)}
+                >
+                  <Copy class="h-3 w-3" />
+                  {copiedLinkId === link.id ? "Copied" : "Copy path"}
+                </button>
+                <button
+                  type="button"
+                  class="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                  onclick={() => revealItemInDir(link.path)}
+                >
+                  <FolderOpen class="h-3 w-3" />
+                  Reveal
+                </button>
+                <button
+                  type="button"
+                  class="ml-auto flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-destructive hover:bg-muted"
+                  disabled={linkFolders.busy}
+                  onclick={() => linkFolders.remove(link.id)}
+                >
+                  <Trash2 class="h-3 w-3" />
+                  Remove
+                </button>
+              </div>
+            </div>
+          {/each}
+          {#if !addLinkOpen}
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+              onclick={openAddLink}
+            >
+              <FolderPlus class="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>Add linked folder…</span>
+            </button>
+          {:else}
+            <div class="mt-1 flex flex-col gap-2 rounded-md border border-border p-2" transition:slide={{ duration: 150 }}>
+              <span class="text-xs text-muted-foreground">
+                Mirrors to a folder under <code>~/.vellum/local/</code> that you can
+                open, or add to an editor's project (e.g. Zed's "add folder to
+                project") alongside your code.
+              </span>
+              <div class="flex items-center gap-2">
+                <span class="w-14 shrink-0 text-xs text-muted-foreground">Vault</span>
+                <select
+                  class="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                  bind:value={newLinkVault}
+                >
+                  {#each linkVaults as v (v.id)}
+                    <option value={v.id}>{v.name}</option>
+                  {/each}
+                </select>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="w-14 shrink-0 text-xs text-muted-foreground">Folder</span>
+                <input
+                  type="text"
+                  placeholder="whole vault"
+                  class="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                  bind:value={newLinkFolder}
+                />
+              </div>
+              {#if addLinkError}
+                <p class="text-xs text-destructive">{addLinkError}</p>
+              {/if}
+              <div class="flex justify-end gap-2">
+                <button
+                  type="button"
+                  class="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+                  onclick={() => (addLinkOpen = false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="rounded border border-border bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90"
+                  disabled={linkFolders.busy || !newLinkVault}
+                  onclick={submitAddLink}
+                >
+                  Add
+                </button>
+              </div>
             </div>
           {/if}
         {/if}

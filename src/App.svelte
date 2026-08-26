@@ -34,6 +34,7 @@
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
+  import { initLinkFolders } from "$lib/link-folders.svelte";
   import {
     noteTypeInfo,
     noteTypeOf,
@@ -197,6 +198,9 @@
   // Read the MCP server's state (the backend restarts it on launch if it was
   // left on), so the Settings toggle shows the truth.
   onMount(() => void initMcp());
+  // Read configured linked folders (#219) so Settings shows them; the backend
+  // resumes any enabled ones on its own.
+  onMount(() => void initLinkFolders());
   // Keep the Settings toggle in step when background sync is changed from the
   // desktop tray ("Turn off background sync").
   onMount(() => {

@@ -1692,6 +1692,19 @@ pub(crate) async fn clear_prefix(
     Ok(())
 }
 
+/// Soft-delete: move a note under `.trash/` instead of tombstoning it. A real
+/// delete propagates to every synced device, so callers (the MCP server, linked
+/// folders) get the reversible version. Returns the trash path.
+pub(crate) async fn trash_note(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    path: &str,
+) -> Result<String> {
+    let dest = free_key(doc, &format!("{TRASH}/{path}")).await?;
+    rename_key(node, doc, path, &dest, false).await?;
+    Ok(dest)
+}
+
 /// Move a note or folder to a new key. Copies the merged CRDT state to the new
 /// key (preserving edit history), then tombstones the old one. A note whose
 /// content blob hasn't synced yet reads as empty (`merged_note` `found == false`);

@@ -356,9 +356,7 @@ async fn op_move_note(node: &Node, vault: &str, from: &str, to: &str) -> Result<
 /// version. Returns the trash path.
 async fn op_delete_note(node: &Node, vault: &str, path: &str) -> Result<String> {
     let doc = vault::open(node, vault).await?;
-    let dest = vault::free_key(&doc, &format!("{TRASH}/{path}")).await?;
-    vault::rename_key(node, &doc, path, &dest, false).await?;
-    Ok(dest)
+    vault::trash_note(node, &doc, path).await
 }
 
 async fn op_create_folder(node: &Node, vault: &str, path: &str) -> Result<()> {

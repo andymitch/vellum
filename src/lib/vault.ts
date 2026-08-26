@@ -116,3 +116,25 @@ export const fetchLinkPreview = (url: string) =>
 export type NoteTypeEntry = { path: string; note_type: string };
 export const listNoteTypes = (vault: string) =>
   invoke<NoteTypeEntry[]>("list_note_types", { vault });
+
+// ---- linked folders (#219) ----
+// Mirrors a vault folder to a directory under app storage, kept in sync both
+// ways, with a friendly `~/.vellum/local/<slug>` symlink for editors (e.g.
+// Zed's "add folder to project") to point at. Desktop only.
+export type LinkInfo = {
+  id: string;
+  vault: string;
+  vault_name: string;
+  /// Folder prefix without a trailing slash ("" links the whole vault).
+  folder: string;
+  /// The friendly path to add to an editor.
+  path: string;
+  enabled: boolean;
+};
+
+export const listLinks = () => invoke<LinkInfo[]>("list_links");
+export const addLink = (vault: string, folder: string) =>
+  invoke<LinkInfo>("add_link", { vault, folder });
+export const removeLink = (id: string) => invoke<void>("remove_link", { id });
+export const setLinkEnabled = (id: string, enabled: boolean) =>
+  invoke<LinkInfo>("set_link_enabled", { id, enabled });
