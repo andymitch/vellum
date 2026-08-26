@@ -39,6 +39,18 @@
 //!   `write_note_merged`, using the cached base — the only case that needs the
 //!   actual last-synced text rather than just knowing something changed.
 //!
+//! The `base` cache itself is persisted to a hidden `.vellum-sync-state.json`
+//! file inside `local_dir` after every successful pass, and reloaded on the
+//! next `start_link` — without this, a restart would forget what was already
+//! synced, treat every already-synced path as "never synced, differs on both
+//! sides", and let the stale local copy silently clobber a vault edit made
+//! while the app was closed.
+//!
+//! A local file that exists but can't be read this pass (a permission error,
+//! a transient I/O glitch, or non-UTF-8 content) is left out of the diff
+//! entirely rather than treated as absent — a read failure must never look
+//! like a deletion.
+//!
 //! `reconcile` is re-run (debounced) whenever either side signals a change, so
 //! there is exactly one sync engine for the initial merge, steady-state vault
 //! changes, and steady-state disk changes — no separate "patch" path to keep
@@ -50,8 +62,9 @@
 //! `reconcile`, same as an unrelated file replacing another. Good enough for a
 //! first version; a follow-up can special-case matching content hashes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -195,16 +208,44 @@ fn write_local_file(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every plain-text file under `dir`, keyed by its path relative to `dir` with
-/// forward slashes. Dotfiles/dot-directories and anything that fails UTF-8
-/// decode are silently skipped (the same policy `vault::import_vault` uses).
-fn read_local_texts(dir: &Path) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    walk_local(dir, dir, &mut out);
-    out
+/// `.vellum-sync-state.json` inside a link's `local_dir`: the per-path
+/// last-synced content cache (`reconcile`'s `base`), persisted so a restart or
+/// a link toggle doesn't forget what was already synced. Named so
+/// `walk_local`'s dotfile skip hides it from the mirror's own listing.
+fn base_cache_path(local_dir: &Path) -> PathBuf {
+    local_dir.join(".vellum-sync-state.json")
 }
 
-fn walk_local(root: &Path, dir: &Path, out: &mut HashMap<String, String>) {
+fn load_base_cache(local_dir: &Path) -> HashMap<String, String> {
+    let Ok(s) = std::fs::read_to_string(base_cache_path(local_dir)) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&s).unwrap_or_default()
+}
+
+fn save_base_cache(local_dir: &Path, base: &HashMap<String, String>) {
+    let Ok(json) = serde_json::to_string(base) else {
+        return;
+    };
+    if let Err(e) = std::fs::write(base_cache_path(local_dir), json) {
+        tracing::warn!("[link] could not persist sync state for {local_dir:?}: {e}");
+    }
+}
+
+/// Every plain-text file under `dir`, keyed by its path relative to `dir` with
+/// forward slashes, plus the set of paths that exist but couldn't be read
+/// (permission error, transient I/O, or non-UTF-8 content) — kept distinct
+/// from "absent" so `reconcile` doesn't mistake a read failure for a deletion
+/// and propagate one. Dotfiles/dot-directories are skipped (the same policy
+/// `vault::import_vault` uses), which also hides `base_cache_path`'s own file.
+fn read_local_texts(dir: &Path) -> (HashMap<String, String>, HashSet<String>) {
+    let mut texts = HashMap::new();
+    let mut unreadable = HashSet::new();
+    walk_local(dir, dir, &mut texts, &mut unreadable);
+    (texts, unreadable)
+}
+
+fn walk_local(root: &Path, dir: &Path, out: &mut HashMap<String, String>, unreadable: &mut HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -218,7 +259,7 @@ fn walk_local(root: &Path, dir: &Path, out: &mut HashMap<String, String>) {
         };
         let path = entry.path();
         if file_type.is_dir() {
-            walk_local(root, &path, out);
+            walk_local(root, &path, out, unreadable);
         } else if file_type.is_file() {
             let Ok(rel) = path.strip_prefix(root) else {
                 continue;
@@ -226,8 +267,17 @@ fn walk_local(root: &Path, dir: &Path, out: &mut HashMap<String, String>) {
             let Some(rel_str) = rel.to_str() else {
                 continue; // non-UTF8 path — skip rather than guess
             };
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                out.insert(rel_str.replace('\\', "/"), text);
+            let key = rel_str.replace('\\', "/");
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    out.insert(key, text);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[link] could not read {path:?}: {e} — leaving it out of this pass rather than treating it as deleted"
+                    );
+                    unreadable.insert(key);
+                }
             }
         }
     }
@@ -295,13 +345,20 @@ pub(crate) async fn reconcile(
             vault_texts.insert(rel.to_string(), text);
         }
     }
-    let local_texts = read_local_texts(local_dir);
+    let (local_texts, local_unreadable) = read_local_texts(local_dir);
 
     let mut all: BTreeSet<String> = base.keys().cloned().collect();
     all.extend(vault_texts.keys().cloned());
     all.extend(local_texts.keys().cloned());
+    all.extend(local_unreadable.iter().cloned());
 
     for rel in all {
+        if local_unreadable.contains(&rel) {
+            // Present on disk but unreadable right now (permission error,
+            // transient I/O, or non-UTF-8 content) — must not look like a
+            // deletion. Leave it for a later pass once it reads cleanly.
+            continue;
+        }
         let vault_path = format!("{folder}{rel}");
         let local_path = local_dir.join(&rel);
         let v = vault_texts.get(&rel);
@@ -381,7 +438,11 @@ pub(crate) async fn reconcile(
 
 /// A large burst of simultaneous filesystem events (e.g. an accidental bulk
 /// delete on the mirror directory) is treated as suspicious rather than synced
-/// blindly — the burst is logged and skipped rather than mass-trashing notes.
+/// blindly: crossing this suspends sync in **both** directions for the link
+/// (see `spawn_disk_watcher`'s `suspended` flag) until it's toggled off and
+/// on, rather than just skipping the one pass that tripped it — `reconcile`
+/// always diffs full state, so resuming on the next small edit would still
+/// apply the very burst this guard exists to hold back.
 const LARGE_BURST_THRESHOLD: u32 = 20;
 
 struct LinkHandle {
@@ -447,7 +508,13 @@ async fn drain_quiet(rx: &mut tokio::sync::broadcast::Receiver<vault::VaultChang
 
 /// Vault -> disk: reconcile on every mutation of this link's vault (debounced),
 /// so an edit made elsewhere (the editor, a peer device) lands in the mirror.
-fn spawn_vault_watcher(app: AppHandle, cfg: LinkConfig, base: Arc<tokio::sync::Mutex<HashMap<String, String>>>, cancel: CancellationToken) {
+fn spawn_vault_watcher(
+    app: AppHandle,
+    cfg: LinkConfig,
+    base: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    cancel: CancellationToken,
+    suspended: Arc<AtomicBool>,
+) {
     tauri::async_runtime::spawn(async move {
         let mgr = app.state::<VaultManager>();
         let Ok(node) = mgr.node().await else { return };
@@ -465,11 +532,17 @@ fn spawn_vault_watcher(app: AppHandle, cfg: LinkConfig, base: Arc<tokio::sync::M
             if !relevant {
                 continue;
             }
+            // A suspicious disk-side burst suspends both directions until the
+            // link is toggled off and on (see spawn_disk_watcher).
+            if suspended.load(Ordering::Relaxed) {
+                continue;
+            }
             drain_quiet(&mut rx, Duration::from_millis(500)).await;
             let Ok(doc) = vault::open(node, &cfg.vault).await else { continue };
             let mut b = base.lock().await;
-            if let Err(e) = reconcile(node, &doc, &cfg.folder, &cfg.local_dir, &mut b).await {
-                tracing::warn!("[link] vault->disk reconcile failed for {}: {e}", cfg.id);
+            match reconcile(node, &doc, &cfg.folder, &cfg.local_dir, &mut b).await {
+                Ok(()) => save_base_cache(&cfg.local_dir, &b),
+                Err(e) => tracing::warn!("[link] vault->disk reconcile failed for {}: {e}", cfg.id),
             }
         }
     });
@@ -482,6 +555,7 @@ fn spawn_disk_watcher(
     cfg: LinkConfig,
     base: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
     cancel: CancellationToken,
+    suspended: Arc<AtomicBool>,
 ) -> notify::Result<RecommendedWatcher> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
@@ -501,6 +575,15 @@ fn spawn_disk_watcher(
                     if got.is_none() { return; }
                 }
             }
+            // Once a burst has tripped the guard below, every later event —
+            // however small — is ignored too: reconcile always diffs full
+            // state, so without this a single unrelated edit would apply the
+            // very mass-change this guard exists to hold back. Stays this way
+            // until the link is toggled off and on (a fresh `start_link`
+            // rebuilds this flag as `false`).
+            if suspended.load(Ordering::Relaxed) {
+                continue;
+            }
             // Debounce, counting the burst so a mass-change can be treated as
             // suspicious rather than synced blindly.
             let mut count: u32 = 1;
@@ -515,9 +598,11 @@ fn spawn_disk_watcher(
                 }
             }
             if count > LARGE_BURST_THRESHOLD {
+                suspended.store(true, Ordering::Relaxed);
                 tracing::warn!(
-                    "[link] {count} file events on {:?} in one burst — skipping auto-sync; \
-                     toggle the link off and on to reconcile once you've confirmed it's intentional",
+                    "[link] {count} file events on {:?} in one burst — suspending sync for this \
+                     link (both directions); toggle it off and on to reconcile once you've \
+                     confirmed it's intentional",
                     cfg.local_dir
                 );
                 continue;
@@ -526,8 +611,9 @@ fn spawn_disk_watcher(
             let Ok(node) = mgr.node().await else { continue };
             let Ok(doc) = vault::open(node, &cfg.vault).await else { continue };
             let mut b = base.lock().await;
-            if let Err(e) = reconcile(node, &doc, &cfg.folder, &cfg.local_dir, &mut b).await {
-                tracing::warn!("[link] disk->vault reconcile failed for {}: {e}", cfg.id);
+            match reconcile(node, &doc, &cfg.folder, &cfg.local_dir, &mut b).await {
+                Ok(()) => save_base_cache(&cfg.local_dir, &b),
+                Err(e) => tracing::warn!("[link] disk->vault reconcile failed for {}: {e}", cfg.id),
             }
         }
     });
@@ -542,15 +628,22 @@ async fn start_link(app: &AppHandle, cfg: LinkConfig) -> Result<()> {
     vault::arm_vault(app, node, nsid).await.map_err(|e| anyhow!(e))?;
     let doc = vault::open(node, &cfg.vault).await?;
 
-    let base = Arc::new(tokio::sync::Mutex::new(HashMap::<String, String>::new()));
+    // Reload rather than start empty — an empty base would make reconcile
+    // treat every already-synced path as "never synced", see the module doc.
+    let base = Arc::new(tokio::sync::Mutex::new(load_base_cache(&cfg.local_dir)));
     {
         let mut b = base.lock().await;
         reconcile(node, &doc, &cfg.folder, &cfg.local_dir, &mut b).await?;
+        save_base_cache(&cfg.local_dir, &b);
     }
 
     let cancel = CancellationToken::new();
-    let watcher = spawn_disk_watcher(app.clone(), cfg.clone(), base.clone(), cancel.clone())?;
-    spawn_vault_watcher(app.clone(), cfg.clone(), base, cancel.clone());
+    // Tripped by a suspicious disk-side burst; suspends sync in both
+    // directions for this link until it's toggled off and on again (a fresh
+    // `start_link` call, which rebuilds this as `false`).
+    let suspended = Arc::new(AtomicBool::new(false));
+    let watcher = spawn_disk_watcher(app.clone(), cfg.clone(), base.clone(), cancel.clone(), suspended.clone())?;
+    spawn_vault_watcher(app.clone(), cfg.clone(), base, cancel.clone(), suspended);
 
     let link_mgr = app.state::<LinkManager>();
     link_mgr.handles.lock().unwrap().insert(
@@ -617,7 +710,16 @@ pub async fn add_link(app: &AppHandle, vault: String, folder: String) -> Result<
     cfgs.push(cfg.clone());
     save_links(&link_mgr.dir, &cfgs);
 
-    start_link(app, cfg.clone()).await.map_err(|e| e.to_string())?;
+    if let Err(e) = start_link(app, cfg.clone()).await {
+        // Don't leave a persisted link with nothing actually running — the
+        // frontend has no way to learn about that until a restart otherwise.
+        let mut cfgs = load_links(&link_mgr.dir);
+        cfgs.retain(|c| c.id != cfg.id);
+        save_links(&link_mgr.dir, &cfgs);
+        let _ = std::fs::remove_dir_all(&cfg.local_dir);
+        let _ = remove_symlink_dir(&cfg.friendly_path);
+        return Err(e.to_string());
+    }
     Ok(info_of(node, &cfg).await)
 }
 
@@ -648,7 +750,17 @@ pub async fn set_link_enabled(app: &AppHandle, id: String, enabled: bool) -> Res
     save_links(&link_mgr.dir, &cfgs);
 
     if enabled {
-        start_link(app, cfg.clone()).await.map_err(|e| e.to_string())?;
+        if let Err(e) = start_link(app, cfg.clone()).await {
+            // Roll back the persisted flag: a relaunch shouldn't silently keep
+            // retrying (and failing) a link the caller was just told about
+            // via this error.
+            let mut cfgs = load_links(&link_mgr.dir);
+            if let Some(c) = cfgs.iter_mut().find(|c| c.id == id) {
+                c.enabled = false;
+            }
+            save_links(&link_mgr.dir, &cfgs);
+            return Err(e.to_string());
+        }
     } else {
         stop_link(app, &id);
     }
@@ -826,6 +938,74 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(local_dir.join("a.md")).unwrap(), "in scope");
         assert!(!local_dir.join("other.md").exists());
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// The fix for a data-loss bug found in review: without persisting `base`
+    /// across a restart, reconcile would forget a path was already synced and
+    /// treat the vault's peer-made edit as "never synced, differs on both
+    /// sides" — letting the stale local mirror silently win and clobber it.
+    #[tokio::test]
+    async fn base_cache_survives_a_restart_and_prevents_clobbering_a_peer_edit() {
+        let (node, doc, local_dir, base_dir) = fixture("restart").await;
+        doc.set_bytes(node.author(), b"note.md".to_vec(), crate::vault::fresh_note("v1"))
+            .await
+            .unwrap();
+
+        // First launch: reconcile, then persist `base` — what `start_link` now
+        // does after every successful pass.
+        let mut base = HashMap::new();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        save_base_cache(&local_dir, &base);
+        drop(base);
+
+        // While the app is "closed", a peer edits the note directly in the vault.
+        vault::write_note_merged(&node, &doc, b"note.md", "v1", "v2-from-peer")
+            .await
+            .unwrap();
+
+        // "Restart": rebuild `base` from disk instead of starting empty, exactly
+        // as `start_link` does.
+        let mut base = load_base_cache(&local_dir);
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("note.md")).unwrap(),
+            "v2-from-peer",
+            "a restart with a persisted base must pull the peer's edit, not clobber it with \
+             the stale local mirror"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// A second bug found in review: a read failure (permission error,
+    /// transient I/O, non-UTF-8) must not look like the file was deleted.
+    #[tokio::test]
+    async fn an_unreadable_local_file_is_not_treated_as_a_deletion() {
+        let (node, doc, local_dir, base_dir) = fixture("unreadable").await;
+        doc.set_bytes(node.author(), b"note.md".to_vec(), crate::vault::fresh_note("keep"))
+            .await
+            .unwrap();
+        let mut base = HashMap::new();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(base.get("note.md").map(String::as_str), Some("keep"));
+
+        // Non-UTF-8 bytes fail `read_to_string` the same way a permission
+        // error or a transient I/O glitch would.
+        std::fs::write(local_dir.join("note.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+
+        assert_eq!(
+            base.get("note.md").map(String::as_str),
+            Some("keep"),
+            "an unreadable file must not be treated as deleted"
+        );
+        assert!(
+            vault::read_note_text(&node, &doc, b"note.md").await.unwrap().is_some(),
+            "the vault note must survive an unreadable (not deleted) local file"
+        );
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
