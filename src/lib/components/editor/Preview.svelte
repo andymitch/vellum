@@ -722,6 +722,31 @@
     margin: 1.5em 0;
   }
 
+  /* Tables (#226): Tailwind's preflight strips the UA default border/spacing,
+     leaving cells with no visible separation at all. display:block lets a
+     wide table scroll horizontally instead of overflowing the note (same
+     idea as `pre`'s overflow-x, which needs no such hack since it's already
+     block-level). */
+  .md-preview :global(table) {
+    display: block;
+    overflow-x: auto;
+    margin: 1em 0;
+    border-collapse: collapse;
+  }
+  /* No text-align here: marked emits column alignment (`:---`, `---:`) as an
+     `align` attribute, and any author rule on td/th — even this one, were it
+     `text-align: left` — beats that attribute's presentational hint and
+     would flatten every aligned column back to the left. */
+  .md-preview :global(th),
+  .md-preview :global(td) {
+    padding: 0.4em 0.75em;
+    border: 1px solid var(--editor-border);
+  }
+  .md-preview :global(th) {
+    background: var(--editor-code-bg);
+    font-weight: 600;
+  }
+
   /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
   .md-preview :global(.mermaid-diagram) {
     margin: 1em 0;
