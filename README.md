@@ -1,6 +1,6 @@
 # Vellum
 
-[![Release](https://img.shields.io/github/v/release/andymitch/vellum?sort=semver)](https://github.com/andymitch/vellum/releases)
+[![Release](https://img.shields.io/github/v/release/andymitch/vellum)](https://github.com/andymitch/vellum/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Android-lightgrey)
 
