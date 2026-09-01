@@ -239,6 +239,20 @@
   let mermaidThemeDark: boolean | undefined; // theme mermaid was last initialized for
   let renderSeq = 0;
 
+  // Empties `placeholder` and hides it rather than removing it from the tree,
+  // then inserts `replacement` in its place. `placeholder` (a `pre` or `p`
+  // from the parsed markdown) is a top-level child of the {@html} block, and
+  // Svelte tracks that block's first/last child by reference to know what to
+  // clear when the note's content next changes. Detaching it via replaceWith
+  // stales that reference, so a later note switch can't find where its
+  // content ends — the diagram or link card then leaks into whatever note is
+  // opened next (#228).
+  function swapInPlace(placeholder: HTMLElement, replacement: HTMLElement) {
+    placeholder.replaceChildren();
+    placeholder.style.display = "none";
+    placeholder.before(replacement);
+  }
+
   async function renderDiagram(mermaid: Mermaid, src: string, id: string) {
     try {
       const { svg } = await mermaid.render(id, src);
@@ -282,13 +296,14 @@
     for (const codeEl of fresh) {
       const pre = codeEl.closest("pre");
       if (!pre) continue;
-      const svg = await renderDiagram(mermaid, codeEl.textContent ?? "", `mmd-${seq}-${i++}`);
+      const src = codeEl.textContent ?? "";
+      const svg = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
       if (seq !== renderSeq) return;
       const wrap = document.createElement("div");
       wrap.className = "mermaid-diagram";
-      wrap.dataset.src = codeEl.textContent ?? "";
+      wrap.dataset.src = src;
       wrap.innerHTML = svg;
-      pre.replaceWith(wrap);
+      swapInPlace(pre, wrap);
     }
     for (const wrap of themed) {
       const svg = await renderDiagram(mermaid, wrap.dataset.src ?? "", `mmd-${seq}-${i++}`);
@@ -402,7 +417,8 @@
         card.dataset.target = a.dataset.target ?? "";
         card.dataset.fragment = a.dataset.fragment ?? "";
         fillCard(card, { title, body: excerpt, meta: path.replace(/\.md$/i, "") });
-        p.replaceWith(card);
+        if (!p.isConnected) continue;
+        swapInPlace(p, card);
         continue;
       }
 
@@ -413,9 +429,9 @@
       const meta = await fetchLinkPreview(href).catch(() => null);
       if (seq !== cardSeq) return;
       if (!meta) continue; // offline, failed, or nothing worth showing
-      // `p` may have been detached by a newer render; replaceWith on an orphan
-      // is a silent no-op, and the seq check above already covers the common
-      // case, so this is just belt-and-braces.
+      // `p` may have been detached by a newer render; swapInPlace on an orphan
+      // would hide a node nobody sees, and the seq check above already covers
+      // the common case, so this is just belt-and-braces.
       if (!p.isConnected) continue;
       const card = cardShell(href, "external");
       fillCard(card, {
@@ -424,7 +440,7 @@
         meta: meta.site_name,
         image: meta.image,
       });
-      p.replaceWith(card);
+      swapInPlace(p, card);
     }
   }
 
