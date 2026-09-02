@@ -1,17 +1,14 @@
 <script lang="ts">
-  import { Marked, type TokenizerAndRendererExtension } from "marked";
-  import { markedHighlight } from "marked-highlight";
-  import hljs from "highlight.js/lib/common";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { theme } from "$lib/theme.svelte";
   import type { Mermaid } from "mermaid";
 
   import { slugify } from "$lib/slug";
   import { parseNote } from "$lib/note-type";
-  import { TAG_RE, TAG_START_RE, trimTag } from "$lib/tags";
   import { noteCard } from "$lib/link-card";
   import { fetchLinkPreview } from "$lib/vault";
   import { editorSettings } from "$lib/editor-settings.svelte";
+  import { renderMarkdown, resolveWikiLink } from "$lib/render-markdown";
 
   let {
     value = $bindable(""),
@@ -32,94 +29,10 @@
     loadNote?: (path: string) => Promise<string>;
   } = $props();
 
-  const escHtml = (s: string) =>
-    s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
-  const escAttr = (s: string) => escHtml(s).replace(/"/g, "&quot;");
-
-  // `[[target]]`, `[[target|label]]`, `[[target#heading]]`, or `[[#heading]]`
-  // (same note) → an internal link. Resolution against the vault's notes happens
-  // after render (see the effect below), since the note list is reactive and
-  // lives outside this marked instance.
-  const wikiLink: TokenizerAndRendererExtension = {
-    name: "wikilink",
-    level: "inline",
-    start(src) {
-      return src.indexOf("[[");
-    },
-    tokenizer(src) {
-      const m = /^\[\[([^\]\n]+?)\]\]/.exec(src);
-      if (!m) return;
-      const [link, label] = m[1].split("|");
-      const hash = link.indexOf("#");
-      const target = (hash >= 0 ? link.slice(0, hash) : link).trim();
-      const fragment = hash >= 0 ? link.slice(hash + 1).trim() : "";
-      return {
-        type: "wikilink",
-        raw: m[0],
-        target,
-        fragment,
-        label: (label ?? link).trim(),
-      };
-    },
-    renderer(token) {
-      return `<a href="#" class="wikilink" data-target="${escAttr(token.target)}" data-fragment="${escAttr(token.fragment)}">${escHtml(token.label)}</a>`;
-    },
-  };
-
-  // Inline `#tag` -> a clickable chip. The rules live in $lib/tags (shared with
-  // the source-mode decoration, and mirroring `extract_tags` in vault.rs) so
-  // what renders as a tag is what is findable as one. marked only offers us the
-  // start of an inline token, so the "preceded by whitespace" half of the rule
-  // is enforced by `start` returning a boundary-anchored match.
-  const tagChip: TokenizerAndRendererExtension = {
-    name: "tagchip",
-    level: "inline",
-    start(src) {
-      const m = TAG_START_RE.exec(src);
-      if (!m) return;
-      // Point at the '#', not at the whitespace before it.
-      return m.index + (m[0].startsWith("#") ? 0 : 1);
-    },
-    tokenizer(src) {
-      const m = TAG_RE.exec(src);
-      if (!m) return;
-      const tag = trimTag(m[1]);
-      if (!tag) return;
-      return { type: "tagchip", raw: m[0], tag };
-    },
-    renderer(token) {
-      return `<a href="#" class="tagchip" data-tag="${escAttr(token.tag)}">#${escHtml(token.tag)}</a>`;
-    },
-  };
-
-  // Local Marked instance with highlight.js. We emit hljs token classes and
-  // style them via our --code-* vars (same palette as the editor), so no
-  // highlight.js theme stylesheet is imported.
-  const marked = new Marked(
-    { gfm: true, breaks: false },
-    markedHighlight({
-      langPrefix: "hljs language-",
-      highlight(code, lang) {
-        const language = hljs.getLanguage(lang) ? lang : "plaintext";
-        return hljs.highlight(code, { language }).value;
-      },
-    }),
-  );
-  marked.use({ extensions: [wikiLink, tagChip] });
-
-  // Content is the user's own local notes, rendered in a desktop app — no
-  // untrusted input — so we render marked output directly. GFM task-list
-  // checkboxes are rendered `disabled` by marked; strip that so they're
-  // interactive (toggling rewrites the source — see onToggle).
   // The frontmatter block carries the note's type (#104) and is chrome, not
   // content — strip it before rendering. Only a LEADING block is stripped, so a
   // scratchpad's `---` separators still render as thematic breaks.
-  const html = $derived(
-    (marked.parse(parseNote(value).body) as string).replace(
-      /(<input\b[^>]*?)\s+disabled(?:="")?/g,
-      "$1",
-    ),
-  );
+  const html = $derived(renderMarkdown(parseNote(value).body));
 
   // Flip the source marker for the checkbox that changed. Task checkboxes render
   // in source order, so the Nth checkbox in the DOM maps to the Nth `[ ]`/`[x]`
@@ -140,24 +53,6 @@
 
   // ---- Internal links (#16) ----
   let container: HTMLDivElement;
-
-  const stripExt = (s: string) => s.replace(/\.[a-z0-9]+$/i, "");
-
-  // Resolve a wiki-link target to an actual note path: try the path as-is and
-  // with a .md extension (exact, then case-insensitive), then fall back to a
-  // basename match so `[[todo]]` finds `work/todo.md`.
-  function resolveLink(target: string): string | null {
-    const t = target.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (!t) return null;
-    const withMd = /\.[a-z0-9]+$/i.test(t) ? t : `${t}.md`;
-    if (notePaths.includes(t)) return t;
-    if (notePaths.includes(withMd)) return withMd;
-    const lc = withMd.toLowerCase();
-    const ci = notePaths.find((p) => p.toLowerCase() === lc);
-    if (ci) return ci;
-    const base = stripExt(t.split("/").pop() ?? "").toLowerCase();
-    return notePaths.find((p) => stripExt(p.split("/").pop() ?? "").toLowerCase() === base) ?? null;
-  }
 
   // After each render (or when the note list changes): give headings stable slug
   // ids (deduped), then resolve every wiki link — a note target, a same-note
@@ -180,7 +75,7 @@
       const fragment = a.dataset.fragment ?? "";
       let ok = false;
       if (target) {
-        const path = resolveLink(target);
+        const path = resolveWikiLink(target, notePaths);
         if (path) {
           a.dataset.path = path;
           ok = true;
@@ -456,7 +351,7 @@
      keyboard-accessible, so the static-element a11y rules don't apply here. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="md-preview" bind:this={container} onchange={onToggle} onclick={onClick}>
+<div class="md-preview prose-content" bind:this={container} onchange={onToggle} onclick={onClick}>
   <!-- Keyed on the link-preview setting so turning it OFF restores the plain
        links. Cards are DOM replacements applied after render, and {@html} only
        re-runs when the markdown itself changes — without this key, existing
@@ -468,346 +363,13 @@
 </div>
 
 <style>
+  /* Layout for a full note preview. The shared typography (headings, lists,
+     code, tables, tags, link cards, ...) lives in .prose-content (app.css),
+     so JournalView's per-cell read view renders identically without
+     duplicating any of it. */
   .md-preview {
     max-width: 96rem;
     margin: 0 auto;
     padding: 1.5rem;
-    line-height: 1.7;
-    color: var(--editor-fg);
-    font-family: var(--font-sans);
-  }
-
-  /* No dead space above the first block (headings carry a top margin). */
-  .md-preview :global(> :first-child) {
-    margin-top: 0;
-  }
-
-  .md-preview :global(h1),
-  .md-preview :global(h2),
-  .md-preview :global(h3),
-  .md-preview :global(h4),
-  .md-preview :global(h5),
-  .md-preview :global(h6) {
-    font-weight: 700;
-    line-height: 1.25;
-    margin: 1.4em 0 0.5em;
-  }
-  /* Things colors headings per level; H1/H6 stay neutral */
-  .md-preview :global(h1) {
-    font-size: 1.9em;
-    color: var(--editor-fg);
-  }
-  .md-preview :global(h2) {
-    font-size: 1.5em;
-    color: var(--md-h2);
-  }
-  .md-preview :global(h3) {
-    font-size: 1.25em;
-    color: var(--md-h3);
-  }
-  .md-preview :global(h4) {
-    color: var(--md-h4);
-  }
-  .md-preview :global(h5) {
-    color: var(--md-h5);
-  }
-  .md-preview :global(h6) {
-    color: var(--editor-muted);
-  }
-
-  .md-preview :global(p) {
-    margin: 0.75em 0;
-  }
-
-  .md-preview :global(strong),
-  .md-preview :global(b) {
-    color: var(--md-strong);
-  }
-  .md-preview :global(em),
-  .md-preview :global(i) {
-    color: var(--md-em);
-  }
-
-  .md-preview :global(a) {
-    color: var(--editor-accent);
-    text-decoration: underline;
-  }
-
-  /* Internal [[wiki links]]: a subtle pill, dashed + muted when unresolved. */
-  .md-preview :global(a.wikilink) {
-    text-decoration: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--editor-accent) 45%, transparent);
-    cursor: pointer;
-  }
-  .md-preview :global(a.wikilink.broken) {
-    color: var(--editor-muted);
-    border-bottom-style: dashed;
-    cursor: help;
-  }
-
-  /* #tags: a subtle pill, tinted with the accent so they read as metadata
-     rather than prose, and clearly clickable. */
-  .md-preview :global(a.tagchip) {
-    text-decoration: none;
-    color: var(--editor-accent);
-    background: color-mix(in srgb, var(--editor-accent) 12%, transparent);
-    border-radius: 0.375rem;
-    padding: 0.05em 0.4em;
-    font-size: 0.9em;
-    cursor: pointer;
-  }
-  .md-preview :global(a.tagchip:hover) {
-    background: color-mix(in srgb, var(--editor-accent) 22%, transparent);
-  }
-
-  /* Link preview cards (#62). Only a link alone on its line becomes one, so a
-     card always occupies a whole block — it never has to flow with text. */
-  .md-preview :global(a.link-card) {
-    display: flex;
-    gap: 0.75rem;
-    align-items: flex-start;
-    margin: 1em 0;
-    padding: 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--editor-muted) 30%, transparent);
-    border-radius: 0.5rem;
-    text-decoration: none;
-    color: inherit;
-    cursor: pointer;
-  }
-  .md-preview :global(a.link-card:hover) {
-    background: color-mix(in srgb, var(--editor-fg) 4%, transparent);
-    border-color: color-mix(in srgb, var(--editor-accent) 45%, transparent);
-  }
-  /* Fixed box so a slow or differently-shaped thumbnail can't reflow the card
-     as it loads. */
-  .md-preview :global(.link-card-img) {
-    flex: 0 0 auto;
-    width: 4.5rem;
-    height: 4.5rem;
-    object-fit: cover;
-    border-radius: 0.375rem;
-    background: color-mix(in srgb, var(--editor-muted) 12%, transparent);
-  }
-  .md-preview :global(.link-card-text) {
-    display: flex;
-    min-width: 0; /* lets the children actually truncate inside the flex row */
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  .md-preview :global(.link-card-title) {
-    font-weight: 600;
-    line-height: 1.3;
-  }
-  /* Two lines of description, then ellipsis — enough to judge the link by,
-     never enough to dominate the note. */
-  .md-preview :global(.link-card-desc) {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    overflow: hidden;
-    font-size: 0.9em;
-    color: var(--editor-muted);
-  }
-  .md-preview :global(.link-card-meta) {
-    margin-top: 0.1rem;
-    font-size: 0.8em;
-    color: var(--editor-muted);
-    overflow-wrap: anywhere;
-  }
-  /* An internal card points at another note, so it takes the accent the rest of
-     the wiki links use rather than reading as an outbound link. */
-  .md-preview :global(a.link-card.internal .link-card-title) {
-    color: var(--editor-accent);
-  }
-
-  /* Tailwind's preflight resets list-style to none, so restore markers. */
-  .md-preview :global(ul),
-  .md-preview :global(ol) {
-    padding-left: 1.5em;
-    margin: 0.75em 0;
-  }
-  .md-preview :global(ul) {
-    list-style: disc outside;
-  }
-  .md-preview :global(ol) {
-    list-style: decimal outside;
-  }
-  .md-preview :global(ul ul) {
-    list-style-type: circle;
-  }
-  .md-preview :global(ul ul ul) {
-    list-style-type: square;
-  }
-  .md-preview :global(li) {
-    margin: 0.2em 0;
-  }
-  /* GFM task lists keep their checkboxes, no bullet. */
-  .md-preview :global(li:has(> input[type="checkbox"])) {
-    list-style: none;
-    margin-left: -1.2em;
-  }
-  /* A sublist nested under a checkbox line must cancel that -1.2em pull-back so
-     its bullets stay indented under the task text, not flush with it. */
-  .md-preview :global(li:has(> input[type="checkbox"]) > ul),
-  .md-preview :global(li:has(> input[type="checkbox"]) > ol) {
-    margin-left: 1.2em;
-  }
-  /* Theme-aware task checkboxes: a subtle "off-background" box that respects the
-     active palette, with the checked state drawn in the theme accent. */
-  .md-preview :global(li > input[type="checkbox"]) {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 1.15em;
-    height: 1.15em;
-    margin-right: 0.45em;
-    vertical-align: -0.22em;
-    border: 1.5px solid var(--editor-border);
-    border-radius: 0.3em;
-    background: var(--secondary);
-    cursor: pointer;
-    position: relative;
-  }
-  /* Checked: solid fill in the primary color (matching the source/preview
-     toggle), with the checkmark drawn in the contrasting foreground. */
-  .md-preview :global(li > input[type="checkbox"]:checked) {
-    background: var(--primary);
-    border-color: var(--primary);
-  }
-  .md-preview :global(li > input[type="checkbox"]:checked)::after {
-    content: "";
-    position: absolute;
-    left: 0.38em;
-    top: 0.11em;
-    width: 0.3em;
-    height: 0.62em;
-    border: solid var(--primary-foreground);
-    border-width: 0 0.2em 0.2em 0;
-    transform: rotate(45deg);
-  }
-  /* Fade a completed task line (the whole row, checkbox included). */
-  .md-preview :global(li:has(> input[type="checkbox"]:checked)) {
-    opacity: 0.55;
-  }
-
-  .md-preview :global(blockquote) {
-    margin: 0.75em 0;
-    padding-left: 1em;
-    border-left: 3px solid var(--md-quote);
-    color: var(--editor-muted);
-  }
-
-  .md-preview :global(code) {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    background: var(--editor-code-bg);
-    border-radius: 4px;
-    padding: 0.1em 0.35em;
-  }
-
-  .md-preview :global(pre) {
-    background: var(--editor-code-bg);
-    border-radius: 8px;
-    padding: 1em;
-    overflow-x: auto;
-  }
-  .md-preview :global(pre code) {
-    background: none;
-    padding: 0;
-  }
-
-  .md-preview :global(hr) {
-    border: none;
-    border-top: 1px solid var(--editor-border);
-    margin: 1.5em 0;
-  }
-
-  /* Tables (#226): Tailwind's preflight strips the UA default border/spacing,
-     leaving cells with no visible separation at all. display:block lets a
-     wide table scroll horizontally instead of overflowing the note (same
-     idea as `pre`'s overflow-x, which needs no such hack since it's already
-     block-level). */
-  .md-preview :global(table) {
-    display: block;
-    overflow-x: auto;
-    margin: 1em 0;
-    border-collapse: collapse;
-  }
-  /* No text-align here: marked emits column alignment (`:---`, `---:`) as an
-     `align` attribute, and any author rule on td/th — even this one, were it
-     `text-align: left` — beats that attribute's presentational hint and
-     would flatten every aligned column back to the left. */
-  .md-preview :global(th),
-  .md-preview :global(td) {
-    padding: 0.4em 0.75em;
-    border: 1px solid var(--editor-border);
-  }
-  .md-preview :global(th) {
-    background: var(--editor-code-bg);
-    font-weight: 600;
-  }
-
-  /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
-  .md-preview :global(.mermaid-diagram) {
-    margin: 1em 0;
-    text-align: center;
-    overflow-x: auto;
-  }
-  .md-preview :global(.mermaid-diagram svg) {
-    max-width: 100%;
-    height: auto;
-  }
-  /* A diagram that failed to parse falls back to its error text. */
-  .md-preview :global(.mermaid-error) {
-    color: var(--destructive, #e5484d);
-    white-space: pre-wrap;
-  }
-
-  /* highlight.js tokens mapped to the editor's --code-* palette */
-  .md-preview :global(.hljs) {
-    color: var(--editor-fg);
-  }
-  .md-preview :global(.hljs-comment),
-  .md-preview :global(.hljs-quote) {
-    color: var(--code-comment);
-    font-style: italic;
-  }
-  .md-preview :global(.hljs-keyword),
-  .md-preview :global(.hljs-selector-tag),
-  .md-preview :global(.hljs-literal),
-  .md-preview :global(.hljs-section),
-  .md-preview :global(.hljs-doctag),
-  .md-preview :global(.hljs-name) {
-    color: var(--code-keyword);
-  }
-  .md-preview :global(.hljs-string),
-  .md-preview :global(.hljs-regexp),
-  .md-preview :global(.hljs-meta .hljs-string),
-  .md-preview :global(.hljs-symbol),
-  .md-preview :global(.hljs-bullet) {
-    color: var(--code-string);
-  }
-  .md-preview :global(.hljs-number),
-  .md-preview :global(.hljs-link) {
-    color: var(--code-number);
-  }
-  .md-preview :global(.hljs-title),
-  .md-preview :global(.hljs-title.function_),
-  .md-preview :global(.hljs-function .hljs-title) {
-    color: var(--code-function);
-  }
-  .md-preview :global(.hljs-type),
-  .md-preview :global(.hljs-built_in),
-  .md-preview :global(.hljs-title.class_),
-  .md-preview :global(.hljs-class .hljs-title) {
-    color: var(--code-type);
-  }
-  .md-preview :global(.hljs-variable),
-  .md-preview :global(.hljs-template-variable),
-  .md-preview :global(.hljs-attr),
-  .md-preview :global(.hljs-attribute),
-  .md-preview :global(.hljs-property),
-  .md-preview :global(.hljs-params) {
-    color: var(--code-variable);
   }
 </style>

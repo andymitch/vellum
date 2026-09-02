@@ -531,6 +531,23 @@
             />
           </label>
         {/if}
+        {#if !isMobile}
+          <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
+            <span class="flex flex-col">
+              <span class="text-sm">Journal: Return adds a line break</span>
+              <span class="text-xs text-muted-foreground">
+                Shift+Return finishes the cell instead. Off: Return finishes it, and
+                Shift+Return adds the line break.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 shrink-0 accent-primary"
+              checked={editorSettings.journalReturnNewline}
+              onchange={(e) => (editorSettings.journalReturnNewline = e.currentTarget.checked)}
+            />
+          </label>
+        {/if}
         <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
           <span class="flex flex-col">
             <span class="text-sm">Link previews</span>

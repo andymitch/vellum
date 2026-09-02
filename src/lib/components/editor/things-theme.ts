@@ -74,37 +74,6 @@ const thingsEditorTheme = (dark: boolean) =>
     background: "var(--editor-accent)",
     borderColor: "var(--editor-accent)",
   },
-  // Alternating journal sections (#177/#181). Derived from the editor foreground
-  // so it lands correctly in all eight themes and in both light and dark, rather
-  // than a hardcoded grey that works in one. Deliberately faint: this is banding
-  // to aid scanning, not a highlight.
-  ".cm-day-band": {
-    background: "color-mix(in srgb, var(--editor-fg) 4%, transparent)",
-  },
-  // A day heading rendered as a full-width rule with the date inline. The rules
-  // are flex children either side of the label, so they fill whatever width is
-  // left however long the date is.
-  ".cm-day-rule": {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.6em",
-    margin: "1.2em 0 0.6em",
-    fontSize: "0.8em",
-    letterSpacing: "0.04em",
-    textTransform: "uppercase",
-    color: "var(--editor-muted)",
-    userSelect: "none",
-  },
-  ".cm-day-rule::before, .cm-day-rule::after": {
-    content: '""',
-    flex: "1",
-    borderTop: "1px solid color-mix(in srgb, var(--editor-muted) 35%, transparent)",
-  },
-  // The label sits between the two rules; the trailing rule is deliberately
-  // short so it reads as "———— date ——" rather than centring the date.
-  ".cm-day-rule::after": {
-    flex: "0 0 1.5rem",
-  },
   // Inline #tags in source mode (#202). Deliberately a lighter treatment than
   // the preview chip: no pill background and no padding, because this decorates
   // live text — shifting glyph positions would make the caret appear to drift as

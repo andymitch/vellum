@@ -5,6 +5,7 @@
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
   import TodoList from "$lib/components/editor/TodoList.svelte";
+  import JournalView from "$lib/components/editor/JournalView.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
@@ -35,13 +36,7 @@
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
   import { initLinkFolders } from "$lib/link-folders.svelte";
-  import {
-    noteTypeInfo,
-    noteTypeOf,
-    countChecked,
-    sweepChecked,
-    ensureDaySection,
-  } from "$lib/note-type";
+  import { noteTypeInfo, noteTypeOf, countChecked, sweepChecked } from "$lib/note-type";
   import {
     Code,
     Eye,
@@ -288,7 +283,9 @@
   // needs text entry as much as it needs tickable boxes, and forcing it to
   // preview left it with no way to add an item at all (#174). The checkboxes are
   // drawn in the editor instead, by the taskCheckboxes decoration.
-  const view = $derived(noteType === "todo" ? "todo" : singleView ? "source" : mode);
+  const view = $derived(
+    noteType === "todo" ? "todo" : noteType === "journal" ? "journal" : singleView ? "source" : mode,
+  );
 
   // Remove every ticked item. Behind a confirm because a delete propagates to
   // every synced device — there is no undo that would work across sync. The
@@ -299,30 +296,6 @@
     if (!(await sidebar?.confirmAction(`Remove ${checkedCount} completed ${plural}?`))) return;
     content = sweepChecked(content);
   }
-
-  // Start a new dated section when the user focuses a journal to write
-  // (#104, absorbing the journal idea). On focus rather than on open: opening a
-  // note must never mutate it, since that would sync a change to every device
-  // just from looking at it. The insert is idempotent, so two devices reaching
-  // this on the same morning can't produce a duplicate heading.
-  let daySectionFor = $state<string | null>(null);
-  $effect(() => {
-    if (noteType !== "journal" || !activePath || !editorFocused) return;
-    if (daySectionFor === activePath) return;
-    daySectionFor = activePath;
-    const next = ensureDaySection(content);
-    if (next === content) return;
-    content = next;
-    // The caret was placed at the old end of the document when the editor
-    // focused, which is now BEFORE the heading we just appended — so typing
-    // would land in front of it ("first## 2026-08-08"). Move it to the end once
-    // the editor has taken the new text, so writing continues under today's
-    // heading.
-    tick().then(() => {
-      const v = editorView;
-      if (v) v.dispatch({ selection: { anchor: v.state.doc.length } });
-    });
-  });
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   // Per-open id for the editor's {#key}, so switching notes remounts the editor
@@ -1156,9 +1129,9 @@
 
     <main
       bind:this={mainEl}
-      class="min-w-0 flex-1 overflow-auto"
+      class="min-w-0 flex-1 {view === 'journal' ? 'flex flex-col overflow-hidden' : 'overflow-auto'}"
       style={mobile
-        ? `padding-top:${view === "preview" || view === "todo" ? headerH : 0}px;`
+        ? `padding-top:${view === "preview" || view === "todo" || view === "journal" ? headerH : 0}px;`
         : ""}
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}
@@ -1172,6 +1145,8 @@
         </div>
       {:else if view === "todo"}
         <TodoList bind:value={content} />
+      {:else if view === "journal"}
+        <JournalView bind:value={content} {mobile} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
       {:else if view === "preview"}
         <Preview
           bind:value={content}

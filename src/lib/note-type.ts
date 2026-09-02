@@ -157,49 +157,49 @@ export function serializeTodoRows(original: string, rows: TodoRow[]): string {
   return frontmatter + body + (body ? "\n" : "");
 }
 
-// ---- Scratchpad helpers ----
+// ---- Journal helpers ----
 
-/// `YYYY-MM-DD` in local time. Not UTC: "a new day" means the user's day, and
-/// toISOString would roll over at the wrong moment for most of the world.
-export function localDay(d: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/// One cell of a Journal note (#227) — a long-running note divided into
+/// separately editable chunks, not a file-per-day log or a chat transcript.
+/// `created` is the ISO 8601 instant the cell was made, and `updated` the
+/// instant its text last changed (present only once it differs from
+/// `created`, i.e. the cell has actually been edited since). Both are null
+/// for content with no marker line (legacy content from before this format,
+/// or something a peer wrote by hand) — kept rather than discarded, same
+/// principle as a TODO row that isn't a task (see `TodoRow` above).
+export type JournalCell = { created: string | null; updated: string | null; text: string };
+
+/// A cell's marker: an HTML comment on its own line, invisible wherever the
+/// note is rendered (this app or any other), so the file still reads as
+/// plain prose everywhere except here. Holds the created time, and — once
+/// the cell has been edited — the updated time after it, space-separated.
+const TIME_MARKER = /^<!--[ \t]*(\S+)(?:[ \t]+(\S+))?[ \t]*-->\r?\n?/;
+
+/// Split a Journal note's body into cells for the notebook UI. Cells are
+/// separated by a blank line, same as ordinary Markdown paragraphs.
+export function parseJournalCells(text: string): JournalCell[] {
+  const { body } = parseNote(text);
+  return body
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const m = TIME_MARKER.exec(chunk);
+      if (!m || Number.isNaN(Date.parse(m[1]))) return { created: null, updated: null, text: chunk };
+      const updated = m[2] && !Number.isNaN(Date.parse(m[2])) ? m[2] : null;
+      return { created: m[1], updated, text: chunk.slice(m[0].length) };
+    });
 }
 
-/// A day section is a single heading line. Dropping the `---` the scratchpad
-/// used to write removes the ambiguity with the frontmatter fence entirely, and leaves
-/// one line to decorate as the dated rule rather than two.
-export const daySeparator = (day: string = localDay()) => `\n\n## ${day}\n\n`;
-
-/// A section heading line, e.g. `## 2026-08-08`. The ISO date stays in the file
-/// so the note still sorts and greps; only the rendering is human-formatted.
-export const DAY_HEADING = /^##[ \t]+(\d{4})-(\d{2})-(\d{2})[ \t]*$/;
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/// `2026-01-01` -> `Jan 01, 2026`, for the inline label on the rule.
-export function formatDay(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return iso;
-  const month = MONTHS[Number(m[2]) - 1] ?? m[2];
-  return `${month} ${m[3]}, ${m[1]}`;
-}
-
-/// Whether the note already carries a section for `day`.
-export const hasDaySection = (text: string, day: string = localDay()): boolean =>
-  new RegExp(`^##[ \\t]+${day}[ \\t]*$`, "m").test(text);
-
-/// Append a dated separator for today unless the note already has one.
-///
-/// Idempotent on purpose: this runs on the first edit of a day, and two synced
-/// devices can both reach that point on the same morning. Checking for the
-/// marker first means the loser of that race adds nothing rather than producing
-/// a duplicate heading.
-export function ensureDaySection(text: string, day: string = localDay()): string {
-  if (hasDaySection(text, day)) return text;
-  const { body, frontmatter } = parseNote(text);
-  // A brand-new journal opens straight into its first day, with no leading
-  // rule above it.
-  if (!body.trim()) return `${frontmatter}## ${day}\n\n`;
-  return text.replace(/\s*$/, "") + daySeparator(day);
+/// Rebuild the note from its cells, preserving the frontmatter untouched.
+export function serializeJournalCells(original: string, cells: JournalCell[]): string {
+  const { frontmatter } = parseNote(original);
+  const body = cells
+    .map((c) => {
+      if (!c.created) return c.text;
+      const marker = c.updated && c.updated !== c.created ? `${c.created} ${c.updated}` : c.created;
+      return `<!-- ${marker} -->\n${c.text}`;
+    })
+    .join("\n\n");
+  return frontmatter + body + (body ? "\n" : "");
 }
