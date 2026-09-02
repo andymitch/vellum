@@ -18,6 +18,13 @@ export type EditorSettings = {
   // outbound traffic Vellum makes. On by default (an invisible feature is no
   // feature), off in one tap for anyone who would rather not reach out.
   linkPreviews: boolean;
+  // Journal, desktop only: which of Return / Shift+Return finishes the cell
+  // being edited. Off (the default) is Return finishes and Shift+Return
+  // inserts a line break — the way a single-line-per-thought journal wants it;
+  // on swaps the two for anyone writing longer cells. Mobile has no reliable
+  // way to tell a plain Enter from a shift-modified one, so there Enter is
+  // always a line break and finishing means dismissing the keyboard.
+  journalReturnNewline: boolean;
 };
 
 const KEY = "vellum-editor";
@@ -30,6 +37,7 @@ const DEFAULTS: EditorSettings = {
   closeBrackets: true,
   quickEdit: false,
   linkPreviews: true,
+  journalReturnNewline: false,
 };
 
 let saved: Partial<EditorSettings> = {};
@@ -104,6 +112,13 @@ export const editorSettings = {
   },
   set linkPreviews(v: boolean) {
     state.linkPreviews = v;
+    persist();
+  },
+  get journalReturnNewline() {
+    return state.journalReturnNewline;
+  },
+  set journalReturnNewline(v: boolean) {
+    state.journalReturnNewline = v;
     persist();
   },
 };

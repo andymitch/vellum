@@ -1,11 +1,12 @@
-// Shared Markdown -> HTML rendering (extracted from Preview.svelte so
-// JournalView's per-cell read view renders identically — same extensions,
-// same escaping, same checkbox handling — without duplicating any of it).
+// Markdown -> HTML rendering shared by every read-only render of note
+// content — same extensions, same escaping, same checkbox handling, wherever
+// it's used.
 //
-// Deliberately excludes the DOM-mutation effects Preview.svelte layers on top
-// of this HTML (heading-slug/wikilink resolution, Mermaid diagram rendering,
-// link-preview card fetching): those are async, per-full-note effects that
-// only make sense once, over a whole rendered note, not per journal cell.
+// Deliberately excludes DOM-mutation effects such as heading-slug/wikilink
+// resolution, Mermaid diagram rendering, and link-preview card fetching:
+// those are async, per-full-note effects that only make sense applied once,
+// over a whole rendered note, not for every small piece of content rendered
+// through this module.
 
 import { Marked, type TokenizerAndRendererExtension } from "marked";
 import { markedHighlight } from "marked-highlight";

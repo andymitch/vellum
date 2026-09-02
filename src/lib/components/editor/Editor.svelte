@@ -18,7 +18,6 @@
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
-  import { daySections } from "./day-sections";
   import { tagMarks } from "./tag-marks";
 
   // Desktop style hotkeys. Each toggles/applies markdown to the selection (the
@@ -126,7 +125,6 @@
         extensions: [
           history(),
           frontmatterBadge,
-          daySections,
           // Reads `ontag` at click time (not now), so a changed prop is picked
           // up without recreating the view.
           tagMarks((t) => ontag?.(t)),
