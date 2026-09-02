@@ -754,3 +754,352 @@
     background: transparent;
   }
 }
+
+/* ============================================================================
+   Shared prose content -- markdown rendered read-only via renderMarkdown()
+   ($lib/render-markdown.ts). Used by both the full-note preview
+   (Preview.svelte's .md-preview wrapper) and each Journal cell's read view
+   (JournalView.svelte), so the two can never visually drift apart. Kept
+   unlayered (not inside @layer base) to match how these rules behaved as
+   Svelte component-scoped styles before this extraction -- highest priority
+   against Tailwind's own layered utilities, same as before the move.
+   ============================================================================ */
+.prose-content {
+  line-height: 1.7;
+  color: var(--editor-fg);
+  font-family: var(--font-sans);
+}
+
+  /* No dead space above the first block (headings carry a top margin). */
+  .prose-content > :first-child {
+    margin-top: 0;
+  }
+
+  .prose-content h1,
+  .prose-content h2,
+  .prose-content h3,
+  .prose-content h4,
+  .prose-content h5,
+  .prose-content h6 {
+    font-weight: 700;
+    line-height: 1.25;
+    margin: 1.4em 0 0.5em;
+  }
+  /* Things colors headings per level; H1/H6 stay neutral */
+  .prose-content h1 {
+    font-size: 1.9em;
+    color: var(--editor-fg);
+  }
+  .prose-content h2 {
+    font-size: 1.5em;
+    color: var(--md-h2);
+  }
+  .prose-content h3 {
+    font-size: 1.25em;
+    color: var(--md-h3);
+  }
+  .prose-content h4 {
+    color: var(--md-h4);
+  }
+  .prose-content h5 {
+    color: var(--md-h5);
+  }
+  .prose-content h6 {
+    color: var(--editor-muted);
+  }
+
+  .prose-content p {
+    margin: 0.75em 0;
+  }
+
+  .prose-content strong,
+  .prose-content b {
+    color: var(--md-strong);
+  }
+  .prose-content em,
+  .prose-content i {
+    color: var(--md-em);
+  }
+
+  .prose-content a {
+    color: var(--editor-accent);
+    text-decoration: underline;
+  }
+
+  /* Internal [[wiki links]]: a subtle pill, dashed + muted when unresolved. */
+  .prose-content a.wikilink {
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--editor-accent) 45%, transparent);
+    cursor: pointer;
+  }
+  .prose-content a.wikilink.broken {
+    color: var(--editor-muted);
+    border-bottom-style: dashed;
+    cursor: help;
+  }
+
+  /* #tags: a subtle pill, tinted with the accent so they read as metadata
+     rather than prose, and clearly clickable. */
+  .prose-content a.tagchip {
+    text-decoration: none;
+    color: var(--editor-accent);
+    background: color-mix(in srgb, var(--editor-accent) 12%, transparent);
+    border-radius: 0.375rem;
+    padding: 0.05em 0.4em;
+    font-size: 0.9em;
+    cursor: pointer;
+  }
+  .prose-content a.tagchip:hover {
+    background: color-mix(in srgb, var(--editor-accent) 22%, transparent);
+  }
+
+  /* Link preview cards (#62). Only a link alone on its line becomes one, so a
+     card always occupies a whole block — it never has to flow with text. */
+  .prose-content a.link-card {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin: 1em 0;
+    padding: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--editor-muted) 30%, transparent);
+    border-radius: 0.5rem;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .prose-content a.link-card:hover {
+    background: color-mix(in srgb, var(--editor-fg) 4%, transparent);
+    border-color: color-mix(in srgb, var(--editor-accent) 45%, transparent);
+  }
+  /* Fixed box so a slow or differently-shaped thumbnail can't reflow the card
+     as it loads. */
+  .prose-content .link-card-img {
+    flex: 0 0 auto;
+    width: 4.5rem;
+    height: 4.5rem;
+    object-fit: cover;
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--editor-muted) 12%, transparent);
+  }
+  .prose-content .link-card-text {
+    display: flex;
+    min-width: 0; /* lets the children actually truncate inside the flex row */
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .prose-content .link-card-title {
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  /* Two lines of description, then ellipsis — enough to judge the link by,
+     never enough to dominate the note. */
+  .prose-content .link-card-desc {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-size: 0.9em;
+    color: var(--editor-muted);
+  }
+  .prose-content .link-card-meta {
+    margin-top: 0.1rem;
+    font-size: 0.8em;
+    color: var(--editor-muted);
+    overflow-wrap: anywhere;
+  }
+  /* An internal card points at another note, so it takes the accent the rest of
+     the wiki links use rather than reading as an outbound link. */
+  .prose-content a.link-card.internal .link-card-title {
+    color: var(--editor-accent);
+  }
+
+  /* Tailwind's preflight resets list-style to none, so restore markers. */
+  .prose-content ul,
+  .prose-content ol {
+    padding-left: 1.5em;
+    margin: 0.75em 0;
+  }
+  .prose-content ul {
+    list-style: disc outside;
+  }
+  .prose-content ol {
+    list-style: decimal outside;
+  }
+  .prose-content ul ul {
+    list-style-type: circle;
+  }
+  .prose-content ul ul ul {
+    list-style-type: square;
+  }
+  .prose-content li {
+    margin: 0.2em 0;
+  }
+  /* GFM task lists keep their checkboxes, no bullet. */
+  .prose-content li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-left: -1.2em;
+  }
+  /* A sublist nested under a checkbox line must cancel that -1.2em pull-back so
+     its bullets stay indented under the task text, not flush with it. */
+  .prose-content li:has(> input[type="checkbox"]) > ul,
+  .prose-content li:has(> input[type="checkbox"]) > ol {
+    margin-left: 1.2em;
+  }
+  /* Theme-aware task checkboxes: a subtle "off-background" box that respects the
+     active palette, with the checked state drawn in the theme accent. */
+  .prose-content li > input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.15em;
+    height: 1.15em;
+    margin-right: 0.45em;
+    vertical-align: -0.22em;
+    border: 1.5px solid var(--editor-border);
+    border-radius: 0.3em;
+    background: var(--secondary);
+    cursor: pointer;
+    position: relative;
+  }
+  /* Checked: solid fill in the primary color (matching the source/preview
+     toggle), with the checkmark drawn in the contrasting foreground. */
+  .prose-content li > input[type="checkbox"]:checked {
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+  .prose-content li > input[type="checkbox"]:checked::after {
+    content: "";
+    position: absolute;
+    left: 0.38em;
+    top: 0.11em;
+    width: 0.3em;
+    height: 0.62em;
+    border: solid var(--primary-foreground);
+    border-width: 0 0.2em 0.2em 0;
+    transform: rotate(45deg);
+  }
+  /* Fade a completed task line (the whole row, checkbox included). */
+  .prose-content li:has(> input[type="checkbox"]:checked) {
+    opacity: 0.55;
+  }
+
+  .prose-content blockquote {
+    margin: 0.75em 0;
+    padding-left: 1em;
+    border-left: 3px solid var(--md-quote);
+    color: var(--editor-muted);
+  }
+
+  .prose-content code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--editor-code-bg);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+  }
+
+  .prose-content pre {
+    background: var(--editor-code-bg);
+    border-radius: 8px;
+    padding: 1em;
+    overflow-x: auto;
+  }
+  .prose-content pre code {
+    background: none;
+    padding: 0;
+  }
+
+  .prose-content hr {
+    border: none;
+    border-top: 1px solid var(--editor-border);
+    margin: 1.5em 0;
+  }
+
+  /* Tables (#226): Tailwind's preflight strips the UA default border/spacing,
+     leaving cells with no visible separation at all. display:block lets a
+     wide table scroll horizontally instead of overflowing the note (same
+     idea as `pre`'s overflow-x, which needs no such hack since it's already
+     block-level). */
+  .prose-content table {
+    display: block;
+    overflow-x: auto;
+    margin: 1em 0;
+    border-collapse: collapse;
+  }
+  /* No text-align here: marked emits column alignment (`:---`, `---:`) as an
+     `align` attribute, and any author rule on td/th — even this one, were it
+     `text-align: left` — beats that attribute's presentational hint and
+     would flatten every aligned column back to the left. */
+  .prose-content th,
+  .prose-content td {
+    padding: 0.4em 0.75em;
+    border: 1px solid var(--editor-border);
+  }
+  .prose-content th {
+    background: var(--editor-code-bg);
+    font-weight: 600;
+  }
+
+  /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
+  .prose-content .mermaid-diagram {
+    margin: 1em 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .prose-content .mermaid-diagram svg {
+    max-width: 100%;
+    height: auto;
+  }
+  /* A diagram that failed to parse falls back to its error text. */
+  .prose-content .mermaid-error {
+    color: var(--destructive, #e5484d);
+    white-space: pre-wrap;
+  }
+
+  /* highlight.js tokens mapped to the editor's --code-* palette */
+  .prose-content .hljs {
+    color: var(--editor-fg);
+  }
+  .prose-content .hljs-comment,
+  .prose-content .hljs-quote {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .prose-content .hljs-keyword,
+  .prose-content .hljs-selector-tag,
+  .prose-content .hljs-literal,
+  .prose-content .hljs-section,
+  .prose-content .hljs-doctag,
+  .prose-content .hljs-name {
+    color: var(--code-keyword);
+  }
+  .prose-content .hljs-string,
+  .prose-content .hljs-regexp,
+  .prose-content .hljs-meta .hljs-string,
+  .prose-content .hljs-symbol,
+  .prose-content .hljs-bullet {
+    color: var(--code-string);
+  }
+  .prose-content .hljs-number,
+  .prose-content .hljs-link {
+    color: var(--code-number);
+  }
+  .prose-content .hljs-title,
+  .prose-content .hljs-title.function_,
+  .prose-content .hljs-function .hljs-title {
+    color: var(--code-function);
+  }
+  .prose-content .hljs-type,
+  .prose-content .hljs-built_in,
+  .prose-content .hljs-title.class_,
+  .prose-content .hljs-class .hljs-title {
+    color: var(--code-type);
+  }
+  .prose-content .hljs-variable,
+  .prose-content .hljs-template-variable,
+  .prose-content .hljs-attr,
+  .prose-content .hljs-attribute,
+  .prose-content .hljs-property,
+  .prose-content .hljs-params {
+    color: var(--code-variable);
+  }
