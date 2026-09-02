@@ -720,4 +720,37 @@
     user-select: text;
     -webkit-touch-callout: default;
   }
+
+  /* Themed scrollbar (#225): a slim thumb over a transparent track, colored
+     from the active theme's palette instead of the OS default. `color-mix`
+     against `--foreground` (rather than a fixed `--border`/`--muted` value)
+     is what keeps this readable across all eight themes without a per-theme
+     override. Firefox and future WebKit read scrollbar-color directly; the
+     ::-webkit-scrollbar rules are what the Tauri webview (WKWebView) uses
+     today.
+     border + background-clip inset the thumb from the track edges — a plain
+     edge-to-edge thumb reads as a stray OS-default bar even when colored. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--foreground) 25%, transparent) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--foreground) 25%, transparent);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 8px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--foreground) 40%, transparent);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
