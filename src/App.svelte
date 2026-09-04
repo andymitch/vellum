@@ -22,6 +22,7 @@
     onBackgroundSyncChanged,
     type TreeNode,
   } from "$lib/vault";
+  import { isAndroidApp, isMacApp } from "$lib/platform";
   import { session } from "$lib/session.svelte";
   import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
@@ -173,19 +174,20 @@
 
   const mobileInit = window.matchMedia("(max-width: 767px)").matches;
   let mobile = $state(mobileInit);
-  // macOS desktop uses an Overlay titlebar (traffic lights float over our header,
-  // so the window chrome takes the header's color). The header is compacted to the
-  // titlebar height and its left edge is inset to clear the lights — except in
-  // fullscreen, where macOS hides them and the toggle can sit flush left.
-  const isMacDesktop = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
-  const isAndroid = /Android/.test(navigator.userAgent);
-  const chromeIcon = isMacDesktop ? 14 : 16;
+  // The installed macOS app uses an Overlay titlebar (traffic lights float over our
+  // header, so the window chrome takes the header's color). The header is compacted
+  // to the titlebar height and its left edge is inset to clear the lights — except
+  // in fullscreen, where macOS hides them and the toggle can sit flush left. Safari
+  // on a Mac has no titlebar to dodge, hence isMacApp rather than a UA test.
+  const chromeIcon = isMacApp ? 14 : 16;
   let fullscreen = $state(false);
   // Check for an app update on launch: desktop via the Tauri updater, Android via
   // the GitHub releases check (#145). Both silently no-op if up to date/offline.
+  // The web app updates itself — the service worker fetches a new build in the
+  // background and it applies on the next load (#221).
   onMount(() => {
-    if (isMacDesktop) checkForUpdate();
-    else if (isAndroid) checkForUpdateMobile();
+    if (isMacApp) checkForUpdate();
+    else if (isAndroidApp) checkForUpdateMobile();
   });
   // Re-apply the Background sync setting on launch (re-arm the hub + restart the
   // platform keep-alive if it was left enabled).
@@ -204,7 +206,7 @@
     return () => un?.();
   });
   onMount(() => {
-    if (!isMacDesktop) return;
+    if (!isMacApp) return;
     const w = getCurrentWindow();
     const sync = () => w.isFullscreen().then((v) => (fullscreen = v));
     sync();
@@ -933,14 +935,14 @@
   <header
     data-tauri-drag-region
     bind:offsetHeight={headerH}
-    class="flex shrink-0 items-center justify-between gap-3 border-b border-border {isMacDesktop
+    class="flex shrink-0 items-center justify-between gap-3 border-b border-border {isMacApp
       ? 'min-h-0 px-2'
       : 'min-h-12 px-3 pb-2'} {mobile
       ? 'absolute inset-x-0 top-0 z-10 bg-background'
       : 'bg-secondary/40'}"
-    style="padding-top:calc(env(safe-area-inset-top) + {isMacDesktop
+    style="padding-top:calc(env(safe-area-inset-top) + {isMacApp
       ? '0.25rem'
-      : '0.5rem'});{isMacDesktop ? 'padding-bottom:0.25rem;' : ''}{isMacDesktop && !fullscreen
+      : '0.5rem'});{isMacApp ? 'padding-bottom:0.25rem;' : ''}{isMacApp && !fullscreen
       ? 'padding-left:78px;'
       : ''}{mobile
       ? `transition:transform 200ms ease, opacity 200ms ease;transform:translateY(${chromeHidden
@@ -951,7 +953,7 @@
     <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
       <button
         type="button"
-        class="rounded text-muted-foreground hover:bg-muted hover:text-foreground {isMacDesktop
+        class="rounded text-muted-foreground hover:bg-muted hover:text-foreground {isMacApp
           ? 'p-1'
           : 'p-1.5'}"
         aria-label="Toggle sidebar"
@@ -1000,7 +1002,7 @@
              sweep, so it doesn't sit there as dead chrome. -->
         <button
           type="button"
-          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
+          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacApp
             ? 'p-1'
             : 'p-2'}"
           aria-label="Remove completed items"
@@ -1021,7 +1023,7 @@
         onclick={() => setMode(mode === "source" ? "preview" : "source")}
       >
         <span
-          class="flex items-center justify-center rounded-full transition-colors {isMacDesktop
+          class="flex items-center justify-center rounded-full transition-colors {isMacApp
             ? 'p-1'
             : 'p-1.5'} {mode === 'source'
             ? 'bg-primary text-primary-foreground'
@@ -1030,7 +1032,7 @@
           <Code size={chromeIcon} />
         </span>
         <span
-          class="flex items-center justify-center rounded-full transition-colors {isMacDesktop
+          class="flex items-center justify-center rounded-full transition-colors {isMacApp
             ? 'p-1'
             : 'p-1.5'} {mode === 'preview'
             ? 'bg-primary text-primary-foreground'
@@ -1057,7 +1059,7 @@
       {/if}
       <button
         type="button"
-        class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacDesktop
+        class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacApp
           ? 'p-1'
           : 'p-2'}"
         aria-label="Settings"

@@ -1,7 +1,17 @@
-// Thin typed wrappers over the Rust commands. All logic lives in the backend;
-// this is just the invoke surface.
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+// The vault API the rest of the app talks to, and the choice of backend behind
+// it.
+//
+// Two modules implement it: `vault-tauri.ts` invokes the Rust commands (desktop
+// + Android), and `vault-web.ts` keeps notes in IndexedDB for the hosted web
+// build and the iOS PWA (#221/#222). The types and every method's contract live
+// here, because both backends and every caller are defined in terms of them.
+//
+// The destructuring export at the bottom is the whole switch: one list of
+// names, checked against `VaultBackend`, so a command added to one backend and
+// forgotten in the other doesn't compile.
+import { isTauri } from "./platform";
+import * as tauriBackend from "./vault-tauri";
+import * as webBackend from "./vault-web";
 
 export type VaultInfo = { id: string; name: string; pending: boolean; hash: string };
 export type TreeNode = {
@@ -11,62 +21,13 @@ export type TreeNode = {
   children: TreeNode[];
 };
 
-export const listVaults = () => invoke<VaultInfo[]>("list_vaults");
-export const createVault = (name: string) => invoke<VaultInfo>("create_vault", { name });
-export const joinVault = (ticket: string) => invoke<VaultInfo>("join_vault", { ticket });
-export const shareVault = (vault: string) => invoke<string>("share_vault", { vault });
-export const forgetVault = (vault: string) => invoke<void>("forget_vault", { vault });
-export const renameVault = (vault: string, name: string) =>
-  invoke<void>("rename_vault", { vault, name });
-
-export const listTree = (vault: string) => invoke<TreeNode[]>("list_tree", { vault });
-export const readNote = (vault: string, path: string) =>
-  invoke<string>("read_note", { vault, path });
-// Writes note content. Filename and content are independent — renaming is an
-// explicit file action (rename_path), never derived from the content. `base` is
-// the text the editor loaded; the backend 3-way merges base→content against any
-// concurrent peer edit so neither side is clobbered (#99). New notes pass "".
-export const writeNote = (vault: string, path: string, content: string, base = "") =>
-  invoke<void>("write_note", { vault, path, base, content });
-// Returns the actual (possibly de-duplicated) path of the created note.
-export const createNote = (vault: string, path: string) =>
-  invoke<string>("create_note", { vault, path });
-export const createFolder = (vault: string, path: string) =>
-  invoke<void>("create_folder", { vault, path });
-// Markdown export/import (#79). Bytes cross IPC as a number[]; the caller wraps
-// them in a Uint8Array / Array.from for the fs plugin.
-export const exportVault = (vault: string) => invoke<number[]>("export_vault", { vault });
-export const importVault = (vault: string, data: number[]) =>
-  invoke<number>("import_vault", { vault, data });
-// Hand a note to the OS share sheet — email, Messages/SMS, AirDrop (#105).
-// Backend-side because it needs AppKit / an Android intent; nothing crosses IPC
-// but the ids, since the backend reads the saved note itself.
-export const shareNote = (vault: string, path: string) =>
-  invoke<void>("share_note", { vault, path });
-export const renamePath = (vault: string, from: string, to: string, isDir: boolean) =>
-  invoke<void>("rename_path", { vault, from, to, isDir });
-export const deletePath = (vault: string, path: string, isDir: boolean) =>
-  invoke<void>("delete_path", { vault, path, isDir });
-export const watchVault = (vault: string) => invoke<void>("watch_vault", { vault });
-
-// Toggle background "live sync": arm every vault as an always-on hub and flip
-// the platform keep-alive (desktop tray + launch-at-login / Android foreground
-// service) so syncing continues with no window open / while backgrounded.
-export const setBackgroundSync = (enabled: boolean) =>
-  invoke<void>("set_background_sync", { enabled });
-
-export const onVaultChanged = (cb: (vaultId: string) => void): Promise<UnlistenFn> =>
-  listen<string>("vault-changed", (e) => cb(e.payload));
-
-// Emitted by the backend when background sync is changed outside the Settings
-// toggle (e.g. "Turn off background sync" from the desktop tray).
-export const onBackgroundSyncChanged = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
-  listen<boolean>("background-sync", (e) => cb(e.payload));
+/// Cancels an event subscription.
+export type Unlisten = () => void;
 
 // ---- local MCP server (#164) ----
 // Lets agents (Claude Code, Claude Desktop, …) CRUD notes over a loopback,
 // token-authenticated MCP endpoint hosted by this app. Desktop only — the
-// mobile build answers with a disabled status.
+// mobile and web builds answer with a disabled status.
 export type McpStatus = {
   enabled: boolean;
   port: number | null;
@@ -75,10 +36,6 @@ export type McpStatus = {
   /// Ready-to-paste `claude mcp add …` line; null while stopped.
   command: string | null;
 };
-
-export const mcpStatus = () => invoke<McpStatus>("mcp_status");
-export const setMcpEnabled = (enabled: boolean) =>
-  invoke<McpStatus>("set_mcp_enabled", { enabled });
 
 // ---- search + tags (#15) ----
 // Both scan every note in the vault (each read is a CRDT merge), so callers
@@ -89,10 +46,6 @@ export type SearchHit = {
   lines: string[];
 };
 export type TagCount = { tag: string; count: number };
-
-export const searchNotes = (vault: string, query: string, max?: number) =>
-  invoke<SearchHit[]>("search_notes", { vault, query, max });
-export const listTags = (vault: string) => invoke<TagCount[]>("list_tags", { vault });
 
 // ---- link previews (#62) ----
 // Open Graph metadata for an external link, fetched backend-side (CORS blocks
@@ -107,15 +60,11 @@ export type LinkPreview = {
   site_name: string | null;
   image: string | null;
 };
-export const fetchLinkPreview = (url: string) =>
-  invoke<LinkPreview | null>("fetch_link_preview", { url });
 
 // Note types for the file tree's icons (#180/#181). Only typed notes come back —
 // plain Markdown is the default and would be noise. This scans every note, so
 // callers should debounce rather than refetch on each vault-changed event.
 export type NoteTypeEntry = { path: string; note_type: string };
-export const listNoteTypes = (vault: string) =>
-  invoke<NoteTypeEntry[]>("list_note_types", { vault });
 
 // ---- linked folders (#219) ----
 // Mirrors a vault folder to a directory under app storage, kept in sync both
@@ -132,9 +81,114 @@ export type LinkInfo = {
   enabled: boolean;
 };
 
-export const listLinks = () => invoke<LinkInfo[]>("list_links");
-export const addLink = (vault: string, folder: string) =>
-  invoke<LinkInfo>("add_link", { vault, folder });
-export const removeLink = (id: string) => invoke<void>("remove_link", { id });
-export const setLinkEnabled = (id: string, enabled: boolean) =>
-  invoke<LinkInfo>("set_link_enabled", { id, enabled });
+/// Everything the app can ask of a vault. Implemented twice — see the header.
+///
+/// A capability a backend genuinely lacks is expressed one of two ways, and the
+/// choice matters at the call site:
+///
+///   - it *reports* itself off (`mcpStatus`, `listLinks`), for the things whose
+///     UI reads a status and would just show a disabled control; or
+///   - it *rejects* (`shareVault`, `joinVault`), for the things that would
+///     otherwise silently do nothing. The UI hides those affordances up front
+///     via the `platform.ts` flags, so the rejection is a backstop.
+export interface VaultBackend {
+  listVaults(): Promise<VaultInfo[]>;
+  createVault(name: string): Promise<VaultInfo>;
+  /// Join a vault from a share ticket. Web: rejects — there is no p2p node.
+  joinVault(ticket: string): Promise<VaultInfo>;
+  /// Write-capability ticket for a vault, rendered as a QR code by the caller.
+  /// Web: rejects.
+  shareVault(vault: string): Promise<string>;
+  forgetVault(vault: string): Promise<void>;
+  renameVault(vault: string, name: string): Promise<void>;
+
+  listTree(vault: string): Promise<TreeNode[]>;
+  readNote(vault: string, path: string): Promise<string>;
+  /// Write note content. Filename and content are independent — renaming is an
+  /// explicit file action (`renamePath`), never derived from the content.
+  /// `base` is the text the editor loaded; the Tauri backend 3-way merges
+  /// base→content against any concurrent peer edit so neither side is clobbered
+  /// (#99). New notes pass "".
+  writeNote(vault: string, path: string, content: string, base?: string): Promise<void>;
+  /// Returns the actual (possibly de-duplicated) path of the created note.
+  createNote(vault: string, path: string): Promise<string>;
+  createFolder(vault: string, path: string): Promise<void>;
+  /// Markdown export/import (#79): a zip of .md files mirroring the folder
+  /// tree. Both backends read and write the same archive, which is how notes
+  /// move between the installed app and the web app.
+  exportVault(vault: string): Promise<Uint8Array>;
+  /// Returns the number of notes added.
+  importVault(vault: string, data: Uint8Array): Promise<number>;
+  /// Hand a note to the OS share sheet — email, Messages/SMS, AirDrop (#105).
+  /// Native on desktop/Android (AppKit / an Android intent); the Web Share API
+  /// in the browser.
+  shareNote(vault: string, path: string): Promise<void>;
+  renamePath(vault: string, from: string, to: string, isDir: boolean): Promise<void>;
+  deletePath(vault: string, path: string, isDir: boolean): Promise<void>;
+  /// Start emitting `onVaultChanged` for this vault's peer edits. Web: no-op,
+  /// since the only writer is this browser.
+  watchVault(vault: string): Promise<void>;
+
+  /// Toggle background "live sync": arm every vault as an always-on hub and
+  /// flip the platform keep-alive (desktop tray + launch-at-login / Android
+  /// foreground service) so syncing continues with no window open / while
+  /// backgrounded. Web: no-op.
+  setBackgroundSync(enabled: boolean): Promise<void>;
+
+  /// Fires when a vault's contents changed underneath us — a peer edit, a
+  /// linked-folder write, or (web) another tab.
+  onVaultChanged(cb: (vaultId: string) => void): Promise<Unlisten>;
+  /// Fires when background sync is changed outside the Settings toggle (e.g.
+  /// "Turn off background sync" from the desktop tray).
+  onBackgroundSyncChanged(cb: (on: boolean) => void): Promise<Unlisten>;
+
+  mcpStatus(): Promise<McpStatus>;
+  setMcpEnabled(enabled: boolean): Promise<McpStatus>;
+
+  searchNotes(vault: string, query: string, max?: number): Promise<SearchHit[]>;
+  listTags(vault: string): Promise<TagCount[]>;
+
+  fetchLinkPreview(url: string): Promise<LinkPreview | null>;
+
+  listNoteTypes(vault: string): Promise<NoteTypeEntry[]>;
+
+  listLinks(): Promise<LinkInfo[]>;
+  addLink(vault: string, folder: string): Promise<LinkInfo>;
+  removeLink(id: string): Promise<void>;
+  setLinkEnabled(id: string, enabled: boolean): Promise<LinkInfo>;
+}
+
+const backend: VaultBackend = isTauri ? tauriBackend : webBackend;
+
+export const {
+  listVaults,
+  createVault,
+  joinVault,
+  shareVault,
+  forgetVault,
+  renameVault,
+  listTree,
+  readNote,
+  writeNote,
+  createNote,
+  createFolder,
+  exportVault,
+  importVault,
+  shareNote,
+  renamePath,
+  deletePath,
+  watchVault,
+  setBackgroundSync,
+  onVaultChanged,
+  onBackgroundSyncChanged,
+  mcpStatus,
+  setMcpEnabled,
+  searchNotes,
+  listTags,
+  fetchLinkPreview,
+  listNoteTypes,
+  listLinks,
+  addLink,
+  removeLink,
+  setLinkEnabled,
+} = backend;

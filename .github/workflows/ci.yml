@@ -38,10 +38,19 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Type-check
         run: bun run check
+      # The browser vault re-implements rules that live in vault.rs (tree shape,
+      # search ranking, tag counts); these tests are what keeps the two from
+      # drifting apart (#221).
+      - name: Test
+        run: bun test
       # Catches what type-checking can't: a broken import, a Svelte compile
       # error, or a plugin misconfiguration only the real build hits.
       - name: Build
         run: bun run build
+      # The hosted build is a second packaging of the same bundle (service
+      # worker, manifest, subdirectory base), so it can break on its own.
+      - name: Build web
+        run: bun run build:web
 
   rust:
     # macOS, matching release.yml's desktop job: the desktop build is the one

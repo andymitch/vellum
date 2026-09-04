@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openExternal } from "$lib/host";
   import { theme } from "$lib/theme.svelte";
   import type { Mermaid } from "mermaid";
 
@@ -122,7 +122,7 @@
     const href = a.getAttribute("href");
     if (!href || !/^(https?:|mailto:)/i.test(href)) return;
     e.preventDefault();
-    openUrl(href);
+    openExternal(href);
   }
 
   // ---- Mermaid diagrams -------------------------------------------------
