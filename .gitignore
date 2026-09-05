@@ -18,3 +18,4 @@ keystore.properties
 # Spike build output (spike/iroh-wasm)
 /spike/*/target
 /spike/*/web/pkg
+/spike/*/Cargo.lock

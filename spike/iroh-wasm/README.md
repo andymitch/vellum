@@ -9,11 +9,19 @@ do (compiled to WASM) rather than a separate browser-only store.
 1. **It compiles.** `iroh` 1.1, `iroh-docs` 0.101, `iroh-blobs` 0.103,
    `iroh-gossip` 0.101 and `yrs` 0.27 all build for `wasm32-unknown-unknown` at
    the versions `src-tauri/Cargo.toml` pins.
-2. **It runs and syncs.** Two independent browser tabs, each with its own iroh
-   node: one creates a vault, the other joins it from a share ticket, both write
-   a note, and each sees the other's note **with its content** (read back out of
-   the blob store) in **~0.5 s** over a relay. Same result for a release build.
-3. **Payload**: 8.8 MB wasm, **2.7 MB gzipped** over the wire, before
+2. **It runs and syncs, browser to browser.** Two independent browser tabs, each
+   with its own iroh node: one creates a vault, the other joins it from a share
+   ticket, both write a note, and each sees the other's note **with its content**
+   (read back out of the blob store) in **~0.5 s** over a relay. Same result for
+   a release build. (`twopeers.mjs`)
+3. **It syncs browser to native**, which is the pairing that matters — a phone
+   browser against the installed desktop app. The browser fetched the desktop
+   peer's ticket, joined, and read the desktop's note with content in ~0.5 s;
+   the desktop peer received the browser's note in the same window
+   (`HOST SUCCESS`). The native side ran with default features — `fs-store`,
+   `rpc` — i.e. the stack the desktop app actually ships.
+   (`crossshell.mjs` + `../iroh-native-peer`)
+4. **Payload**: 8.8 MB wasm, **2.7 MB gzipped** over the wire, before
    `wasm-opt`.
 
 ## What it took
@@ -35,19 +43,16 @@ do (compiled to WASM) rather than a separate browser-only store.
 
 ## What is still unproven
 
-- **Browser <-> native sync**, which is the case that matters (phone browser
-  syncing with the desktop app). Not run here for lack of disk space for a
-  native build. It is the easier direction — the browser dials, the native peer
-  accepts — but it should be run before committing to this route.
 - **Persistence.** Both stores above are in memory: reload the tab and the notes
-  are gone. A real port needs either snapshotting the redb backend + blobs into
-  IndexedDB, or a redb `Backend` over OPFS sync access handles (which means
-  running in a Web Worker). The endpoint secret and author key need storing too.
+  are gone. This is the substantial remaining question — see PERSISTENCE.md for
+  the options and a recommendation.
 - **Blocking the UI.** iroh's browser build is single-threaded; CRDT merges and
   blob hashing on the main thread would jank the editor. A Worker is probably
   required regardless of the storage choice.
 
 ## Running it
+
+### Browser to browser
 
 ```sh
 export CC_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/clang"
@@ -67,4 +72,15 @@ wasm-bindgen --target web --out-dir web/pkg --no-typescript \
 node twopeers.mjs   # exits 0 only if both directions synced
 ```
 
-Needs internet: browser peers reach each other through n0's relays.
+### Browser to native
+
+With the page server and Chrome from above still running:
+
+```sh
+cargo run --manifest-path ../iroh-native-peer/Cargo.toml &   # prints its ticket
+node crossshell.mjs   # exits 0 only if the browser read the desktop's note;
+                      # the native peer prints HOST SUCCESS for the other way
+```
+
+Needs internet: a browser peer has no direct addresses, so every connection
+goes through a relay.
