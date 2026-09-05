@@ -2887,6 +2887,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Export → import round-trip (#79): the archive format is how notes move
+    /// between the installed app and the web app, and both now write it with
+    /// this same code. Covers the folder-preserving and de-duplicating rules the
+    /// browser backend's own suite used to check in TypeScript.
+    #[tokio::test]
+    async fn export_import_round_trip() {
+        let base = std::env::temp_dir().join(format!("notes-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = init(base.clone()).await.expect("node");
+        let v = create(&a, "Zip".into()).await.expect("create").id;
+        write(&a, &v, "top.md", "", "at the top").await.expect("write");
+        write(&a, &v, "work/deep.md", "", "in a folder").await.expect("write");
+        create_folder_at(&a, &v, "empty").await.expect("empty folder");
+
+        let archive = export_zip(&a, &v).await.expect("export");
+        assert!(!archive.is_empty(), "archive has bytes");
+
+        // Importing into the same vault must not clobber: every name collides,
+        // so free_key de-duplicates and the note count doubles rather than the
+        // originals being overwritten.
+        let added = import_zip(&a, &v, archive.clone()).await.expect("import");
+        assert_eq!(added, 2, "both notes imported");
+        let tree = tree(&a, &v).await.expect("tree");
+        let names: Vec<&str> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"empty"), "empty folder survived the round-trip");
+        assert!(names.contains(&"work"), "folder survived the round-trip");
+
+        // Originals still readable, so the import added rather than replaced.
+        assert_eq!(read(&a, &v, "top.md").await.expect("read"), "at the top");
+        assert_eq!(read(&a, &v, "work/deep.md").await.expect("read"), "in a folder");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// #120 unit checks: short_hash is idempotent + fixed length, and load_names
     /// skips blank/whitespace overrides.
     #[tokio::test]

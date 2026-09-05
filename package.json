@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "bun run build:wasm && vite build",
     "dev:web": "vite dev --mode web",
-    "build:web": "vite build --mode web",
+    "build:web": "bun run build:wasm && vite build --mode web",
     "preview": "vite preview --mode web",
     "test": "bun test",
     "check": "svelte-check --tsconfig ./tsconfig.app.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.app.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:wasm": "cargo build --manifest-path crates/vellum-wasm/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/lib/wasm/pkg --no-typescript crates/vellum-wasm/target/wasm32-unknown-unknown/release/vellum_wasm.wasm"
   },
   "license": "MIT",
   "dependencies": {

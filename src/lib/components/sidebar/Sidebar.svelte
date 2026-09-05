@@ -49,11 +49,14 @@
     import { createAndOpenNote, duplicateNote } from "$lib/notes";
     import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
-    // Sharing a vault is the p2p feature: it mints a write-capability ticket for
-    // another device to join. The web build has no node to sync with, so the
-    // Share and Join affordances are hidden there rather than left to fail (#221).
-    const canSync = isTauri;
-    // The native camera scanner is a Tauri plugin and only exists on mobile.
+    // Sharing a vault mints a write-capability ticket for another device to
+    // join. Every build can do it now: the web build runs the same iroh node
+    // compiled to wasm, so a browser tab is a real peer (#221/#222). It reaches
+    // others only through a relay — no mDNS, so no LAN-speed transfers — but
+    // that is a performance difference, not a missing feature.
+    const canSync = true;
+    // The native camera scanner is a Tauri plugin and only exists on mobile; a
+    // browser pastes the ticket instead.
     const canScan = isTauri && isMobile;
 
     async function scanQr(): Promise<string | null> {

@@ -2,16 +2,22 @@
 // it.
 //
 // Two modules implement it: `vault-tauri.ts` invokes the Rust commands (desktop
-// + Android), and `vault-web.ts` keeps notes in IndexedDB for the hosted web
-// build and the iOS PWA (#221/#222). The types and every method's contract live
-// here, because both backends and every caller are defined in terms of them.
+// + Android), and `vault-wasm.ts` drives the same Rust vault compiled to wasm in
+// a worker, for the hosted web build and the iOS PWA (#221/#222). The types and
+// every method's contract live here, because both backends and every caller are
+// defined in terms of them.
+//
+// Both backends therefore run the *same* vault logic; the difference is the
+// shell around it, not the rules inside. That is deliberate — the browser build
+// used to re-implement those rules over IndexedDB, which meant a second source
+// of truth for note text (the shape of #167) and no sync at all.
 //
 // The destructuring export at the bottom is the whole switch: one list of
 // names, checked against `VaultBackend`, so a command added to one backend and
 // forgotten in the other doesn't compile.
 import { isTauri } from "./platform";
 import * as tauriBackend from "./vault-tauri";
-import * as webBackend from "./vault-web";
+import * as wasmBackend from "./vault-wasm";
 
 export type VaultInfo = { id: string; name: string; pending: boolean; hash: string };
 export type TreeNode = {
@@ -94,10 +100,10 @@ export type LinkInfo = {
 export interface VaultBackend {
   listVaults(): Promise<VaultInfo[]>;
   createVault(name: string): Promise<VaultInfo>;
-  /// Join a vault from a share ticket. Web: rejects — there is no p2p node.
+  /// Join a vault from a share ticket. Works on every backend — the browser
+  /// runs a real iroh node too, it just reaches peers only through a relay.
   joinVault(ticket: string): Promise<VaultInfo>;
   /// Write-capability ticket for a vault, rendered as a QR code by the caller.
-  /// Web: rejects.
   shareVault(vault: string): Promise<string>;
   forgetVault(vault: string): Promise<void>;
   renameVault(vault: string, name: string): Promise<void>;
@@ -125,14 +131,14 @@ export interface VaultBackend {
   shareNote(vault: string, path: string): Promise<void>;
   renamePath(vault: string, from: string, to: string, isDir: boolean): Promise<void>;
   deletePath(vault: string, path: string, isDir: boolean): Promise<void>;
-  /// Start emitting `onVaultChanged` for this vault's peer edits. Web: no-op,
-  /// since the only writer is this browser.
+  /// Start emitting `onVaultChanged` for this vault's peer edits.
   watchVault(vault: string): Promise<void>;
 
   /// Toggle background "live sync": arm every vault as an always-on hub and
   /// flip the platform keep-alive (desktop tray + launch-at-login / Android
   /// foreground service) so syncing continues with no window open / while
-  /// backgrounded. Web: no-op.
+  /// backgrounded. In the browser there is no keep-alive to flip — a closed tab
+  /// stops syncing regardless — but arming every vault still applies.
   setBackgroundSync(enabled: boolean): Promise<void>;
 
   /// Fires when a vault's contents changed underneath us — a peer edit, a
@@ -158,7 +164,7 @@ export interface VaultBackend {
   setLinkEnabled(id: string, enabled: boolean): Promise<LinkInfo>;
 }
 
-const backend: VaultBackend = isTauri ? tauriBackend : webBackend;
+const backend: VaultBackend = isTauri ? tauriBackend : wasmBackend;
 
 export const {
   listVaults,

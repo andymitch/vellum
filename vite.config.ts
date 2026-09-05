@@ -70,14 +70,38 @@ export default defineConfig(({ mode }) => {
                 globPatterns: ["**/*.{css,html,png,svg,webmanifest,woff,woff2}"],
                 runtimeCaching: [
                   {
+                    // "worker" as well as "script": the vault runs in a module
+                    // worker, and a worker's fetch does not report itself as a
+                    // script, so a script-only rule would leave the app unable
+                    // to start its own backend offline.
                     urlPattern: ({ url, request }) =>
-                      url.origin === self.location.origin && request.destination === "script",
+                      url.origin === self.location.origin &&
+                      (request.destination === "script" || request.destination === "worker"),
                     handler: "StaleWhileRevalidate",
                     options: {
                       cacheName: "vellum-scripts",
                       // Chunk names are content-hashed, so superseded entries
                       // would otherwise pile up forever.
                       expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 60 },
+                    },
+                  },
+                  {
+                    // The vault itself (~10 MB). Not precached — that would put
+                    // it in the critical path of a first visit — but it is not
+                    // optional the way a diagram chunk is: without it there is
+                    // no backend and no vault to open, so once fetched it must
+                    // stay. CacheFirst is safe because the filename is
+                    // content-hashed, so a new build is a new URL.
+                    //
+                    // A wasm fetch reports no useful `destination`, which is why
+                    // this matches on the extension rather than on the request.
+                    urlPattern: ({ url }) =>
+                      url.origin === self.location.origin && url.pathname.endsWith(".wasm"),
+                    handler: "CacheFirst",
+                    options: {
+                      cacheName: "vellum-vault-wasm",
+                      // Two: the live build and the one it just replaced.
+                      expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 60 },
                     },
                   },
                 ],
@@ -110,6 +134,15 @@ export default defineConfig(({ mode }) => {
       // Tauri serves the static build from ../build (frontendDist); the hosted
       // build goes elsewhere so the two never overwrite each other.
       outDir: web ? "build-web" : "build",
+      // The vault's wasm module is ~10 MB. Left inlined it would be base64'd
+      // into a JS chunk, which is both bigger and un-streamable.
+      assetsInlineLimit: 0,
+    },
+
+    // The vault worker is a module: it top-level-awaits `init()` before serving
+    // commands, and Vite's default `iife` worker format cannot express that.
+    worker: {
+      format: "es",
     },
 
     // Vite options tailored for Tauri development

@@ -35,12 +35,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates/vellum-wasm
+      # The browser build *is* the vault compiled to wasm, so the frontend can
+      # no longer be built without a Rust toolchain. wasm-bindgen's CLI has to
+      # match the crate's wasm-bindgen dependency exactly or the glue it emits
+      # will not load.
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - run: bun install --frozen-lockfile
       - name: Type-check
         run: bun run check
-      # The browser vault re-implements rules that live in vault.rs (tree shape,
-      # search ranking, tag counts); these tests are what keeps the two from
-      # drifting apart (#221).
+      # Tag rules that still live in TypeScript (the editor's highlighting and
+      # tag queries). The vault's own rules — tree shape, search ranking, tag
+      # counts — moved into vellum-vault and are tested there, in the same code
+      # both shells run.
       - name: Test
         run: bun test
       # Catches what type-checking can't: a broken import, a Svelte compile
@@ -76,9 +89,10 @@ jobs:
       # The point of the split: the browser build runs this same vault compiled
       # to wasm rather than a second implementation of the same rules. If the
       # core stops building for wasm, that plan is broken and this says so.
+      # Faster than waiting for the frontend job's full wasm build to fail, and
+      # it isolates the cause: the core stopped being portable, rather than the
+      # browser shell breaking. RUSTFLAGS comes from .cargo/config.toml.
       - name: Check the vault core still builds for the browser
-        env:
-          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --manifest-path crates/vellum-vault/Cargo.toml \

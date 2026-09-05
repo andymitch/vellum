@@ -24,5 +24,9 @@
       "$lib/*": ["./src/lib/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "src/**/*.svelte.ts"]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "src/**/*.svelte.ts"],
+  // wasm-bindgen output plus the worker bootstrap that loads it. `checkJs` is on
+  // for our own JS, but this is generated code and a module whose only job is to
+  // instantiate it — type-checking either says nothing useful.
+  "exclude": ["src/lib/wasm/**"]
 }

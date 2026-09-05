@@ -1,0 +1,5 @@
+# getrandom needs telling that "wasm32-unknown-unknown" means a browser here,
+# not a bare target with no entropy source. iroh's own repo does the same.
+# Target-scoped, so desktop and Android builds are untouched.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

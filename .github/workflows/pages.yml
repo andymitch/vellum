@@ -44,6 +44,17 @@ jobs:
       - id: pages
         uses: actions/configure-pages@v5
       - uses: oven-sh/setup-bun@v2
+      # The web app *is* the vault compiled to wasm now, so deploying it needs a
+      # Rust toolchain. wasm-bindgen's CLI version must match the crate's
+      # wasm-bindgen dependency or the glue it emits will not load.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates/vellum-wasm
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - run: bun install --frozen-lockfile
       - name: Build the web app
         env:
