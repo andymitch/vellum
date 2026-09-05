@@ -23,3 +23,8 @@ keystore.properties
 
 # Cargo build output (workspace target)
 /target
+
+# Workspace members share the root Cargo.lock; per-member locks are ignored
+# by cargo and only go stale.
+/src-tauri/Cargo.lock
+/crates/*/Cargo.lock
