@@ -1,0 +1,30 @@
+[package]
+name = "iroh-wasm-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The same versions src-tauri/Cargo.toml pins, so this says something about
+# Vellum rather than about the newest iroh.
+iroh = "1.0.0"
+# default-features = false is load-bearing on both:
+#   - `rpc` pulls tokio's `net` feature (mio), which does not build for wasm.
+#     The in-process api/protocol surface vault.rs already uses works without it.
+#   - `fs-store` is redb-on-a-file plus reflink; a browser has no such file. The
+#     replica falls back to redb's in-memory (Vec<u8>) backend and blobs to
+#     MemStore, which is also the open question for a real port — see README.
+iroh-docs = { version = "0.101.0", default-features = false }
+iroh-blobs = { version = "0.103.0", default-features = false }
+iroh-gossip = { version = "0.101.0", default-features = false }
+yrs = "0.27.2"
+anyhow = "1"
+futures-lite = "2"
+n0-future = "0.3"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.3", features = ["wasm_js"] }

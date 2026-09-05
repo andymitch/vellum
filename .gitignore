@@ -14,3 +14,7 @@ vite.config.ts.timestamp-*
 *.jks
 *.keystore
 keystore.properties
+
+# Spike build output (spike/iroh-wasm)
+/spike/*/target
+/spike/*/web/pkg

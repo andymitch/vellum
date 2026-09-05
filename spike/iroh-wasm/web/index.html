@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>iroh wasm spike</title></head>
+  <body>
+    <pre id="log">booting…</pre>
+    <script type="module">
+      import init, { start, write, dump } from "./pkg/iroh_wasm_spike.js";
+      window.ready = init().then(() => {
+        document.getElementById("log").textContent = "ready";
+        return "ready";
+      });
+      window.api = { start, write, dump };
+    </script>
+  </body>
+</html>
