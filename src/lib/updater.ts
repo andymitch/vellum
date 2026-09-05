@@ -5,7 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
+import { appVersion } from "./platform";
 import { betaChannel } from "./beta-channel.svelte";
 
 const REPO = "andymitch/vellum";
@@ -90,12 +90,9 @@ export async function fetchChannelRelease(): Promise<LatestRelease | null> {
     // Also treat a running pre-release as the beta channel. Someone who opted in,
     // updated, then switched the toggle off is still running a beta until stable
     // overtakes them, and should not be shown notes for a build older than the
-    // one in front of them.
-    try {
-      beta = (await getVersion()).includes("-");
-    } catch {
-      // Version unavailable (non-Tauri context) — fall back to the toggle alone.
-    }
+    // one in front of them. The web build says the same thing with the tag it
+    // was cut from (`v10-beta.2`, `v10-beta.2+3`), so the hyphen test holds.
+    beta = (await appVersion()).includes("-");
   }
   if (!beta) return fetchLatestRelease();
   // A tester with no pre-release published yet still deserves a changelog.
@@ -168,12 +165,7 @@ export async function checkForUpdate(): Promise<void> {
 // always gives feedback — dev build, up to date, error, or the update prompt —
 // since the user explicitly asked.
 export async function checkForUpdateInteractive(): Promise<void> {
-  let current = "";
-  try {
-    current = await getVersion();
-  } catch {
-    // ignore — fall through; the update check below still reports status
-  }
+  const current = await appVersion();
   if (current && isDevVersion(current)) {
     await message("This is a development build — in-app updates are disabled.", {
       title: "Check for updates",
@@ -210,12 +202,7 @@ export async function checkForUpdateInteractive(): Promise<void> {
 // release page to grab the APK. Silent on launch; `interactive` (Settings button)
 // always reports status. Skips dev (0.x) builds like the desktop path.
 export async function checkForUpdateMobile(interactive = false): Promise<void> {
-  let current = "";
-  try {
-    current = await getVersion();
-  } catch {
-    // ignore — treated as unknown current version below
-  }
+  const current = await appVersion();
   if (current && isDevVersion(current)) {
     if (interactive) {
       await message("This is a development build — update checks are disabled.", {

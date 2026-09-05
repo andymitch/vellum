@@ -1,19 +1,22 @@
 name: Pages
 
-# Publishes the static site in site/ to GitHub Pages (#106).
+# Publishes to GitHub Pages (#106, #221):
+#
+#   /      the marketing site in site/
+#   /app/  the hosted web build of Vellum itself, which iOS installs as a PWA
 #
 # Requires a one-time repo setting: Settings → Pages → Source = "GitHub Actions".
 # Without it, the deploy step fails with "Pages site not found" — the workflow
 # cannot enable Pages on its own.
 #
-# Only runs when the site itself changes, so ordinary app commits don't trigger
-# a deploy. workflow_dispatch is kept for re-publishing without a content change.
+# Runs on every push to main, not just site/** changes as before: the published
+# artifact now contains the app, so an app commit that didn't redeploy would
+# leave the web version stale. The web app therefore tracks main — which is why
+# it reports its version as the last tag plus the commits since (see the version
+# stamp below), rather than pretending to be a release.
 on:
   push:
     branches: [main]
-    paths:
-      - "site/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -34,12 +37,52 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      # Full history so `git describe` can name the last release below.
       - uses: actions/checkout@v5
-      - uses: actions/configure-pages@v5
-      # The site is hand-written HTML/CSS with no build step — the directory is
-      # uploaded as-is.
+        with:
+          fetch-depth: 0
+      - id: pages
+        uses: actions/configure-pages@v5
+      - uses: oven-sh/setup-bun@v2
+      # The web app *is* the vault compiled to wasm now, so deploying it needs a
+      # Rust toolchain. wasm-bindgen's CLI version must match the crate's
+      # wasm-bindgen dependency or the glue it emits will not load.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates/vellum-wasm
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - run: bun install --frozen-lockfile
+      - name: Build the web app
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          set -euo pipefail
+          # The base has to be baked in at build time — it prefixes every asset
+          # URL, the web manifest and the service worker's scope. base_path is
+          # "/vellum" for a project page and "/" for a user page or a custom
+          # domain, so normalise it: the app is always at <base>/app/.
+          BASE="${BASE_PATH:-/}"
+          export VELLUM_BASE="${BASE%/}/app/"
+          # Name the build after the last release plus the commits since it
+          # (v10-beta.2+3), so a bug report from the web app says which code it
+          # was running. Exactly a tag when the deploy is a release commit.
+          export VELLUM_VERSION="$(git describe --tags --always | sed 's/-\([0-9]*\)-g[0-9a-f]*$/+\1/')"
+          echo "base $VELLUM_BASE, version $VELLUM_VERSION"
+          bun run build:web
+      # The site is hand-written HTML/CSS with no build step, so it is copied
+      # as-is; the app is dropped in beside it under /app/.
+      - name: Assemble the artifact
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          cp -r site _site
+          cp -r build-web _site/app
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
       - id: deploy
         uses: actions/deploy-pages@v4

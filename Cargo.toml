@@ -1,0 +1,18 @@
+# Workspace so the shells and the vault core share one target directory.
+#
+# Without this each crate builds the whole iroh dependency tree into its own
+# `target/` — three copies once the wasm shell lands, which is tens of GB and
+# was filling the disk during the split.
+#
+# Deliberately no `[patch.crates-io]` here. The browser shell needs a patched
+# iroh-docs (a public `Store` constructor over `redb::StorageBackend`), but a
+# workspace patch would apply to the desktop build too, and the app that ships
+# should keep building against stock crates.io. The wasm crate carries its own
+# patch and its own target instead.
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/vellum-vault"]
+# Vendored third-party source and the browser shell that patches to it. Both
+# stay outside the workspace: the desktop app must keep building against stock
+# crates.io iroh-docs, and a workspace-level `[patch]` would apply to everyone.
+exclude = ["crates/iroh-docs-vellum", "crates/vellum-wasm"]

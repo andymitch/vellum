@@ -36,6 +36,43 @@ export type TagMatch = {
   tag: string;
 };
 
+/// Read a search query as a tag query, returning the bare (lower-cased) tag if
+/// it is one — mirrors `as_tag_query` in vault.rs.
+///
+/// The palette leaves its tag-picker mode by rewriting the query, and a preview
+/// chip seeds the query the same way, so a tag query can arrive with
+/// surrounding whitespace; trimming here is what stops that whitespace becoming
+/// part of the needle (#202). The body is validated with exactly the rules
+/// `scanTags` uses, so a query only counts as a tag when it could have been
+/// produced as one.
+export function asTagQuery(query: string): string | null {
+  const s = query.trim();
+  if (!s.startsWith("#")) return null;
+  const body = s.slice(1);
+  if (!/^[\p{L}\p{N}][\p{L}\p{N}_/-]*$/u.test(body)) return null;
+  const tag = trimTag(body);
+  return tag ? tag.toLowerCase() : null;
+}
+
+/// The distinct tags in a note, in order of appearance, de-duplicated
+/// case-insensitively — the `extract_tags` contract, which the vault's tag
+/// counts and tag search are defined in terms of.
+export function distinctTags(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const { tag } of scanTags(text)) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
+}
+
+/// Whether `text` carries `tag` as a real inline tag rather than as loose text.
+export const hasTag = (text: string, tag: string): boolean =>
+  distinctTags(text).some((t) => t.toLowerCase() === tag.toLowerCase());
+
 /// Scan `text` for inline tags, in order of appearance. Unlike `extract_tags`
 /// this keeps positions and does not de-duplicate, because callers decorate
 /// every occurrence rather than listing distinct tags.

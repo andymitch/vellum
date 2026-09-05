@@ -8,6 +8,20 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>Vellum</title>
+    <meta name="description" content="A local-first Markdown notes app." />
+    <!-- Installable web app (#221/#222). The manifest and the service worker
+         registration are injected by vite-plugin-pwa in the web build only;
+         these tags are inert in the Tauri builds.
+
+         iOS reads apple-touch-icon rather than the manifest icons, and needs
+         apple-mobile-web-app-capable before 16.4 to launch full-screen. The
+         status-bar style is deliberately left unset so iOS tints the bar from
+         the theme-color meta, which theme.svelte.ts keeps in step with the
+         chosen palette. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Vellum" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <!-- Apply the saved theme before paint to avoid a flash. Mirrors theme.svelte.ts. -->
     <script>
       try {

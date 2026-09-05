@@ -1,7 +1,16 @@
 <script lang="ts">
   import { fade, fly, slide } from "svelte/transition";
-  import { X, Copy, FolderInput, FolderPlus, FolderOpen, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2, Mail } from "@lucide/svelte";
-  import { getVersion } from "@tauri-apps/api/app";
+  import { X, Copy, Download, FolderInput, FolderPlus, FolderOpen, CopyPlus, Trash2, Pencil, FileDown, FileUp, Archive, ArchiveRestore, BookOpen, ChevronRight, Newspaper, Keyboard, Share2, Mail } from "@lucide/svelte";
+  import {
+    appVersion,
+    isDesktopApp,
+    isIOS,
+    isMac,
+    isMobile,
+    isStandalone,
+    isTauri,
+    isWeb,
+  } from "$lib/platform";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
@@ -16,7 +25,8 @@
     fetchChannelRelease,
     type LatestRelease,
   } from "$lib/updater";
-  import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { openExternal } from "$lib/host";
   import { marked } from "marked";
   import { portal } from "$lib/portal";
 
@@ -73,10 +83,6 @@
     }
   }
 
-  // Quick edit is a mobile-only behavior (tap preview → source + keyboard), so
-  // only surface its toggle on a touch device — matching the Scan button gate.
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
   const MODES: { id: Mode; label: string }[] = [
     { id: "system", label: "System" },
     { id: "light", label: "Light" },
@@ -86,7 +92,6 @@
   // Keyboard shortcuts shown in settings. `keys` are abstract tokens rendered
   // per-platform: Mod = ⌘ on macOS / Ctrl elsewhere, Shift = ⇧ / Shift. Keep
   // this list in sync with App.svelte's onKeydown and Editor.svelte's styleKeymap.
-  const isMac = /Macintosh/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   const SHORTCUTS: { keys: string[]; label: string }[] = [
     { keys: ["Mod", "\\"], label: "Toggle sidebar" },
     { keys: ["Mod", ","], label: "Open settings" },
@@ -161,6 +166,7 @@
   ];
   let cheatOpen = $state(false);
   let shortcutsOpen = $state(false);
+  let installOpen = $state(false);
 
   // "What's new" (#144): lazily fetch release notes on first expand and render
   // them as markdown. "loading"/"error" are sentinel states.
@@ -184,12 +190,24 @@
     if (!a) return;
     e.preventDefault();
     const href = a.getAttribute("href");
-    if (href) openUrl(href);
+    if (href) openExternal(href);
   }
 
-  // Drop trailing-zero components (5.0.0 -> v5, 5.1.0 -> v5.1, 5.0.1 -> v5.0.1).
+  // Version line at the foot of the panel. The Tauri builds report semver, shown
+  // with trailing-zero components dropped (5.0.0 -> v5, 5.1.0 -> v5.1); the web
+  // build already carries a displayable tag (see platform.ts), and says which
+  // build it is because "the web one" is now an answer a bug report needs.
   let version = $state("");
-  getVersion().then((v) => (version = formatVersion(v)));
+  appVersion().then((v) => (version = isTauri ? formatVersion(v) : `${v} · web`));
+
+  // Sharing a note needs either the native share sheet or the Web Share API,
+  // which most desktop browsers don't implement. Hide the row rather than offer
+  // an action that can't run.
+  const canShareNote = isTauri || typeof navigator.share === "function";
+
+  // Add-to-home-screen hint, shown only in a browser tab — not in the installed
+  // PWA, and not in the Tauri builds (#222).
+  const canInstall = isWeb && !isStandalone;
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
   const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
@@ -384,17 +402,19 @@
             <FileDown class="h-4 w-4 shrink-0 text-muted-foreground" />
             <span>Export as Markdown</span>
           </button>
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
-            onclick={() => {
-              onsharenote();
-              open = false;
-            }}
-          >
-            <Share2 class="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span>Share…</span>
-          </button>
+          {#if canShareNote}
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+              onclick={() => {
+                onsharenote();
+                open = false;
+              }}
+            >
+              <Share2 class="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>Share…</span>
+            </button>
+          {/if}
           <button
             type="button"
             class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
@@ -457,6 +477,17 @@
           <ArchiveRestore class="h-4 w-4 shrink-0 text-muted-foreground" />
           <span>Import vault (.zip)</span>
         </button>
+        {#if isWeb}
+          <!-- The browser build syncs like any other now (#221/#222), but with
+               one real limitation worth stating where it bites: no local
+               network discovery, so peers meet through a relay. Say it here
+               rather than in a FAQ somewhere. -->
+          <p class="px-2 pt-1 text-xs text-muted-foreground">
+            The web app syncs peer-to-peer like the desktop and Android apps. It
+            reaches other devices over the internet rather than the local network,
+            so transfers can be slower. Export a zip any time for a copy you keep.
+          </p>
+        {/if}
 
         <div class="my-4 border-t border-border"></div>
 
@@ -564,7 +595,10 @@
           />
         </label>
 
-        {#if !isMobile}
+        <!-- Everything below is hosted by the app's own process: the sync hub,
+             the MCP listener, the folder mirror. isDesktopApp, not "not mobile":
+             a desktop *browser* can host none of it (#221). -->
+        {#if isDesktopApp}
           <div class="my-4 border-t border-border"></div>
           <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Sync
@@ -815,7 +849,8 @@
                 <button
                   type="button"
                   class="underline hover:text-foreground"
-                  onclick={() => openUrl("https://github.com/andymitch/vellum/releases/latest")}
+                  onclick={() =>
+                    openExternal("https://github.com/andymitch/vellum/releases/latest")}
                   >View on GitHub</button
                 >
               </p>
@@ -870,18 +905,69 @@
           </div>
         {/if}
 
+        {#if canInstall}
+          <!-- iOS has no App Store route for Vellum, so "install" is Add to Home
+               Screen — which is only ever reachable from Safari's share menu, and
+               nowhere in this app. Hence the instructions (#222). -->
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm hover:bg-muted"
+            aria-expanded={installOpen}
+            onclick={() => (installOpen = !installOpen)}
+          >
+            <Download class="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Install this app</span>
+            <ChevronRight
+              class="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform {installOpen
+                ? 'rotate-90'
+                : ''}"
+            />
+          </button>
+          {#if installOpen}
+            <div class="mt-1 px-2 pb-1 text-xs text-muted-foreground" transition:slide={{ duration: 150 }}>
+              {#if isIOS}
+                <p>
+                  In Safari, tap <strong>Share</strong> then
+                  <strong>Add to Home Screen</strong>. Vellum then opens full-screen,
+                  works offline, and your notes stay put — iOS keeps an installed
+                  app's storage, but can clear a plain tab's after a week unused.
+                </p>
+              {:else}
+                <p>
+                  Use your browser's <strong>Install</strong> action (in the address
+                  bar or its menu) to add Vellum as an app. It then works offline
+                  and keeps its own window.
+                </p>
+              {/if}
+              <p class="mt-2">
+                Prefer a native build? The
+                <button
+                  type="button"
+                  class="underline hover:text-foreground"
+                  onclick={() => openExternal("https://github.com/andymitch/vellum/releases/latest")}
+                  >macOS and Android apps</button
+                > sync peer-to-peer between your devices.
+              </p>
+            </div>
+          {/if}
+        {/if}
+
         <div class="my-4 border-t border-border"></div>
         <div class="flex items-center justify-between gap-3">
           <p class="text-xs text-muted-foreground">
             {version}
           </p>
-          <button
-            type="button"
-            class="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-            onclick={() => (isMobile ? checkForUpdateMobile(true) : checkForUpdateInteractive())}
-          >
-            Check for updates
-          </button>
+          <!-- The web app has no updater to run: the service worker already
+               fetched the new build, which applies on the next load (#221). -->
+          {#if isTauri}
+            <button
+              type="button"
+              class="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              onclick={() => (isMobile ? checkForUpdateMobile(true) : checkForUpdateInteractive())}
+            >
+              Check for updates
+            </button>
+          {/if}
         </div>
       </div>
     </div>

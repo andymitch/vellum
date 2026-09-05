@@ -42,14 +42,22 @@
         checkPermissions,
         requestPermissions,
     } from "@tauri-apps/plugin-barcode-scanner";
+    import { isMobile, isTauri } from "$lib/platform";
     import { session } from "$lib/session.svelte";
     import { portal } from "$lib/portal";
     import { drag } from "$lib/dnd";
     import { createAndOpenNote, duplicateNote } from "$lib/notes";
     import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
-    // The native camera scanner only exists on mobile; gate the Scan button on it.
-    const canScan = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    // Sharing and joining used to be hidden in the web build, which had no node
+    // to sync with. Every build is a real peer now — the browser runs the same
+    // iroh node compiled to wasm (#221/#222) — so there is no capability left
+    // to branch on. It reaches peers only through a relay, with no mDNS, but
+    // that is a speed difference rather than a missing feature.
+    //
+    // The native camera scanner is still a Tauri plugin and only exists on
+    // mobile; a browser pastes the ticket instead.
+    const canScan = isTauri && isMobile;
 
     async function scanQr(): Promise<string | null> {
         try {
@@ -93,6 +101,11 @@
     let chosenType = $state<NoteType>("markdown");
 
     let vaults = $state<VaultInfo[]>([]);
+    /// Why the vault list is empty, when it is empty for a reason. Shown in
+    /// place of the "no vaults yet" copy so a recoverable condition — most
+    /// often the browser build's one-tab-per-vault rule — never reads as though
+    /// the notes are gone.
+    let vaultsError = $state<string | null>(null);
     let activeVault = $state<string | null>(null);
     let tree = $state<TreeNode[]>([]);
     // path -> note type, for the tree's per-type icons (#180/#181). Fetched
@@ -264,7 +277,19 @@
     const displayName = (n: TreeNode) => (n.is_dir ? n.name : n.name.replace(/\.md$/, ""));
 
     async function refreshVaults() {
-        vaults = await listVaults();
+        try {
+            vaults = await listVaults();
+            vaultsError = null;
+        } catch (e) {
+            // Without this the browser build's one-writer rule reads as data
+            // loss: a second tab cannot open the vault database (OPFS hands out
+            // an exclusive lock), `listVaults` rejects, and the sidebar would
+            // fall through to its empty state — telling someone with a vault
+            // full of notes that they have none, and inviting them to create a
+            // duplicate. Show what actually happened instead.
+            vaultsError = e instanceof Error ? e.message : String(e);
+            vaults = [];
+        }
     }
     async function refreshTree() {
         tree = activeVault ? await listTree(activeVault) : [];
@@ -518,17 +543,21 @@
     // brand-new install isn't an empty void. Gated by a localStorage flag so it
     // runs once — deleting everything later won't regenerate it.
     const SEEDED_KEY = "vellum-seeded";
+    // One first note for every build, because every build syncs.
+    const INTRO =
+        "Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.";
+    const SYNC_SECTION = `## Sync across devices
+Tap **Share** on a vault to show a QR code, then **Join** it from another device. Edits flow both ways automatically — over the internet or the same Wi-Fi.`;
     const WELCOME_NOTE = `# Hello Vellum 👋
 
-Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.
+${INTRO}
 
 ## The basics
 - Notes are **Markdown**. Toggle **source ⟷ preview** with the buttons in the top bar.
 - Organize notes into folders inside a **vault** — make as many vaults as you like.
 - Everything saves automatically as you type.
 
-## Sync across devices
-Tap **Share** on a vault to show a QR code, then **Join** it from another device. Edits flow both ways automatically — over the internet or the same Wi-Fi.
+${SYNC_SECTION}
 
 ## Markdown quick reference
 - \`**bold**\`, \`*italic*\`, \`\\\`code\\\`\`
@@ -674,6 +703,10 @@ Delete this note whenever you're ready. Happy writing!
             />
         {:else if activeVault}
             <p class="px-2 py-4 text-sm text-muted-foreground">Empty vault.</p>
+        {:else if vaultsError}
+            <p class="px-2 py-4 text-sm text-destructive" role="alert">
+                {vaultsError}
+            </p>
         {:else}
             <p class="px-2 py-4 text-sm text-muted-foreground">
                 Create or join a vault to begin.
@@ -716,7 +749,14 @@ Delete this note whenever you're ready. Happy writing!
 
             <!-- Vault list -->
             <div class="min-h-0 flex-1 overflow-auto py-1">
-                {#if !vaults.length}
+                {#if vaultsError}
+                    <p
+                        class="px-4 py-6 text-center text-sm text-destructive"
+                        role="alert"
+                    >
+                        {vaultsError}
+                    </p>
+                {:else if !vaults.length}
                     <p
                         class="px-4 py-6 text-center text-sm text-muted-foreground"
                     >

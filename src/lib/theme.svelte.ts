@@ -4,6 +4,7 @@
 // choice before first paint to avoid a flash — keep the two in sync.
 
 import { invoke } from "@tauri-apps/api/core";
+import { isAndroidApp, isTauri } from "./platform";
 
 export type Mode = "system" | "light" | "dark";
 export type Palette = { id: string; name: string };
@@ -21,10 +22,10 @@ export const PALETTES: Palette[] = [
 ];
 
 // Android 12+ exposes a Material You (Monet) palette derived from the wallpaper.
-// The "Dynamic" theme below is only meaningful there, so it's appended to
-// PALETTES only on Android and the colors are applied at runtime (see below).
-export const isAndroid = /Android/.test(navigator.userAgent);
-if (isAndroid) PALETTES.push({ id: "dynamic", name: "Dynamic (Material You)" });
+// The "Dynamic" theme below is only meaningful in the installed Android app — the
+// tones come from a native call, which Chrome on Android can't make — so it's
+// appended to PALETTES only there and applied at runtime (see below).
+if (isAndroidApp) PALETTES.push({ id: "dynamic", name: "Dynamic (Material You)" });
 
 // Body/UI typeface. `stack` is assigned to the --font-sans CSS var on <html>.
 // The "Vellum" wordmark keeps Fraunces regardless (it uses --font-vellum).
@@ -179,7 +180,12 @@ export function applyTheme() {
   el.classList.toggle("dark", dark);
   // Tell native (Android) to match system-bar icon contrast to the web theme.
   // Fire-and-forget; no-op on desktop and harmless if the backend isn't ready.
-  invoke("set_dark_mode", { dark }).catch(() => {});
+  if (isTauri) invoke("set_dark_mode", { dark }).catch(() => {});
+  // The browser's equivalent: theme-color tints the iOS status bar in an
+  // installed PWA and Chrome's toolbar (#221/#222). The palette is a user
+  // choice, not an OS one, so it can't be a static <meta> in index.html — it
+  // has to follow whatever --background resolves to now.
+  applyThemeColor(el);
   // Dynamic (Material You): apply device tones as inline overrides; otherwise
   // clear them so the chosen static palette shows through.
   if (palette === "dynamic") {
@@ -193,6 +199,18 @@ export function applyTheme() {
   const f = FONTS.find((x) => x.id === font);
   if (f && f.id !== "basic") el.style.setProperty("--font-sans", f.stack);
   else el.style.removeProperty("--font-sans");
+}
+
+function applyThemeColor(el: HTMLElement) {
+  const color = getComputedStyle(el).getPropertyValue("--background").trim();
+  if (!color) return;
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "theme-color";
+    document.head.append(meta);
+  }
+  meta.content = color;
 }
 
 function persist() {

@@ -1,48 +1,32 @@
-// Markdown export/import (#79). The dialog plugin picks the file; the fs plugin
-// reads/writes it (and abstracts Android SAF content URIs). Vault data stays
+// Markdown export/import (#79) and "email this note" (#105). Vault data stays
 // backend-owned — these helpers only move bytes between a file and the backend.
-import { save, open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { readFile, writeFile, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+//
+// Saving, picking and opening a URL all go through host.ts, so one flow covers
+// the desktop/Android dialogs and the browser's download/upload (#221).
+import { baseName, openExternal, pickFile, saveFile } from "./host";
 import { exportVault, importVault, readNote, createNote, writeNote } from "./vault";
-
-const baseName = (p: string) => p.replace(/\\/g, "/").split("/").pop() ?? p;
 
 // Export the whole vault as a .zip of .md files. Returns false if cancelled.
 export async function exportVaultZip(vault: string, vaultName: string): Promise<boolean> {
   const bytes = await exportVault(vault);
-  const path = await save({
-    defaultPath: `${vaultName || "vault"}.zip`,
-    filters: [{ name: "Zip archive", extensions: ["zip"] }],
+  return saveFile(`${vaultName || "vault"}.zip`, bytes, {
+    label: "Zip archive",
+    extensions: ["zip"],
   });
-  if (!path) return false;
-  await writeFile(path, new Uint8Array(bytes));
-  return true;
 }
 
 // Import a .zip of .md files into the vault. Returns the number of notes added,
-// or null if cancelled.
+// or null if cancelled. The backend validates the archive on parse.
 export async function importVaultZip(vault: string): Promise<number | null> {
-  // No extension filter — Android SAF maps extensions to MIME types unreliably
-  // (a zip can register as application/octet-stream and get hidden). The backend
-  // validates the archive on parse.
-  const sel = await open({ multiple: false });
-  if (!sel) return null;
-  const path = sel as string;
-  const bytes = await readFile(path);
-  return importVault(vault, Array.from(bytes));
+  const file = await pickFile(".zip,application/zip");
+  if (!file) return null;
+  return importVault(vault, file.bytes);
 }
 
 // Export a single note as a .md file. Returns false if cancelled.
 export async function exportNoteMd(vault: string, notePath: string): Promise<boolean> {
   const content = await readNote(vault, notePath);
-  const path = await save({
-    defaultPath: baseName(notePath),
-    filters: [{ name: "Markdown", extensions: ["md"] }],
-  });
-  if (!path) return false;
-  await writeTextFile(path, content);
-  return true;
+  return saveFile(baseName(notePath), content, { label: "Markdown", extensions: ["md"] });
 }
 
 // Practical ceiling for a mailto: URL. There is no spec limit, but handlers cut
@@ -66,17 +50,16 @@ export async function emailNote(vault: string, notePath: string): Promise<void> 
   // encodeURIComponent, not encodeURI: the note body legitimately contains &, #
   // and ? characters, which would otherwise be read as URL syntax.
   const url = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  await openUrl(url);
+  await openExternal(url);
 }
 
 // Import a single .md file into `dir` ("" = root). Returns the created path, or
 // null if cancelled.
 export async function importNoteMd(vault: string, dir: string): Promise<string | null> {
-  const sel = await open({ multiple: false });
-  if (!sel) return null;
-  const path = sel as string;
-  const text = await readTextFile(path);
-  const name = baseName(path).replace(/\.(markdown|txt)$/i, ".md");
+  const file = await pickFile(".md,.markdown,.txt,text/markdown,text/plain");
+  if (!file) return null;
+  const text = new TextDecoder().decode(file.bytes);
+  const name = baseName(file.name).replace(/\.(markdown|txt)$/i, ".md");
   const dest = dir ? `${dir}/${name}` : name;
   const created = await createNote(vault, dest);
   await writeNote(vault, created, text);

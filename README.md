@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/andymitch/vellum)](https://github.com/andymitch/vellum/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Android-lightgrey)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Android%20%7C%20Web-lightgrey)
 
 A local-first Markdown notes app that syncs **peer-to-peer** — no account, no server, no cloud. Your notes live on your devices and sync directly between them. Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), and [iroh](https://iroh.computer).
 
@@ -16,7 +16,8 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
 - **Eight themes & several fonts** — including a GitHub theme, and on Android 12+ a Material You theme that follows your wallpaper.
-- **Cross-platform** — macOS desktop and Android, from one codebase (iOS scaffolded).
+- **Cross-platform** — macOS desktop, Android, and a [hosted web version](https://andymitch.github.io/vellum/app/) you can install as an app (the iOS route, since there's no App Store build), all from one codebase.
+- **Runs in a browser too** — the same app, and the same vault: the Rust backend compiled to WebAssembly over an iroh replica in the browser's own storage. It syncs peer-to-peer like the installed builds, over a relay rather than the local network.
 - **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store). Opt in to **beta updates** in Settings to track pre-releases.
 
 ## How sync works (in brief)
@@ -70,6 +71,10 @@ curl -fsSL https://raw.githubusercontent.com/andymitch/vellum/main/scripts/insta
 ```
 
 **macOS** — download `Vellum_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
+
+**iPhone / iPad** — there is no App Store build; install the web version instead. Open [andymitch.github.io/vellum/app/](https://andymitch.github.io/vellum/app/) in Safari, tap **Share** → **Add to Home Screen**. It then launches full-screen and works offline. It runs the same vault as the installed apps and **syncs peer-to-peer**, reaching peers over a relay rather than the local network. Installing rather than leaving it as a tab also protects the data: Safari clears an unused site's storage after a week, but keeps an installed app's.
+
+**Any browser** — same link, no install required. It updates on reload, and tracks `main` rather than the latest release.
 
 **Android** — download `vellum-release.apk` and open it to install (you'll need to allow installing from your browser/files app). Tauri's in-app updater is desktop-only, so for automatic Android updates add this repo to **[Komi Store](https://github.com/kurikomi-labs/komi-store)** — an open-source app store for GitHub releases that watches for new versions and updates in place (optionally silently, via Shizuku). Komi verifies the signing key matches, so install the release `.apk` (not a locally built debug one) for updates to flow.
 
@@ -156,12 +161,51 @@ Test changes without disturbing your production install — these build a separa
 
 The macOS variant uses `src-tauri/tauri.dev.conf.json`; the Android one suffixes the applicationId at build time (Tauri regenerates the Gradle config, so it can't be committed there) and signs with the debug key.
 
+### Web build
+
+The hosted version is the same bundle with a browser vault behind it (see
+[Project layout](#project-layout)) plus a service worker and a web manifest:
+
+```sh
+bun run dev:web            # dev server with the browser backend selected
+bun run build:web          # production build into build-web/
+bun run preview            # serve that build locally
+```
+
+It is published to GitHub Pages under `/app/` by `.github/workflows/pages.yml`,
+alongside the marketing site. `VELLUM_BASE` sets the subdirectory it is served
+from and `VELLUM_VERSION` the version it reports; both are set by that workflow.
+
 ### Tests
 
 The Rust P2P backend has integration tests that spin up real iroh nodes:
 
 ```sh
 cd src-tauri && cargo test
+```
+
+The vault's rules — tree shape, name de-duplication, search ranking, tag
+counts, the zip container — are tested in `crates/vellum-vault`, the crate both
+the installed apps and the browser run. They used to be re-implemented in
+TypeScript for the web build and tested separately; there is only one
+implementation now, so there is only one suite:
+
+```sh
+cargo test --manifest-path crates/vellum-vault/Cargo.toml --features desktop
+cargo test --manifest-path src-tauri/Cargo.toml            # the desktop shell
+bun test                                                   # editor-side tag rules
+```
+
+The browser build needs a wasm toolchain — `bun run build:web` and
+`bun run dev:web` build the vault first. On macOS that also needs a
+wasm-capable clang, since Apple's cannot target wasm and `ring` has a build
+script:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.128
+export CC_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/clang"
+export AR_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/llvm-ar"
 ```
 
 ### Releases
@@ -182,12 +226,17 @@ changelog; a PR closing several issues collapses to a single entry.
 | Path | What's there |
 | --- | --- |
 | `src/` | Svelte 5 frontend — editor, sidebar, components |
-| `src/lib/vault.ts` | Typed wrapper over the Tauri commands |
+| `src/lib/vault.ts` | The vault API, and the switch between its two backends |
+| `src/lib/vault-tauri.ts` | Backend 1: the Tauri commands (desktop + Android) |
+| `src/lib/vault-wasm.ts` | Backend 2: the same vault in WebAssembly, for the web build / iOS PWA |
+| `src/lib/platform.ts` | Which shell we're in — the only user-agent sniffing |
 | `src/lib/theme.svelte.ts` | Theme/font state + Material You (Android) |
-| `src-tauri/src/vault.rs` | The iroh-docs P2P vault backend (the heart of the app) |
+| `crates/vellum-vault` | The iroh-docs P2P vault (the heart of the app), shell-free so both builds run it |
+| `crates/vellum-wasm` | The browser shell: the vault on OPFS, behind a worker |
 | `src-tauri/src/lib.rs` | Tauri setup, command registration, Android JNI glue |
 | `scripts/` | Build/install helpers + `dev-*` side-by-side builds |
 | `.github/workflows/release.yml` | One-click release CI |
+| `.github/workflows/pages.yml` | Publishes the site + the hosted web app |
 
 ## License
 
