@@ -94,12 +94,20 @@ const CHANGE_CHANNEL_CAP: usize = 64;
 
 /// The live iroh node (handles into the running protocols).
 pub struct Node {
-    blobs: FsStore,
+    /// The portable handle. Deliberately not `FsStore`: the browser shell has no
+    /// filesystem, and iroh-blobs' `fs-store` feature does not build for wasm at
+    /// all, so the core can only name the common `Store` API.
+    blobs: iroh_blobs::api::Store,
+    /// Keeps whatever concrete store produced `blobs` alive. `FsStore` holds the
+    /// internal actor's `mpsc::Sender`, so dropping it after cloning the `Store`
+    /// handle would shut the actor down underneath us. Opaque because the core
+    /// must not name a store type that only one shell can compile.
+    _blobs_owner: Box<dyn std::any::Any + Send + Sync>,
     docs: Docs,
     author: AuthorId,
     _router: Router,
     watched: std::sync::Arc<Mutex<HashSet<NamespaceId>>>,
-    dir: PathBuf,
+    side: std::sync::Arc<dyn SideStore>,
     our_id: EndpointId,
     // Known sync peers per vault. We dial these by EndpointId (discovery resolves
     // the current relay + addresses), so connections survive address/network
@@ -399,15 +407,45 @@ pub(crate) async fn write_note_merged(
     Ok(())
 }
 
-fn peers_path(dir: &std::path::Path) -> PathBuf {
-    dir.join("peers.json")
+/// Where the two sidecar files live: the peer cache and the local vault-name
+/// overrides. Neither is in the replica and neither syncs, so each shell brings
+/// its own — files in the app data dir on desktop, a table beside the replica on
+/// OPFS in a browser. Read/write a named blob of text is the whole contract,
+/// which is what keeps the browser shell from needing a filesystem.
+pub trait SideStore: Send + Sync + 'static {
+    fn read(&self, name: &str) -> Option<String>;
+    fn write(&self, name: &str, contents: &str);
+}
+
+const PEERS_FILE: &str = "peers.json";
+const NAMES_FILE: &str = "vault-names.json";
+
+/// The desktop/Android side store: one file per name, in the app data dir.
+pub struct FileSideStore {
+    dir: PathBuf,
+}
+
+impl FileSideStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+}
+
+impl SideStore for FileSideStore {
+    fn read(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(self.dir.join(name)).ok()
+    }
+
+    fn write(&self, name: &str, contents: &str) {
+        let _ = std::fs::write(self.dir.join(name), contents);
+    }
 }
 
 /// Load the per-vault peer map persisted on disk, pruning stale entries. Accepts
 /// the legacy list format (`{nsid: [id,...]}`) and migrates it (last-seen = now).
-fn load_peers(dir: &std::path::Path) -> PeerMap {
+fn load_peers(side: &dyn SideStore) -> PeerMap {
     let mut out = PeerMap::new();
-    let Ok(s) = std::fs::read_to_string(peers_path(dir)) else {
+    let Some(s) = side.read(PEERS_FILE) else {
         return out;
     };
     let now = now_secs();
@@ -438,7 +476,7 @@ fn load_peers(dir: &std::path::Path) -> PeerMap {
     out
 }
 
-fn save_peers(dir: &std::path::Path, map: &PeerMap) {
+fn save_peers(side: &dyn SideStore, map: &PeerMap) {
     let raw: BTreeMap<String, BTreeMap<String, u64>> = map
         .iter()
         .map(|(k, v)| {
@@ -449,20 +487,16 @@ fn save_peers(dir: &std::path::Path, map: &PeerMap) {
         })
         .collect();
     if let Ok(s) = serde_json::to_string(&raw) {
-        let _ = std::fs::write(peers_path(dir), s);
+        side.write(PEERS_FILE, &s);
     }
-}
-
-fn names_path(dir: &std::path::Path) -> PathBuf {
-    dir.join("vault-names.json")
 }
 
 /// Load per-user local vault name overrides (#120). A missing file, bad JSON, or
 /// blank entries are simply skipped — a vault with no override falls back to its
 /// synced meta name (see `vault_info`).
-fn load_names(dir: &std::path::Path) -> NameMap {
+fn load_names(side: &dyn SideStore) -> NameMap {
     let mut out = NameMap::new();
-    let Ok(s) = std::fs::read_to_string(names_path(dir)) else {
+    let Some(s) = side.read(NAMES_FILE) else {
         return out;
     };
     if let Ok(raw) = serde_json::from_str::<BTreeMap<String, String>>(&s) {
@@ -477,11 +511,11 @@ fn load_names(dir: &std::path::Path) -> NameMap {
     out
 }
 
-fn save_names(dir: &std::path::Path, map: &NameMap) {
+fn save_names(side: &dyn SideStore, map: &NameMap) {
     let raw: BTreeMap<String, String> =
         map.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     if let Ok(s) = serde_json::to_string(&raw) {
-        let _ = std::fs::write(names_path(dir), s);
+        side.write(NAMES_FILE, &s);
     }
 }
 
@@ -489,7 +523,7 @@ fn save_names(dir: &std::path::Path, map: &NameMap) {
 /// own id. Persists immediately for a newly-seen peer; refreshed timestamps for
 /// known peers are flushed periodically (see the flush task in `init`).
 fn remember_peer(
-    dir: &std::path::Path,
+    side: &dyn SideStore,
     peers: &Mutex<PeerMap>,
     our_id: EndpointId,
     nsid: NamespaceId,
@@ -501,7 +535,7 @@ fn remember_peer(
     let mut m = peers.lock().unwrap();
     let is_new = m.entry(nsid).or_default().insert(id, now_secs()).is_none();
     if is_new {
-        save_peers(dir, &m);
+        save_peers(side, &m);
     }
 }
 
@@ -518,7 +552,7 @@ fn peer_addrs(peers: &Mutex<PeerMap>, nsid: NamespaceId) -> Vec<EndpointAddr> {
 
 /// Prune peers not seen within PEER_TTL_SECS and persist. Returns true if any
 /// were dropped.
-fn prune_peers(dir: &std::path::Path, peers: &Mutex<PeerMap>) {
+fn prune_peers(side: &dyn SideStore, peers: &Mutex<PeerMap>) {
     let cutoff = now_secs().saturating_sub(PEER_TTL_SECS);
     let mut m = peers.lock().unwrap();
     let before: usize = m.values().map(|v| v.len()).sum();
@@ -530,7 +564,7 @@ fn prune_peers(dir: &std::path::Path, peers: &Mutex<PeerMap>) {
     // Always persist: refreshes on-disk last-seen for live peers so they don't
     // get pruned later just because their timestamp was only ever set on insert.
     if before != after || !m.is_empty() {
-        save_peers(dir, &m);
+        save_peers(side, &m);
     }
 }
 
@@ -663,18 +697,19 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
 
     let watched = std::sync::Arc::new(Mutex::new(HashSet::new()));
     let our_id = endpoint.id();
-    let peers = std::sync::Arc::new(Mutex::new(load_peers(&dir)));
-    let names = std::sync::Arc::new(Mutex::new(load_names(&dir)));
+    let side: std::sync::Arc<dyn SideStore> = std::sync::Arc::new(FileSideStore::new(dir.clone()));
+    let peers = std::sync::Arc::new(Mutex::new(load_peers(&*side)));
+    let names = std::sync::Arc::new(Mutex::new(load_names(&*side)));
     // Periodically refresh on-disk peer last-seen and prune dead peers, so an
     // actively-syncing peer keeps a fresh timestamp (avoids being pruned) while
     // long-gone devices age out of the cache.
     {
         let peers = peers.clone();
-        let dir = dir.clone();
+        let side = side.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
-                prune_peers(&dir, &peers);
+                prune_peers(&*side, &peers);
             }
         });
     }
@@ -725,12 +760,13 @@ pub async fn init(dir: PathBuf) -> Result<Node> {
     let author = docs.author_default().await?;
 
     Ok(Node {
-        blobs,
+        blobs: (*blobs).clone(),
+        _blobs_owner: Box::new(blobs),
         docs,
         author,
         _router: router,
         watched,
-        dir,
+        side,
         our_id,
         peers,
         names,
@@ -1275,7 +1311,7 @@ pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Resul
             // Remember the ticket's peers by EndpointId so we can re-dial them
             // via discovery later, even after their addresses change.
             for n in &nodes {
-                remember_peer(&node.dir, &node.peers, node.our_id, nsid, n.id);
+                remember_peer(&*node.side, &node.peers, node.our_id, nsid, n.id);
             }
             // Re-pair safe: if we already have this namespace, open it; otherwise
             // import it. open() errors ("Replica not found") for a namespace we
@@ -1330,7 +1366,7 @@ pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Resu
     {
         let mut m = node.peers.lock().unwrap();
         if m.remove(&nsid).is_some() {
-            save_peers(&node.dir, &m);
+            save_peers(&*node.side, &m);
         }
     }
     // Drop this vault's local name override too (#120), so a later rejoin starts
@@ -1338,7 +1374,7 @@ pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Resu
     {
         let mut m = node.names.lock().unwrap();
         if m.remove(&nsid).is_some() {
-            save_names(&node.dir, &m);
+            save_names(&*node.side, &m);
         }
     }
     map_err(
@@ -1387,7 +1423,7 @@ pub async fn rename_vault(
         } else {
             m.insert(nsid, name);
         }
-        save_names(&node.dir, &m);
+        save_names(&*node.side, &m);
     }
     // Refresh the UI. The FE also re-reads after the invoke resolves, so this is
     // a belt-and-suspenders refresh for the active vault.
@@ -1829,7 +1865,7 @@ pub(crate) async fn arm_vault(
     let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
     let vault_id = nsid.to_string();
     let peers = node.peers.clone();
-    let dir = node.dir.clone();
+    let side = node.side.clone();
     let our_id = node.our_id;
     let changes = node.changes.clone();
     let app = app.clone();
@@ -1844,12 +1880,12 @@ pub(crate) async fn arm_vault(
             // Learn peers from live sync so re-dial works in both directions —
             // crucially, the sharer discovers the joiner's EndpointId this way.
             match &ev {
-                LiveEvent::NeighborUp(id) => remember_peer(&dir, &peers, our_id, nsid, *id),
+                LiveEvent::NeighborUp(id) => remember_peer(&*side, &peers, our_id, nsid, *id),
                 LiveEvent::InsertRemote { from, .. } => {
-                    remember_peer(&dir, &peers, our_id, nsid, *from)
+                    remember_peer(&*side, &peers, our_id, nsid, *from)
                 }
                 LiveEvent::SyncFinished(ev) => {
-                    remember_peer(&dir, &peers, our_id, nsid, ev.peer)
+                    remember_peer(&*side, &peers, our_id, nsid, ev.peer)
                 }
                 _ => {}
             }
@@ -2651,7 +2687,7 @@ mod tests {
         {
             let mut m = a.names.lock().unwrap();
             m.insert(nsid, "A's Custom Name".to_string());
-            save_names(&a.dir, &m);
+            save_names(&*a.side, &m);
         }
 
         // Effective name on A = local override; hash is the 6-hex disambiguator.
@@ -2663,7 +2699,7 @@ mod tests {
         assert!(!info.pending);
 
         // Persistence round-trip: reload names from disk.
-        let reloaded = load_names(&a.dir);
+        let reloaded = load_names(&*a.side);
         assert_eq!(reloaded.get(&nsid).map(String::as_str), Some("A's Custom Name"));
 
         // B joins the shared vault; B must NOT see A's rename — only synced meta.
@@ -2711,17 +2747,18 @@ mod tests {
         assert_eq!(short_hash(&id), id.to_string()[..6]);
 
         // load_names skips blank entries but keeps trimmed real ones.
+        let side = FileSideStore::new(base.clone());
         let good = id.to_string();
         let json = format!("{{\"{good}\":\"  Trimmed Me  \",\"bad-id\":\"x\"}}");
-        std::fs::write(names_path(&base), json).expect("write");
-        let names = load_names(&base);
+        side.write(NAMES_FILE, &json);
+        let names = load_names(&side);
         assert_eq!(names.get(&id).map(String::as_str), Some("Trimmed Me"));
         assert_eq!(names.len(), 1, "unparseable id dropped");
 
         // A blank override is dropped entirely.
         let blank = format!("{{\"{good}\":\"   \"}}");
-        std::fs::write(names_path(&base), blank).expect("write");
-        assert!(load_names(&base).is_empty(), "blank override skipped");
+        side.write(NAMES_FILE, &blank);
+        assert!(load_names(&side).is_empty(), "blank override skipped");
 
         let _ = std::fs::remove_dir_all(&base);
     }
