@@ -27,7 +27,16 @@
         open: (file, ticket) => call("open", file, ticket ?? null),
         write: (key, value) => call("write", key, value),
         dump: () => call("dump"),
+        blobsStored: () => call("blobsStored"),
+        flush: () => call("flush"),
       };
+
+      // Best effort only, and deliberately not what the test relies on: the
+      // page is not guaranteed to be given time to finish async work here, and
+      // a tab killed by the OS never gets the event at all. The durable answer
+      // is to flush at the save boundary; this is just the last chance to catch
+      // whatever the batch window still holds.
+      addEventListener("pagehide", () => window.api.flush());
       window.ready = Promise.resolve("ready");
       document.getElementById("log").textContent = "ready";
     </script>

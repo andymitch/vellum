@@ -5,8 +5,11 @@ half: whether it can keep the notes.
 
 **It can — steps 1–3 below are implemented and passing** (`persistence.mjs`):
 notes written in one session, with the tab then closed, are read back in the
-next session from OPFS with **no peer involved**, content included. The rest of
-this document is the design that got there, and what is left.
+next session from OPFS with **no peer involved**, content included. Edits
+supersede cleanly, superseded content is collected, the device keeps one
+identity across reloads, and a second tab on the same vault is turned away with
+a sentence rather than an OPFS error. The rest of this document is the design
+that got there, and what is left.
 
 ## What has to persist
 
@@ -18,7 +21,12 @@ this document is the design that got there, and what is left.
 | Author key | `default-author` | 32 B | Authorship of our own edits. |
 | Vault list + local names | `vault-names.json`, `peers.json` | tiny | Already localStorage-shaped. |
 
-The last three are trivial in IndexedDB. The interesting ones are the first two.
+The two 32-byte keys turned out not to need IndexedDB at all: they sit in a
+`meta` table in the same sidecar database as the content (see Option A), which
+keeps identity and replica in one place — a device identity that disagrees with
+the replica beside it is worse than none. The vault list is still
+localStorage-shaped and untouched here. The interesting ones remain the first
+two.
 
 ## The upstream hook this needs
 
@@ -26,6 +34,14 @@ The last three are trivial in IndexedDB. The interesting ones are the first two.
 `patches/apply.sh` and pointed at by `[patch.crates-io]` in Cargo.toml. It is
 exactly the ~5 lines predicted below, because `Engine::spawn` already accepts a
 `Store`; nothing else upstream had to move.
+
+A second, smaller gap turned up while wiring the author key: `DefaultAuthorStorage`
+offers only `Mem` and `Persistent(PathBuf)`, with no way to hand it an author we
+already have. So every boot mints a throwaway author into the (persisted) author
+table, and the browser side has to set its own author as default and delete the
+throwaway to stop the table growing by a key per launch. Worth raising with n0
+alongside the constructor below, though unlike that one it is a papercut rather
+than a blocker.
 
 `iroh_docs::store::fs::Store` builds redb itself:
 
@@ -69,9 +85,18 @@ Consequences:
   jank the editor.
 - Durability comes from redb, not from us: no whole-database rewrites, and a
   crash mid-write is redb's problem to recover, which it is designed for.
-- Blobs stay in `MemStore` plus a `hash -> bytes` table in the same OPFS
-  directory, rehydrated on boot. Safe because blob content is immutable and
-  content-addressed: re-adding the bytes reproduces the same hashes.
+- Blobs stay in `MemStore`, backed by a `hash -> bytes` table in a **second
+  redb database** beside the replica (`<vault>.store`), with `MemStore` as the
+  serving layer. Safe because blob content is immutable and content-addressed:
+  re-adding the bytes reproduces the same hashes. Not an `iroh-blobs` store —
+  that crate has no store trait (stores are actors behind an irpc channel), so a
+  real OPFS blob store means implementing partial blobs, bao trees, range
+  requests and tags, which belongs upstream.
+
+  Boot reads the content hashes off the replica's live entries and loads exactly
+  those, then drops everything else — so startup is proportional to the vault,
+  not to its history, and superseded versions do not accumulate. That same
+  database's `meta` table holds the endpoint secret and author key.
 - Baseline: OPFS sync access handles need Safari 16.4+ / Chrome 108+, which is
   the baseline the PWA already assumes.
 
@@ -102,40 +127,65 @@ Option A, sequenced so each step is independently checkable:
 1. **Done.** Upstream constructor confirmed and patched locally (`patches/`).
 2. **Done.** redb `StorageBackend` over OPFS, in a worker. *Checked by*: write
    notes, close the tab, reopen the same file — entries are there, no peer.
-3. **Done.** Note content survives, via an append-only blob log beside the
-   replica. *Checked by*: the reopened vault reads note **values**, not just
-   keys.
-4. Move the node into the worker behind a message bridge whose messages are the
-   `VaultBackend` commands — the seam already in PR #235. (`web/worker.js` is a
-   sketch of exactly this shape: `{ cmd, args } -> value | error`.)
-5. Split `vault.rs` into portable core and platform shims (`FsStore`, `notify`,
+3. **Done.** Note content survives, in a hash-keyed store beside the replica.
+   *Checked by*: the reopened vault reads note **values**, not just keys; a
+   re-saved identical value stores nothing new; and the next boot collects the
+   version an edit superseded.
+4. **Done.** This device keeps one identity across reloads — endpoint secret and
+   author key in the same store. *Checked by*: three sessions on one vault file
+   report the same endpoint id, so peers see one device rather than three
+   strangers, and the author table still holds exactly one key.
+5. **Done.** One writer per vault, refused in words. A Web Lock taken before the
+   OPFS handle turns the second tab's `NoModificationAllowedError` from deep
+   inside redb into a sentence a user can act on. *Checked by*: a second tab on
+   an open vault is rejected with "already open in another tab".
+6. **Done.** The node runs in the worker behind a message bridge whose messages
+   are the `VaultBackend` commands — the seam already in PR #235. The bridge is
+   Rust (`src/bridge.rs`); `web/worker.js` is down to five lines of JavaScript,
+   which is the floor (see "How much of it is Rust" in the README). *Checked by*:
+   every command the persistence test issues goes through it.
+7. Split `vault.rs` into portable core and platform shims (`FsStore`, `notify`,
    mDNS, MCP, linked folders, tray stay desktop-only), and export the command
    surface through `wasm-bindgen`.
-6. `vault-wasm.ts` behind `VaultBackend`; keep `zip.ts` for export/import; drop
+8. `vault-wasm.ts` behind `VaultBackend`; keep `zip.ts` for export/import; drop
    `vault-web.ts`.
 
 ## What the spike still fakes
 
 Things a real port must do that this deliberately does not:
 
-- **The blob log replays every version on boot.** Blobs are written per save, so
-  the log grows without bound and startup cost grows with it. Needs compaction,
-  or a real blob store on OPFS rather than `MemStore` plus a log.
-- **Entry and content are written separately** (entry first, then the log), so a
-  crash between them leaves an entry whose content is missing until a peer
-  supplies it. Acceptable for a spike; a port should make the pair atomic or
-  order it content-first.
-- **The endpoint secret and author key are regenerated every session**, so each
-  reload looks like a new device to peers. Both are 32 bytes and belong in
-  IndexedDB; nothing here is hard, it just is not done.
-- **One writer only.** The OPFS handle is an exclusive lock, so a second tab
-  cannot open the same vault. The real app needs to either coordinate tabs
-  (shared worker / lock negotiation) or tell the user plainly.
+- **Entry and content are still two writes**, not one transaction. Content goes
+  first now, so the surviving failure is an orphaned blob — which the next
+  boot's sweep collects — rather than an entry whose content is missing until a
+  peer supplies it. Good enough to stop being a correctness problem; a port that
+  wants the pair atomic needs them in one database, which means the upstream
+  blob store, not this sidecar.
+- **The whole blob is held in memory** on both the write and the read path, and
+  `MemStore` holds every live note's content at once. Fine for notes; wrong the
+  moment vaults carry attachments. Wants a real OPFS `iroh-blobs` store.
+- **One writer per vault.** The Web Lock makes the refusal legible, but two tabs
+  on one vault still cannot both work. The way out is a SharedWorker owning the
+  node with the tabs as clients, and the baseline allows it: SharedWorker landed
+  in Safari 16, which is *older* than the 16.4 the OPFS sync access handle
+  already requires. So this is work, not a wall — the spike simply stops at
+  telling the second tab the truth.
+- **The blob store never forgets on demand.** `retain` runs at boot only, so a
+  long session accumulates superseded versions until the next reload.
 
 ## Risks to keep in view
 
-The 2.7 MB (gzipped) module has to download and compile before the app works on
-a phone; iOS still evicts storage for a site that is not installed, so "Add to
-Home Screen" stays load-bearing; sync from a browser is relay-only, so no
-LAN-speed transfers and no mDNS; and the upstream patch is a dependency we
+**Writes are not durable when they return.** The docs actor batches entries into
+one redb transaction and commits after 500 ms of idle, or on a graceful
+shutdown. A desktop process gets that shutdown; a browser tab does not — it can
+be closed, discarded while backgrounded, or killed by the OS with no chance to
+run async cleanup. This spike lost an edit to exactly that, and the fix is the
+`flush` command: durability in the browser has to be asked for at the save
+boundary rather than inherited from a clean exit. `pagehide` is a last-chance
+backstop, not a guarantee, since it is not given time to finish async work. (The
+content store needs no equivalent — it commits per write.)
+
+Beyond that: the 2.9 MB (gzipped) module has to download and compile before the
+app works on a phone; iOS still evicts storage for a site that is not installed,
+so "Add to Home Screen" stays load-bearing; sync from a browser is relay-only,
+so no LAN-speed transfers and no mDNS; and the upstream patch is a dependency we
 carry until n0 takes it (or forever, if they would rather not).

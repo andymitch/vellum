@@ -33,6 +33,10 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 redb = "4.1"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
+  "DedicatedWorkerGlobalScope",
+  "MessageEvent",
+  "WorkerGlobalScope",
+  "WorkerNavigator",
   "FileSystemDirectoryHandle",
   "FileSystemFileHandle",
   "FileSystemGetFileOptions",

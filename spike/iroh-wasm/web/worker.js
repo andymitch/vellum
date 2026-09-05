@@ -2,33 +2,19 @@
 // access handles are worker-only, and iroh's browser build is single-threaded,
 // so CRDT merges and blob hashing would otherwise jank the editor.
 //
-// The message protocol is deliberately the shape of a command surface
-// ({ cmd, args } -> value | error), because that is what the real port needs:
-// the same commands vault.ts already calls.
-import init, { start_persistent, write, dump } from "./pkg/iroh_wasm_spike.js";
+// This file is as small as a worker can be. A `Worker` entry point has to be a
+// JavaScript module — you cannot point `new Worker()` at a `.wasm` — and wasm
+// cannot instantiate itself, so `import init` and calling it is irreducible.
+// The backlog is too: a message posted before `onmessage` is set is dropped
+// rather than queued, and instantiating 9.5 MB of wasm takes longer than it
+// takes a page to send its first command.
+//
+// Everything else — the command surface, the one-writer-per-vault rule, the
+// sentence the second tab gets — is in Rust. See src/bridge.rs.
+import init, { serve } from "./pkg/iroh_wasm_spike.js";
 
-const ready = init();
+const backlog = [];
+self.onmessage = (e) => backlog.push(e.data);
 
-self.onmessage = async (e) => {
-  const { id, cmd, args = [] } = e.data;
-  try {
-    await ready;
-    let value;
-    switch (cmd) {
-      case "open":
-        value = await start_persistent(args[0], args[1] ?? undefined);
-        break;
-      case "write":
-        value = await write(args[0], args[1]);
-        break;
-      case "dump":
-        value = await dump();
-        break;
-      default:
-        throw new Error(`unknown command ${cmd}`);
-    }
-    self.postMessage({ id, ok: true, value });
-  } catch (err) {
-    self.postMessage({ id, ok: false, error: String(err?.message ?? err) });
-  }
-};
+await init();
+serve(backlog);

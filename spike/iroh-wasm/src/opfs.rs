@@ -20,7 +20,7 @@
 use std::io::{Error, ErrorKind};
 
 use js_sys::Uint8Array;
-use redb::StorageBackend;
+use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, StorageBackend};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -75,83 +75,141 @@ impl OpfsBackend {
     }
 }
 
-/// Note content, so a reopened vault can read notes and not just list them.
+/// Everything durable that isn't the replica: note content, and this device's
+/// identity.
 ///
-/// An append-only log of raw blob bytes, `[u32 length][bytes]…`. It stores no
-/// hashes: blobs are content-addressed, so re-adding the bytes on boot
-/// reproduces exactly the hashes the replica's entries already point at. Being
-/// append-only also means a torn final record costs the last write, never the
-/// log — `read_all` stops at the first short record.
+/// Not an `iroh-blobs` store: that crate has no store trait (stores are actors
+/// behind an irpc channel), so a first-class OPFS store means implementing its
+/// whole protocol — partial blobs, bao trees, range requests, tags — which
+/// belongs upstream. This sits *behind* `MemStore` instead: the durable copy of
+/// every blob the replica references, with `MemStore` as the serving layer.
 ///
-/// A real port would want something better than replaying every version on
-/// boot (blobs are per-save, so this grows), but it is enough to answer whether
-/// content can survive at all.
-pub struct BlobLog {
-    handle: FileSystemSyncAccessHandle,
-    end: std::cell::Cell<u64>,
+/// It is a second redb database on its own OPFS handle, holding two tables.
+///
+/// `blobs` maps content hash to bytes, which buys the four things the earlier
+/// append-only log lacked:
+///
+///   - **dedup**: the key is the content hash, so re-saving identical content
+///     costs nothing and no version is stored twice;
+///   - **bounded growth**: `retain` drops blobs no live entry references, the
+///     same job the desktop's blob GC does;
+///   - **selective load**: `get` is per hash, so boot loads the current
+///     entries' content rather than replaying every version ever saved;
+///   - **atomic writes**: a redb transaction, rather than "hope the tail isn't
+///     torn".
+///
+/// `meta` holds the two 32-byte keys that make this the *same* device across
+/// reloads — the endpoint secret and the author key. Without them every reload
+/// mints a new identity, so peers see an endless parade of strangers and every
+/// note is authored by someone new. They are here rather than in IndexedDB
+/// because the worker already owns this handle, and because a device identity
+/// the replica beside it doesn't match is worse than no identity at all.
+pub struct VaultStore {
+    db: redb::Database,
 }
 
-unsafe impl Send for BlobLog {}
-unsafe impl Sync for BlobLog {}
+const BLOBS: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("blobs");
+const META: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("meta");
 
-impl BlobLog {
+impl VaultStore {
     pub async fn open(name: &str) -> Result<Self, JsValue> {
-        let handle = open_handle(name).await?;
-        let end = handle.get_size()? as u64;
-        Ok(Self { handle, end: std::cell::Cell::new(end) })
+        let backend = OpfsBackend::open(name).await?;
+        let db = redb::Database::builder()
+            .create_with_backend(backend)
+            .map_err(|e| JsValue::from_str(&format!("opening the vault store: {e}")))?;
+        Ok(Self { db })
     }
 
-    pub fn append(&self, bytes: &[u8]) -> Result<(), Error> {
-        let mut record = Vec::with_capacity(4 + bytes.len());
-        record.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-        record.extend_from_slice(bytes);
-        let opts = FileSystemReadWriteOptions::new();
-        opts.set_at(self.end.get() as f64);
-        let buf = Uint8Array::from(record.as_slice());
-        let written = self
-            .handle
-            .write_with_buffer_source_and_options(&buf, &opts)
-            .map_err(io)? as usize;
-        if written != record.len() {
-            return Err(Error::new(ErrorKind::WriteZero, "opfs: short blob append"));
+    /// One committed transaction per write. Unlike the replica, which batches
+    /// entries and commits on a timer, nothing here is left pending — see
+    /// `flush` in lib.rs for why that distinction matters in a browser.
+    pub fn put_blob(&self, hash: &[u8], bytes: &[u8]) -> anyhow::Result<()> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut t = txn.open_table(BLOBS)?;
+            t.insert(hash, bytes)?;
         }
-        self.end.set(self.end.get() + written as u64);
-        self.handle.flush().map_err(io)
-    }
-
-    pub fn read_all(&self) -> Result<Vec<Vec<u8>>, Error> {
-        let size = self.handle.get_size().map_err(io)? as u64;
-        let mut out = Vec::new();
-        let mut at = 0u64;
-        while at + 4 <= size {
-            let mut header = [0u8; 4];
-            self.read_exact(at, &mut header)?;
-            let len = u32::from_le_bytes(header) as u64;
-            if at + 4 + len > size {
-                break; // torn final record
-            }
-            let mut bytes = vec![0u8; len as usize];
-            self.read_exact(at + 4, &mut bytes)?;
-            out.push(bytes);
-            at += 4 + len;
-        }
-        Ok(out)
-    }
-
-    fn read_exact(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
-        let opts = FileSystemReadWriteOptions::new();
-        opts.set_at(offset as f64);
-        let buf = Uint8Array::new_with_length(out.len() as u32);
-        let read = self
-            .handle
-            .read_with_buffer_source_and_options(&buf, &opts)
-            .map_err(io)? as usize;
-        if read != out.len() {
-            return Err(Error::new(ErrorKind::UnexpectedEof, "opfs: short blob read"));
-        }
-        buf.copy_to(out);
+        txn.commit()?;
         Ok(())
     }
+
+    pub fn get_blob(&self, hash: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(BLOBS) {
+            Ok(t) => t,
+            // A table nothing has been written to yet does not exist.
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(t.get(hash)?.map(|v| v.value().to_vec()))
+    }
+
+    /// Remember a 32-byte key under `name`, or read back what was remembered.
+    pub fn put_key(&self, name: &str, key: &[u8; 32]) -> anyhow::Result<()> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut t = txn.open_table(META)?;
+            t.insert(name, key.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_key(&self, name: &str) -> anyhow::Result<Option<[u8; 32]>> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(META) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        match t.get(name)? {
+            None => Ok(None),
+            Some(v) => <[u8; 32]>::try_from(v.value())
+                .map(Some)
+                .map_err(|_| anyhow::anyhow!("{name} is {} bytes, wanted 32", v.value().len())),
+        }
+    }
+
+    /// Drop every blob whose hash isn't in `keep`. Returns how many were
+    /// dropped and how many remain.
+    pub fn retain_blobs(&self, keep: &[Vec<u8>]) -> anyhow::Result<(usize, usize)> {
+        let stale: Vec<Vec<u8>> = {
+            let txn = self.db.begin_read()?;
+            let table = match txn.open_table(BLOBS) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok((0, 0)),
+                Err(e) => return Err(e.into()),
+            };
+            table
+                .iter()?
+                .filter_map(|row| row.ok())
+                .map(|(k, _)| k.value().to_vec())
+                .filter(|hash| !keep.iter().any(|k| k == hash))
+                .collect()
+        };
+        let dropped = stale.len();
+        if dropped > 0 {
+            let txn = self.db.begin_write()?;
+            {
+                let mut table = txn.open_table(BLOBS)?;
+                for hash in &stale {
+                    table.remove(hash.as_slice())?;
+                }
+            }
+            txn.commit()?;
+        }
+        Ok((dropped, self.blobs_len()?))
+    }
+
+    pub fn blobs_len(&self) -> anyhow::Result<usize> {
+        let txn = self.db.begin_read()?;
+        match txn.open_table(BLOBS) {
+            Ok(t) => Ok(t.len()? as usize),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
 }
 
 fn io(e: JsValue) -> Error {

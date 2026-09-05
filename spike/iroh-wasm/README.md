@@ -21,14 +21,48 @@ do (compiled to WASM) rather than a separate browser-only store.
    (`HOST SUCCESS`). The native side ran with default features — `fs-store`,
    `rpc` — i.e. the stack the desktop app actually ships.
    (`crossshell.mjs` + `../iroh-native-peer`)
-4. **It survives a reload.** With the replica on OPFS (redb storage backend in
-   `src/opfs.rs`) and note content in an append-only log beside it, a vault
-   written in one session is read back in the next — content included, no peer
-   involved. Needs the local iroh-docs patch in `patches/`.
-   (`persistence.mjs`, and PERSISTENCE.md for the design and what it still
-   fakes.)
-5. **Payload**: 8.8 MB wasm, **2.7 MB gzipped** over the wire, before
+4. **It survives a reload, as a store rather than a demo.** The replica lives on
+   OPFS (redb storage backend in `src/opfs.rs`) with note content and this
+   device's identity in a second redb database beside it. Across three sessions
+   on one vault file: notes come back with their content and no peer involved;
+   re-saving identical content stores nothing new; the version an edit
+   superseded is collected on the next boot; the endpoint id is unchanged, so
+   peers see one device rather than three strangers; the author table stays at
+   one key rather than growing per launch; and a second tab is refused with a
+   sentence instead of an OPFS error. Needs the local iroh-docs patch in
+   `patches/`. (`persistence.mjs`, and PERSISTENCE.md for the design and what it
+   still fakes.)
+5. **Payload**: 9.5 MB wasm, **2.9 MB gzipped** over the wire, before
    `wasm-opt`.
+
+## How much of it is Rust
+
+All of it, bar a bootstrap. 781 lines of Rust against **5 lines of
+hand-written JavaScript** in the worker — the command surface, the storage
+backends, the GC, the identity handling and the one-writer-per-vault rule
+(including the sentence the second tab is shown) all live in `src/bridge.rs`
+and `src/lib.rs`. The 1244-line `web/pkg/*.js` is wasm-bindgen output, not
+maintained by hand.
+
+Three things resist, and it is worth knowing which:
+
+- **The worker entry point.** `new Worker()` needs a JavaScript module; you
+  cannot point it at a `.wasm`, and wasm cannot instantiate itself.
+- **A backlog in front of it.** A message posted to a worker whose `onmessage`
+  is still unset is *dropped, not queued* — the port's message queue is enabled
+  when the module starts evaluating, not when its top-level `await` finishes.
+  Instantiating 9.5 MB takes longer than it takes a page to send its first
+  command, so the bootstrap parks arrivals in an array and hands them to Rust.
+  Skipping this is not a race you lose occasionally; `open` was lost every time.
+- **`pagehide`.** Fires on the `Window`; a dedicated worker gets no notice that
+  its page is going away, it is simply terminated. So the last-chance flush has
+  to be triggered from the main thread — the one policy here that provably
+  cannot be Rust-owned.
+
+The main-thread proxy in `web/persist.html` stays JavaScript on purpose: it
+stands in for `vault-wasm.ts`, and `src/lib/vault.ts` is already this exact
+shape for the desktop build — a thin typed surface over commands, with the
+logic behind it.
 
 ## What it took
 
@@ -46,15 +80,21 @@ do (compiled to WASM) rather than a separate browser-only store.
   no direct addresses, so a ticket minted before the home relay is up is
   undialable. The first run of this spike failed exactly there: the join was
   accepted and then nothing synced, with no error anywhere.
+- **An explicit `flush` after a save.** iroh-docs batches entries into one redb
+  transaction and commits after 500 ms of idle or on a graceful shutdown. A
+  browser tab is not guaranteed either, so a write that returned successfully
+  can still vanish with the tab — this spike lost an edit to exactly that.
+  Durability in the browser has to be asked for, not inherited.
 
 ## What is still unproven
 
 - **Wiring it into Vellum**: splitting `vault.rs` into a portable core plus
   desktop-only shims, and exporting the command surface through `wasm-bindgen`
   behind the `VaultBackend` seam from PR #235. Steps 4–6 in PERSISTENCE.md.
-- The spike's shortcuts, listed under "What the spike still fakes" there —
-  notably an unbounded blob log, a regenerated device identity each session, and
-  one-writer-only (OPFS holds an exclusive lock).
+- The remaining shortcuts, listed under "What the spike still fakes" there —
+  notably that entry and content are still two writes rather than one
+  transaction, that whole blobs pass through memory, and that one vault still
+  admits only one tab.
 - **Blocking the UI.** iroh's browser build is single-threaded; CRDT merges and
   blob hashing on the main thread would jank the editor. A Worker is probably
   required regardless of the storage choice.
@@ -90,7 +130,9 @@ node twopeers.mjs   # exits 0 only if both directions synced
 ### Survives a reload
 
 ```sh
-node persistence.mjs   # exits 0 only if the reopened vault has the notes
+node persistence.mjs   # exits 0 only if all seven checks pass: persisted,
+                      # deduped, collected, edited, sameDevice, oneAuthor,
+                      # refused
 ```
 
 ### Browser to native
