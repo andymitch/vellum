@@ -33,3 +33,6 @@ keystore.properties
 
 # vellum-wasm builds outside the workspace, so it has its own target dir.
 /crates/vellum-wasm/target
+
+# wasm-bindgen output for the browser vault (built by `bun run build:wasm`)
+/src/lib/wasm/pkg

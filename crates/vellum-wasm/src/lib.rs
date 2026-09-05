@@ -19,11 +19,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use iroh::{endpoint::presets, Endpoint, SecretKey};
 use iroh_blobs::store::mem::MemStore;
-use iroh_docs::{engine::DefaultAuthorStorage, engine::Engine, protocol::Docs};
+use iroh_docs::{engine::DefaultAuthorStorage, engine::Engine, protocol::Docs, Author};
 use iroh_gossip::net::Gossip;
 use vellum_vault::vault::{Node, SideStore};
 use wasm_bindgen::prelude::*;
 
+mod bridge;
 mod opfs;
 
 /// Names for the two 32-byte keys that survive a reload. Without them every
@@ -33,6 +34,41 @@ const AUTHOR_KEY: &str = "author";
 
 thread_local! {
     static NODE: RefCell<Option<Rc<Node>>> = const { RefCell::new(None) };
+    /// The durable content store, kept beside the node it belongs to.
+    static STORE: RefCell<Option<Arc<opfs::VaultStore>>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn node() -> Option<Rc<Node>> {
+    NODE.with(|n| n.borrow().clone())
+}
+
+pub(crate) fn set_node(n: Node) {
+    NODE.with(|slot| *slot.borrow_mut() = Some(Rc::new(n)));
+}
+
+/// Copy any note content the replica references but the durable store lacks.
+///
+/// Blobs live in `MemStore`, which does not survive a reload, so the bytes have
+/// to be written somewhere durable or a reopened vault lists notes it cannot
+/// read. This is the honest-but-blunt version: it walks the vault's live entries
+/// after each mutation and stores whatever is missing, which is O(notes) per
+/// save. The right fix is a real `iroh-blobs` store over OPFS, which is a large
+/// piece of work — that crate has no store trait, so it means implementing the
+/// whole actor protocol (partial blobs, bao trees, range requests, tags).
+pub(crate) async fn persist_content(node: &Node, vault: &str) -> Result<()> {
+    let Some(store) = STORE.with(|s| s.borrow().clone()) else {
+        return Ok(());
+    };
+    let doc = vellum_vault::vault::open(node, vault).await?;
+    for hash in vellum_vault::vault::live_content_hashes(&doc).await? {
+        if store.has_blob(hash.as_bytes())? {
+            continue;
+        }
+        if let Ok(bytes) = node.blobs().get_bytes(hash).await {
+            store.put_blob(hash.as_bytes(), &bytes)?;
+        }
+    }
+    Ok(())
 }
 
 /// The browser's [`SideStore`]: the peer cache and local vault names, in the
@@ -101,7 +137,37 @@ pub async fn boot(file: &str) -> Result<Node> {
     .await?;
     let docs = Docs::new(engine);
 
+    // Keep authorship stable across reloads. `DefaultAuthorStorage` offers only
+    // `Mem` and `Persistent(PathBuf)` — no way to hand it an author we already
+    // have — so it mints a throwaway on every boot and writes it to the
+    // (persisted) author table. Adopt our remembered key as the default, then
+    // delete the throwaway, or the table grows by one key per launch forever.
+    let throwaway = docs.author_default().await?;
+    let ours = match store.get_key(AUTHOR_KEY)? {
+        Some(bytes) => {
+            let author = Author::from_bytes(&bytes);
+            let id = author.id();
+            docs.author_import(author).await?;
+            id
+        }
+        None => {
+            let id = docs.author_create().await?;
+            let author = docs
+                .author_export(id)
+                .await?
+                .ok_or_else(|| anyhow!("author {id} vanished right after creating it"))?;
+            store.put_key(AUTHOR_KEY, &author.to_bytes())?;
+            id
+        }
+    };
+    docs.author_set_default(ours).await?;
+    if throwaway != ours {
+        // Deleting the default is refused, which is why the swap comes first.
+        docs.author_delete(throwaway).await?;
+    }
+
     let side: Arc<dyn SideStore> = Arc::new(OpfsSideStore { store: store.clone() });
+    STORE.with(|s| *s.borrow_mut() = Some(store.clone()));
     let node = Node::assemble(
         endpoint,
         (*blobs).clone(),
@@ -111,7 +177,54 @@ pub async fn boot(file: &str) -> Result<Node> {
         side,
     )
     .await?;
+
+    // Reload note content before anything reads it, so entries resolve rather
+    // than reading as pending. Content is addressed by hash, so re-adding the
+    // bytes reproduces exactly the hashes the entries already reference. Then
+    // drop whatever no live entry points at — a superseded version of an edited
+    // note, or a deleted note's body — which is what keeps boot proportional to
+    // the vault rather than to its whole history.
+    let mut live: Vec<Vec<u8>> = Vec::new();
+    for id in vaults(&node).await? {
+        let doc = vellum_vault::vault::open(&node, &id).await?;
+        for hash in vellum_vault::vault::live_content_hashes(&doc).await? {
+            live.push(hash.as_bytes().to_vec());
+            if let Some(bytes) = store.get_blob(hash.as_bytes())? {
+                node.blobs().add_bytes(bytes).await?;
+            }
+        }
+    }
+    store.retain_blobs(&live)?;
+
+    // Start every vault syncing, and forward the node's change channel to the
+    // page. The desktop bridges the same channel to a Tauri event.
+    vellum_vault::vault::arm_all(&node).await?;
+    let mut changes = node.subscribe_changes();
+    n0_future::task::spawn(async move {
+        loop {
+            match changes.recv().await {
+                Ok(change) => bridge::publish_change(&change.vault.to_string()),
+                // A dropped event still means something changed, and the page
+                // re-reads on any event.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
     Ok(node)
+}
+
+/// Every vault id in the replica store.
+async fn vaults(node: &Node) -> Result<Vec<String>> {
+    use futures_lite::StreamExt;
+    let mut stream = node.docs().list().await?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        if let Ok((id, _cap)) = item {
+            out.push(id.to_string());
+        }
+    }
+    Ok(out)
 }
 
 #[wasm_bindgen(start)]

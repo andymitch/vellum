@@ -170,6 +170,18 @@ impl VaultStore {
         }
     }
 
+    /// Whether a blob is already stored. Cheaper than `get_blob` when the
+    /// answer decides only whether to write.
+    pub fn has_blob(&self, hash: &[u8]) -> anyhow::Result<bool> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(BLOBS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(t.get(hash)?.is_some())
+    }
+
     /// Read/write arbitrary text under `name`, in the same `meta` table.
     ///
     /// This is what backs the `SideStore` the vault core asks every shell for:

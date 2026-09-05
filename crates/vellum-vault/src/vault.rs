@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
+#[cfg(feature = "desktop")]
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -186,6 +187,13 @@ impl Node {
     /// Subscribe to vault mutations. Only *armed* vaults emit (see `arm_vault`).
     pub fn subscribe_changes(&self) -> tokio::sync::broadcast::Receiver<VaultChange> {
         self.changes.subscribe()
+    }
+
+    /// The blob store handle. A shell that cannot keep blobs durably by itself
+    /// — the browser, whose `MemStore` dies with the tab — needs this to copy
+    /// note content somewhere that survives.
+    pub fn blobs(&self) -> &iroh_blobs::api::Store {
+        &self.blobs
     }
 
     /// This device's author id — the identity every write is signed with.
@@ -957,6 +965,17 @@ pub async fn list_entries(doc: &iroh_docs::api::Doc) -> Result<Vec<NoteEntry>> {
 }
 
 /// Collect all visible note keys (paths) in a vault.
+/// Content hashes of every live entry, so a shell can tell which blobs are
+/// still referenced — what to keep, and what to sweep.
+pub async fn live_content_hashes(doc: &iroh_docs::api::Doc) -> Result<Vec<iroh_blobs::Hash>> {
+    let mut out = Vec::new();
+    let mut stream = Box::pin(doc.get_many(Query::single_latest_per_key()).await?);
+    while let Some(entry) = stream.next().await {
+        out.push(entry?.content_hash());
+    }
+    Ok(out)
+}
+
 pub async fn list_keys(doc: &iroh_docs::api::Doc) -> Result<Vec<String>> {
     Ok(list_entries(doc).await?.into_iter().map(|e| e.path).collect())
 }
