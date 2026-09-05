@@ -47,6 +47,13 @@ jobs:
       # will not load.
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      # Ahead of the full build, because it isolates the cause: the vault core
+      # stopped being portable, rather than the browser shell breaking. Not on
+      # the macOS job — Apple's clang cannot target wasm at all, and `ring` has
+      # a build script, so it fails there for a reason that says nothing about
+      # this repo. RUSTFLAGS comes from .cargo/config.toml.
+      - name: Check the vault core still builds for the browser
+        run: cargo check --manifest-path crates/vellum-vault/Cargo.toml --target wasm32-unknown-unknown
       - run: bun install --frozen-lockfile
       - name: Type-check
         run: bun run check
@@ -89,14 +96,6 @@ jobs:
       # The point of the split: the browser build runs this same vault compiled
       # to wasm rather than a second implementation of the same rules. If the
       # core stops building for wasm, that plan is broken and this says so.
-      # Faster than waiting for the frontend job's full wasm build to fail, and
-      # it isolates the cause: the core stopped being portable, rather than the
-      # browser shell breaking. RUSTFLAGS comes from .cargo/config.toml.
-      - name: Check the vault core still builds for the browser
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo check --manifest-path crates/vellum-vault/Cargo.toml \
-            --target wasm32-unknown-unknown
       # NB: no `-D warnings` yet. There are pre-existing clippy warnings in
       # vault.rs; turning them into errors would make this job red on the commit
       # that introduces it. Clean those up, then add the flag.
