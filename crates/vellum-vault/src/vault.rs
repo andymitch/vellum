@@ -35,17 +35,15 @@ use iroh_blobs::store::{
     fs::{options::Options, FsStore},
     GcConfig,
 };
-use iroh_docs::{protocol::Docs, store::Query, AuthorId, NamespaceId};
-// Share/join/live-sync. Still reachable only from the Tauri command bodies, so
-// desktop-only for now — lifting those bodies into portable functions is what
-// will give the browser shell real peer-to-peer sync, which is the whole reason
-// for replacing the IndexedDB backend.
-#[cfg(feature = "desktop")]
 use iroh_docs::{
     api::protocol::{AddrInfoOptions, ShareMode},
-    engine::{LiveEvent, ProtectCallbackHandler},
-    DocTicket,
+    protocol::Docs,
+    store::Query,
+    AuthorId, DocTicket, NamespaceId,
 };
+// Live sync still reaches these only from `arm_vault`, which emits Tauri events.
+#[cfg(feature = "desktop")]
+use iroh_docs::engine::{LiveEvent, ProtectCallbackHandler};
 use iroh_gossip::net::Gossip;
 #[cfg(feature = "desktop")]
 use iroh_mdns_address_lookup::MdnsAddressLookup;
@@ -1347,6 +1345,110 @@ pub async fn all_vaults(node: &Node) -> Result<Vec<VaultInfo>> {
     Ok(out)
 }
 
+/// Create a vault and give it a name.
+pub async fn create(node: &Node, name: String) -> Result<VaultInfo> {
+    let doc = node.docs.create().await?;
+    doc.set_bytes(node.author, NAME_KEY.to_vec(), encode(&name)).await?;
+    // A vault we create has its name immediately, so it's never pending. No
+    // local override yet — the synced-meta name is the default (#120).
+    Ok(vault_info(doc.id(), Some(name), None))
+}
+
+/// Join a vault from a share ticket, or re-pair with one we already have.
+pub async fn join(node: &Node, ticket: &str) -> Result<VaultInfo> {
+    let ticket = DocTicket::from_str(ticket).map_err(|e| anyhow!("bad ticket: {e}"))?;
+    let DocTicket { capability, nodes } = ticket;
+    let nsid = capability.id();
+    // Remember the ticket's peers by EndpointId so we can re-dial them via
+    // discovery later, even after their addresses change.
+    for n in &nodes {
+        remember_peer(&*node.side, &node.peers, node.our_id, nsid, n.id);
+    }
+    // Re-pair safe: if we already have this namespace, open it; otherwise import
+    // it. open() errors ("Replica not found") for a namespace we don't have, so
+    // treat any non-Some result as "needs import".
+    let doc = match node.docs.open(nsid).await {
+        Ok(Some(doc)) => doc,
+        _ => node.docs.import_namespace(capability).await?,
+    };
+    // Bootstrap with the ticket's full addresses (relay) for a robust first
+    // connect; subsequent syncs re-dial by EndpointId via discovery.
+    doc.start_sync(nodes).await?;
+    // start_sync is non-blocking: with no peer online the meta name isn't here
+    // yet, so this comes back pending and the UI shows a "waiting for a peer"
+    // state rather than a generated vault (#4).
+    let meta_name = vault_meta_name(node, &doc).await;
+    let override_name = node.names.lock().unwrap().get(&doc.id()).cloned();
+    Ok(vault_info(doc.id(), meta_name, override_name))
+}
+
+/// A write-capability ticket for a vault, for rendering as a QR code.
+pub async fn share(node: &Node, vault: &str) -> Result<String> {
+    let doc = open(node, vault).await?;
+    // Write capability → flat, equal ownership across all synced devices. Relay
+    // (node id + relay URL) keeps the ticket short enough for a low-density QR
+    // while staying resilient: the relay guarantees the first connection, then
+    // holepunching upgrades to direct addresses and iroh-docs persists the
+    // discovered sync peers for next time.
+    Ok(doc.share(ShareMode::Write, AddrInfoOptions::Relay).await?.to_string())
+}
+
+/// Stop syncing a vault and drop its local replica. Rejoinable later from a
+/// ticket; other peers keep their copy.
+pub async fn forget(node: &Node, vault: &str) -> Result<()> {
+    let nsid = parse_id(vault)?;
+    node.watched.lock().unwrap().remove(&nsid);
+    // Forget this vault's cached peers too, so we don't keep dialing them.
+    {
+        let mut m = node.peers.lock().unwrap();
+        if m.remove(&nsid).is_some() {
+            save_peers(&*node.side, &m);
+        }
+    }
+    // Drop the local name override too (#120), so a later rejoin starts from the
+    // synced-meta default rather than a stale local name.
+    {
+        let mut m = node.names.lock().unwrap();
+        if m.remove(&nsid).is_some() {
+            save_names(&*node.side, &m);
+        }
+    }
+    // leave() ends live sync.
+    if let Ok(Some(doc)) = node.docs.open(nsid).await {
+        let _ = doc.leave().await;
+    }
+    // drop_doc requires the replica's open-handle count to be 0, but iroh-docs'
+    // `Doc` has no Drop-close, so every open() we ever made for this namespace
+    // leaked a handle. Each drop_doc attempt releases one handle (via its
+    // internal close) even when it then fails with "replica is not closed", so
+    // retry until the count hits 0 and the remove succeeds. Bounded so a genuine
+    // error can't spin forever.
+    for _ in 0..256 {
+        match node.docs.drop_doc(nsid).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.to_string().contains("not closed") => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(anyhow!("could not close vault replica to drop it"))
+}
+
+/// Set this device's LOCAL display name for a vault (#120). Writes only the
+/// side store; never touches the synced meta, so peers keep their own names. An
+/// empty/whitespace name clears the override.
+pub fn rename(node: &Node, vault: &str, name: &str) -> Result<()> {
+    let nsid = parse_id(vault)?;
+    let name = name.trim();
+    let mut m = node.names.lock().unwrap();
+    if name.is_empty() {
+        m.remove(&nsid);
+    } else {
+        m.insert(nsid, name.to_string());
+    }
+    save_names(&*node.side, &m);
+    Ok(())
+}
+
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo>, String> {
@@ -1358,72 +1460,21 @@ pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo
 #[tauri::command]
 pub async fn create_vault(state: State<'_, VaultManager>, name: String) -> Result<VaultInfo, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = node.docs.create().await?;
-            doc.set_bytes(node.author, NAME_KEY.to_vec(), encode(&name)).await?;
-            // A vault we create has its name immediately, so it's never pending.
-            // No local override yet — the synced-meta name is the default (#120).
-            Ok(vault_info(doc.id(), Some(name), None))
-        }
-        .await,
-    )
+    map_err(create(node, name).await)
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn join_vault(state: State<'_, VaultManager>, ticket: String) -> Result<VaultInfo, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let ticket = DocTicket::from_str(&ticket).map_err(|e| anyhow!("bad ticket: {e}"))?;
-            let DocTicket { capability, nodes } = ticket;
-            let nsid = capability.id();
-            // Remember the ticket's peers by EndpointId so we can re-dial them
-            // via discovery later, even after their addresses change.
-            for n in &nodes {
-                remember_peer(&*node.side, &node.peers, node.our_id, nsid, n.id);
-            }
-            // Re-pair safe: if we already have this namespace, open it; otherwise
-            // import it. open() errors ("Replica not found") for a namespace we
-            // don't have, so treat any non-Some result as "needs import".
-            let doc = match node.docs.open(nsid).await {
-                Ok(Some(doc)) => doc,
-                _ => node.docs.import_namespace(capability).await?,
-            };
-            // Bootstrap with the ticket's full addresses (relay) for a robust
-            // first connect; subsequent syncs re-dial by EndpointId via discovery.
-            doc.start_sync(nodes).await?;
-            // start_sync is non-blocking: with no peer online the meta name
-            // isn't here yet, so this comes back pending and the UI shows a
-            // "waiting for a peer" state rather than a generated vault (#4).
-            let meta_name = vault_meta_name(node, &doc).await;
-            let override_name = node.names.lock().unwrap().get(&doc.id()).cloned();
-            Ok(vault_info(doc.id(), meta_name, override_name))
-        }
-        .await,
-    )
+    map_err(join(node, &ticket).await)
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn share_vault(state: State<'_, VaultManager>, vault: String) -> Result<String, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            // Write capability → flat, equal ownership across all synced devices.
-            // Relay (node id + relay URL) keeps the ticket short enough for a
-            // low-density QR while staying resilient: the relay guarantees the
-            // first connection, then holepunching upgrades to direct addresses
-            // and iroh-docs persists the discovered sync peers for next time.
-            let ticket = doc
-                .share(ShareMode::Write, AddrInfoOptions::Relay)
-                .await?;
-            Ok(ticket.to_string())
-        }
-        .await,
-    )
+    map_err(share(node, &vault).await)
 }
 
 /// Stop syncing a vault and drop its local replica. The namespace can be
@@ -1433,46 +1484,7 @@ pub async fn share_vault(state: State<'_, VaultManager>, vault: String) -> Resul
 #[tauri::command]
 pub async fn forget_vault(state: State<'_, VaultManager>, vault: String) -> Result<(), String> {
     let node = state.node().await?;
-    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
-    node.watched.lock().unwrap().remove(&nsid);
-    // Forget this vault's cached peers too, so we don't keep dialing them.
-    {
-        let mut m = node.peers.lock().unwrap();
-        if m.remove(&nsid).is_some() {
-            save_peers(&*node.side, &m);
-        }
-    }
-    // Drop this vault's local name override too (#120), so a later rejoin starts
-    // from the synced-meta default rather than a stale local name.
-    {
-        let mut m = node.names.lock().unwrap();
-        if m.remove(&nsid).is_some() {
-            save_names(&*node.side, &m);
-        }
-    }
-    map_err(
-        async {
-            // leave() ends live sync.
-            if let Ok(Some(doc)) = node.docs.open(nsid).await {
-                let _ = doc.leave().await;
-            }
-            // drop_doc requires the replica's open-handle count to be 0, but
-            // iroh-docs' `Doc` has no Drop-close, so every open() we ever made
-            // for this namespace leaked a handle. Each drop_doc attempt releases
-            // one handle (via its internal close) even when it then fails with
-            // "replica is not closed", so retry until the count hits 0 and the
-            // remove succeeds. Bounded so a genuine error can't spin forever.
-            for _ in 0..256 {
-                match node.docs.drop_doc(nsid).await {
-                    Ok(()) => return Ok(()),
-                    Err(e) if e.to_string().contains("not closed") => continue,
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            Err(anyhow!("could not close vault replica to drop it"))
-        }
-        .await,
-    )
+    map_err(forget(node, &vault).await)
 }
 
 /// Set this device's LOCAL display name for a vault (#120). Writes only
@@ -1488,17 +1500,7 @@ pub async fn rename_vault(
     name: String,
 ) -> Result<(), String> {
     let node = state.node().await?;
-    let nsid = parse_id(&vault).map_err(|e| e.to_string())?;
-    let name = name.trim().to_string();
-    {
-        let mut m = node.names.lock().unwrap();
-        if name.is_empty() {
-            m.remove(&nsid);
-        } else {
-            m.insert(nsid, name);
-        }
-        save_names(&*node.side, &m);
-    }
+    map_err(rename(node, &vault, &name))?;
     // Refresh the UI. The FE also re-reads after the invoke resolves, so this is
     // a belt-and-suspenders refresh for the active vault.
     let _ = app.emit("vault-changed", vault);
