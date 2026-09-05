@@ -1,0 +1,4 @@
+
+# Vendored third-party source: keep it out of language stats and
+# collapsed in diffs. See crates/iroh-docs-vellum/VENDORED.md.
+crates/iroh-docs-vellum/** linguist-vendored

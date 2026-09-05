@@ -12,3 +12,7 @@
 [workspace]
 resolver = "2"
 members = ["src-tauri", "crates/vellum-vault"]
+# Vendored third-party source and the browser shell that patches to it. Both
+# stay outside the workspace: the desktop app must keep building against stock
+# crates.io iroh-docs, and a workspace-level `[patch]` would apply to everyone.
+exclude = ["crates/iroh-docs-vellum", "crates/vellum-wasm"]

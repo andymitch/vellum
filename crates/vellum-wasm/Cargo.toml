@@ -1,0 +1,54 @@
+[package]
+name = "vellum-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The browser shell: the same vault as the desktop app, with OPFS where the
+# filesystem would be and a postMessage bridge where the Tauri commands would
+# be. Outside the root workspace on purpose — see `[patch.crates-io]` below.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `desktop` off: no FsStore, no app data dir, no mDNS, no Tauri surface.
+vellum-vault = { path = "../vellum-vault" }
+
+iroh = "1.0.0"
+iroh-docs = { version = "0.101.0", default-features = false }
+iroh-blobs = { version = "0.103.0", default-features = false }
+iroh-gossip = { version = "0.101.0", default-features = false, features = ["net"] }
+anyhow = "1"
+futures-lite = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+# Must resolve to the same redb iroh-docs uses, or `StorageBackend` is a
+# different trait and the OPFS backend will not fit.
+redb = "4.1"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "DedicatedWorkerGlobalScope",
+  "MessageEvent",
+  "WorkerGlobalScope",
+  "WorkerNavigator",
+  "FileSystemDirectoryHandle",
+  "FileSystemFileHandle",
+  "FileSystemGetFileOptions",
+  "FileSystemReadWriteOptions",
+  "FileSystemSyncAccessHandle",
+] }
+
+# The one upstream change the browser vault needs: a public `Store` constructor
+# over a `redb::StorageBackend`, so the replica can live on OPFS. Vendored
+# rather than forked so a clean clone builds with no script and no second
+# repository — see crates/iroh-docs-vellum/VENDORED.md.
+#
+# Scoped to this crate: the desktop app builds against stock crates.io.
+[patch.crates-io]
+iroh-docs = { path = "../iroh-docs-vellum" }

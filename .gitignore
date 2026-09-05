@@ -24,7 +24,12 @@ keystore.properties
 # Cargo build output (workspace target)
 /target
 
-# Workspace members share the root Cargo.lock; per-member locks are ignored
-# by cargo and only go stale.
+# Workspace members share the root Cargo.lock; per-member locks are ignored by
+# cargo and only go stale. vellum-wasm is deliberately NOT a member (it patches
+# iroh-docs and the desktop app must not), so it is its own workspace root and
+# its lock is real — keep it, it is what pins the build.
 /src-tauri/Cargo.lock
-/crates/*/Cargo.lock
+/crates/vellum-vault/Cargo.lock
+
+# vellum-wasm builds outside the workspace, so it has its own target dir.
+/crates/vellum-wasm/target

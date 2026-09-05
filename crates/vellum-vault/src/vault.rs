@@ -129,6 +129,52 @@ pub struct Node {
 }
 
 impl Node {
+    /// Assemble a node from storage a shell has already built.
+    ///
+    /// Everything above this line is the shell's business — where the replica
+    /// lives, where blobs live, where the endpoint secret was kept, whether
+    /// there is mDNS. Everything below it is the same on every platform, which
+    /// is the point of the split: the browser gets the real vault, not a
+    /// reimplementation of its rules.
+    ///
+    /// `blobs_owner` is whatever concrete store produced `blobs`. It is kept
+    /// alive but never named: `FsStore` holds the store actor's `mpsc::Sender`,
+    /// so dropping it after cloning the `Store` handle would shut the actor
+    /// down, and the core cannot name a type only one shell can compile.
+    /// Desktop's `init` builds a `Node` directly instead — it is in this module,
+    /// so it already has the private fields.
+    pub async fn assemble(
+        endpoint: Endpoint,
+        blobs: iroh_blobs::api::Store,
+        blobs_owner: Box<dyn std::any::Any + Send + Sync>,
+        docs: Docs,
+        gossip: Gossip,
+        side: std::sync::Arc<dyn SideStore>,
+    ) -> Result<Node> {
+        let our_id = endpoint.id();
+        let peers = std::sync::Arc::new(Mutex::new(load_peers(&*side)));
+        let names = std::sync::Arc::new(Mutex::new(load_names(&*side)));
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
+            .accept(iroh_gossip::ALPN, gossip)
+            .accept(iroh_docs::ALPN, docs.clone())
+            .spawn();
+        let author = docs.author_default().await?;
+        Ok(Node {
+            blobs,
+            _blobs_owner: blobs_owner,
+            docs,
+            author,
+            _router: router,
+            watched: std::sync::Arc::new(Mutex::new(HashSet::new())),
+            side,
+            our_id,
+            peers,
+            names,
+            changes: tokio::sync::broadcast::channel(CHANGE_CHANNEL_CAP).0,
+        })
+    }
+
     /// Subscribe to vault mutations. Only *armed* vaults emit (see `arm_vault`).
     pub fn subscribe_changes(&self) -> tokio::sync::broadcast::Receiver<VaultChange> {
         self.changes.subscribe()
