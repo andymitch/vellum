@@ -15,6 +15,7 @@
 //! running — after `setup`. Deferring the build avoids that startup race.
 
 use std::collections::{BTreeMap, HashSet};
+#[cfg(feature = "desktop")]
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -22,7 +23,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use futures_lite::StreamExt;
-use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{protocol::Router, Endpoint, EndpointAddr, EndpointId};
+#[cfg(feature = "desktop")]
+use iroh::{endpoint::presets, SecretKey};
 use iroh_blobs::BlobsProtocol;
 // redb on a file plus reflink — `init`'s storage, and the one part of this
 // module a browser cannot have. iroh-blobs gates the whole `store::fs` module
@@ -32,12 +35,16 @@ use iroh_blobs::store::{
     fs::{options::Options, FsStore},
     GcConfig,
 };
+use iroh_docs::{protocol::Docs, store::Query, AuthorId, NamespaceId};
+// Share/join/live-sync. Still reachable only from the Tauri command bodies, so
+// desktop-only for now — lifting those bodies into portable functions is what
+// will give the browser shell real peer-to-peer sync, which is the whole reason
+// for replacing the IndexedDB backend.
+#[cfg(feature = "desktop")]
 use iroh_docs::{
     api::protocol::{AddrInfoOptions, ShareMode},
     engine::{LiveEvent, ProtectCallbackHandler},
-    protocol::Docs,
-    store::Query,
-    AuthorId, DocTicket, NamespaceId,
+    DocTicket,
 };
 use iroh_gossip::net::Gossip;
 #[cfg(feature = "desktop")]
@@ -45,6 +52,7 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 use serde::Serialize;
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "desktop")]
 use tokio::sync::OnceCell;
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, GetString, ReadTxn, StateVector, Text, TextRef, Transact, TransactionMut, Update};
