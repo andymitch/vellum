@@ -1,16 +1,25 @@
-# Spike: iroh-docs in the browser
+# Why the browser runs the real vault
 
-> **Superseded — kept as the decision record.** This spike's answer was built
-> for real: the vault is `crates/vellum-vault` (portable core), the browser
-> shell is `crates/vellum-wasm`, and the frontend talks to it through
-> `src/lib/vault-wasm.ts`. Read this for *why* the approach was chosen and what
-> it cost; read those for what actually ships.
+Design notes for #221/#222, written while proving the approach and kept because
+they carry the reasoning the code cannot: *why* an iroh-docs replica in the
+browser rather than a browser-shaped store of its own, and what that cost.
+
+The shipped code is `crates/vellum-vault` (the portable vault),
+`crates/vellum-wasm` (the browser shell) and `src/lib/vault-wasm.ts` (the
+frontend's transport). Storage design is in
+[browser-vault-storage.md](./browser-vault-storage.md).
+
+The exploration this came from lived in `spike/` and was deleted once the real
+implementation landed — its Rust was duplicated by `crates/vellum-wasm`, and its
+browser harnesses tested the spike's own wasm build, so they would have passed
+while the shipped vault was broken. `git log` has them if they are ever wanted:
+they are the four `spike:` commits on this branch.
 
 Asks one question for #221/#222: **can a browser be a real Vellum peer?** If it
 can, the hosted web version should run the same iroh-docs vault the native apps
 do (compiled to WASM) rather than a separate browser-only store.
 
-## Result: yes
+## What was proven
 
 1. **It compiles.** `iroh` 1.1, `iroh-docs` 0.101, `iroh-blobs` 0.103,
    `iroh-gossip` 0.101 and `yrs` 0.27 all build for `wasm32-unknown-unknown` at
@@ -19,14 +28,14 @@ do (compiled to WASM) rather than a separate browser-only store.
    with its own iroh node: one creates a vault, the other joins it from a share
    ticket, both write a note, and each sees the other's note **with its content**
    (read back out of the blob store) in **~0.5 s** over a relay. Same result for
-   a release build. (`twopeers.mjs`)
+   a release build. 
 3. **It syncs browser to native**, which is the pairing that matters — a phone
    browser against the installed desktop app. The browser fetched the desktop
    peer's ticket, joined, and read the desktop's note with content in ~0.5 s;
    the desktop peer received the browser's note in the same window
    (`HOST SUCCESS`). The native side ran with default features — `fs-store`,
    `rpc` — i.e. the stack the desktop app actually ships.
-   (`crossshell.mjs` + `../iroh-native-peer`)
+   
 4. **It survives a reload, as a store rather than a demo.** The replica lives on
    OPFS (redb storage backend in `src/opfs.rs`) with note content and this
    device's identity in a second redb database beside it. Across three sessions
@@ -36,8 +45,7 @@ do (compiled to WASM) rather than a separate browser-only store.
    peers see one device rather than three strangers; the author table stays at
    one key rather than growing per launch; and a second tab is refused with a
    sentence instead of an OPFS error. Needs the local iroh-docs patch in
-   `patches/`. (`persistence.mjs`, and PERSISTENCE.md for the design and what it
-   still fakes.)
+   `patches/`. (see [browser-vault-storage.md](./browser-vault-storage.md))
 5. **Payload**: 9.5 MB wasm, **2.9 MB gzipped** over the wire, before
    `wasm-opt`.
 
@@ -96,7 +104,7 @@ logic behind it.
 
 - **Wiring it into Vellum**: splitting `vault.rs` into a portable core plus
   desktop-only shims, and exporting the command surface through `wasm-bindgen`
-  behind the `VaultBackend` seam from PR #235. Steps 4–6 in PERSISTENCE.md.
+  behind the `VaultBackend` seam from PR #235. Steps 4–6 in [browser-vault-storage.md](./browser-vault-storage.md).
 - The remaining shortcuts, listed under "What the spike still fakes" there —
   notably that entry and content are still two writes rather than one
   transaction, that whole blobs pass through memory, and that one vault still
@@ -105,51 +113,23 @@ logic behind it.
   blob hashing on the main thread would jank the editor. A Worker is probably
   required regardless of the storage choice.
 
-## Running it
+## Building it today
 
-### Setup
+`bun run build` builds the wasm first (`bun run build:wasm`), so the frontend
+now needs a Rust toolchain and `wasm-bindgen-cli` at the version
+`crates/vellum-wasm/Cargo.toml` pins. On macOS the build also needs a
+wasm-capable clang, because Apple's cannot target wasm and `ring` has a build
+script:
 
 ```sh
 export CC_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/clang"
 export AR_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/llvm-ar"
-export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.128   # match the wasm-bindgen dep
-
-./patches/apply.sh          # vendor + patch iroh-docs (needed to build at all)
-cargo build --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir web/pkg --no-typescript \
-  target/wasm32-unknown-unknown/release/iroh_wasm_spike.wasm
-
-(cd web && python3 -m http.server 9334 --bind 127.0.0.1 &)
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
-  --disable-gpu --no-sandbox --user-data-dir=/tmp/spike-profile \
-  --remote-debugging-port=9333 --remote-allow-origins='*' &
 ```
 
-### Browser to browser
+`--cfg getrandom_backend="wasm_js"` is set for the wasm target in
+`.cargo/config.toml`, so it needs no exporting.
 
-```sh
-node twopeers.mjs   # exits 0 only if both directions synced
-```
-
-### Survives a reload
-
-```sh
-node persistence.mjs   # exits 0 only if all seven checks pass: persisted,
-                      # deduped, collected, edited, sameDevice, oneAuthor,
-                      # refused
-```
-
-### Browser to native
-
-With the page server and Chrome from above still running:
-
-```sh
-cargo run --manifest-path ../iroh-native-peer/Cargo.toml &   # prints its ticket
-node crossshell.mjs   # exits 0 only if the browser read the desktop's note;
-                      # the native peer prints HOST SUCCESS for the other way
-```
-
-Needs internet: a browser peer has no direct addresses, so every connection
-goes through a relay.
+There is no browser-level test suite yet. The spike had one and it was
+genuinely useful; rebuilding it against the shipped shell — boot a vault, write,
+reload, read it back, refuse a second tab, sync two tabs — is worthwhile
+follow-up work.

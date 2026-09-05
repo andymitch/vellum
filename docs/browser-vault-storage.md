@@ -1,15 +1,16 @@
-# Making a browser vault survive a reload
+# How a browser vault survives a reload
 
-> **Superseded — kept as the decision record.** Steps 1–8 below are all done,
-> in `crates/vellum-wasm` rather than here. The section that still describes
-> the shipped code is "What the spike still fakes": the durable content store
-> is still a copy-after-mutation rather than a real `iroh-blobs` store on OPFS,
-> and one tab per vault is still the rule.
+Storage design for the browser build, and the options weighed getting there.
+Everything sequenced below is implemented, in `crates/vellum-wasm`.
+
+The section that still describes the shipped code is **"What is still crude"**
+at the end: content is copied to a durable store after each mutation rather than
+living in a real `iroh-blobs` store on OPFS, and one tab per vault is the rule.
 
 The spike proves a browser can be a real peer (see README). This is the other
 half: whether it can keep the notes.
 
-**It can — steps 1–3 below are implemented and passing** (`persistence.mjs`):
+**It can — steps 1–3 below are implemented and passing** :
 notes written in one session, with the tab then closed, are read back in the
 next session from OPFS with **no peer involved**, content included. Edits
 supersede cleanly, superseded content is collected, the device keeps one
@@ -36,8 +37,8 @@ two.
 
 ## The upstream hook this needs
 
-**Confirmed, and patched locally** — see `patches/`, applied by
-`patches/apply.sh` and pointed at by `[patch.crates-io]` in Cargo.toml. It is
+**Confirmed, and patched locally** — see `crates/iroh-docs-vellum`, vendored and
+pointed at by `[patch.crates-io]` in `crates/vellum-wasm/Cargo.toml`. It is
 exactly the ~5 lines predicted below, because `Engine::spawn` already accepts a
 `Store`; nothing else upstream had to move.
 
@@ -66,7 +67,7 @@ addition** — a public constructor taking a `redb::StorageBackend` (or a
 ~5-line PR to iroh-docs; until it merges, `[patch.crates-io]` against a fork
 keeps us moving. Worth confirming with n0 before building on it.
 
-## Option A — redb on OPFS (chosen; implemented in `src/opfs.rs`)
+## Option A — redb on OPFS (chosen; implemented in `crates/vellum-wasm/src/opfs.rs`)
 
 Implement `redb::StorageBackend` over an OPFS
 `FileSystemSyncAccessHandle`. The two interfaces line up almost exactly:
@@ -156,9 +157,9 @@ Option A, sequenced so each step is independently checkable:
 8. `vault-wasm.ts` behind `VaultBackend`; keep `zip.ts` for export/import; drop
    `vault-web.ts`.
 
-## What the spike still fakes
+## What is still crude
 
-Things a real port must do that this deliberately does not:
+Things worth fixing, in rough order of how much they will bite:
 
 - **Entry and content are still two writes**, not one transaction. Content goes
   first now, so the surviving failure is an orphaned blob — which the next

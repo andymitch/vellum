@@ -15,11 +15,6 @@ vite.config.ts.timestamp-*
 *.keystore
 keystore.properties
 
-# Spike build output (spike/iroh-wasm)
-/spike/*/target
-/spike/*/web/pkg
-/spike/*/Cargo.lock
-/.spike-vendor
 
 # Cargo build output (workspace target)
 /target
