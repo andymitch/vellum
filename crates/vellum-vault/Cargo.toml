@@ -45,6 +45,9 @@ serde_json = "1"
 yrs = "0.27.2"
 diffy = "0.5.0"
 tracing = "0.1"
+# Spawn that works on both: tokio on native, spawn_local in a browser. iroh uses
+# it for the same reason.
+n0-future = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio = { version = "1.52.3", default-features = false, features = ["sync"] }
 

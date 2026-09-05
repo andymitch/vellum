@@ -7594,6 +7594,7 @@ dependencies = [
  "iroh-docs",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
+ "n0-future",
  "serde",
  "serde_json",
  "tauri",

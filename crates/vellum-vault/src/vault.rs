@@ -41,9 +41,10 @@ use iroh_docs::{
     store::Query,
     AuthorId, DocTicket, NamespaceId,
 };
-// Live sync still reaches these only from `arm_vault`, which emits Tauri events.
+use iroh_docs::engine::LiveEvent;
+// Blob GC over a directory on disk — desktop's storage, not the browser's.
 #[cfg(feature = "desktop")]
-use iroh_docs::engine::{LiveEvent, ProtectCallbackHandler};
+use iroh_docs::engine::ProtectCallbackHandler;
 use iroh_gossip::net::Gossip;
 #[cfg(feature = "desktop")]
 use iroh_mdns_address_lookup::MdnsAddressLookup;
@@ -68,6 +69,7 @@ const TEXT_ROOT: &str = "t";
 pub const KEEP: &str = ".keep";
 // How often to sweep orphaned content blobs (old note versions no longer
 // referenced by any entry). Blobs referenced by current entries are protected.
+#[cfg(feature = "desktop")]
 const GC_INTERVAL: Duration = Duration::from_secs(600);
 // Drop a cached peer we haven't seen sync in this long, so dead peers (old
 // devices, closed emulators) don't accumulate and get re-dialed forever.
@@ -616,6 +618,8 @@ fn peer_addrs(peers: &Mutex<PeerMap>, nsid: NamespaceId) -> Vec<EndpointAddr> {
 
 /// Prune peers not seen within PEER_TTL_SECS and persist. Returns true if any
 /// were dropped.
+// Driven by a timer `init` spawns; the browser shell prunes on boot instead.
+#[cfg(feature = "desktop")]
 fn prune_peers(side: &dyn SideStore, peers: &Mutex<PeerMap>) {
     let cutoff = now_secs().saturating_sub(PEER_TTL_SECS);
     let mut m = peers.lock().unwrap();
@@ -1320,6 +1324,8 @@ fn to_nodes(b: &Builder, prefix: &str) -> Vec<TreeNode> {
     out
 }
 
+// Tauri commands report errors as strings; the worker bridge has its own shape.
+#[cfg(feature = "desktop")]
 fn map_err<T>(r: Result<T>) -> Result<T, String> {
     r.map_err(|e| {
         let s = e.to_string();
@@ -1923,17 +1929,16 @@ pub async fn delete_path(
     )
 }
 
-/// Begin live-syncing a vault and emitting `vault-changed` on every mutation:
-/// dial its known peers, subscribe to the doc, and spawn a task that re-emits
-/// changes and learns new peers. Idempotent — a vault already armed is a no-op,
-/// so it's safe to call from both `watch_vault` (the open vault) and
+/// Begin live-syncing a vault, publishing every mutation on the node's change
+/// channel: dial its known peers, subscribe to the doc, and spawn a task that
+/// republishes changes and learns new peers. Idempotent — a vault already armed
+/// is a no-op, so it's safe to call from both `watch_vault` (the open vault) and
 /// `set_live_sync` (every vault).
-#[cfg(feature = "desktop")]
-pub async fn arm_vault(
-    app: &AppHandle,
-    node: &Node,
-    nsid: NamespaceId,
-) -> Result<(), String> {
+///
+/// Publishing rather than emitting is what makes this portable: the desktop
+/// shell bridges the channel to its `vault-changed` Tauri event, and the browser
+/// shell will bridge it to a worker message.
+pub async fn arm(node: &Node, nsid: NamespaceId) -> Result<()> {
     {
         let mut watched = node.watched.lock().unwrap();
         if !watched.insert(nsid) {
@@ -1943,27 +1948,25 @@ pub async fn arm_vault(
     let doc = node
         .docs
         .open(nsid)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "vault not found".to_string())?;
+        .await?
+        .ok_or_else(|| anyhow!("vault not found"))?;
     // Resume live sync by actively dialing the vault's known peers by EndpointId.
     // (start_sync with an empty peer list only listens — it doesn't re-initiate,
     // which is why sync didn't recover after a restart.) Discovery resolves each
     // peer's current relay + addresses, so this works across network changes.
     let _ = doc.start_sync(peer_addrs(&node.peers, nsid)).await;
-    let mut stream = doc.subscribe().await.map_err(|e| e.to_string())?;
-    let vault_id = nsid.to_string();
+    let mut stream = doc.subscribe().await?;
     let peers = node.peers.clone();
     let side = node.side.clone();
     let our_id = node.our_id;
     let changes = node.changes.clone();
-    let app = app.clone();
     // Initial nudge: on join the vault name (and other meta) can finish syncing
     // in the gap between join reading it and this subscription starting, so that
-    // ContentReady event is missed. Emit once now so the UI re-reads whatever
-    // landed in that window (e.g. the real name replacing "vault-xxxx").
-    let _ = app.emit("vault-changed", &vault_id);
-    tauri::async_runtime::spawn(async move {
+    // ContentReady event is missed. Publish once now so listeners re-read
+    // whatever landed in that window (e.g. the real name replacing "vault-xxxx").
+    let _ = changes.send(VaultChange { vault: nsid, path: None });
+    // Portable spawn: tokio on native, spawn_local in a browser.
+    n0_future::task::spawn(async move {
         while let Some(event) = stream.next().await {
             let Ok(ev) = event else { continue };
             // Learn peers from live sync so re-dial works in both directions —
@@ -1978,22 +1981,52 @@ pub async fn arm_vault(
                 }
                 _ => {}
             }
-            // The insert events carry the entry, so in-process listeners can be
-            // told exactly which note changed. Everything else (ContentReady,
-            // sync/neighbor events) only identifies the vault.
+            // The insert events carry the entry, so listeners can be told exactly
+            // which note changed. Everything else (ContentReady, sync/neighbor
+            // events) only identifies the vault.
             let path = match &ev {
                 LiveEvent::InsertLocal { entry } | LiveEvent::InsertRemote { entry, .. } => {
                     std::str::from_utf8(entry.key()).ok().map(str::to_string)
                 }
                 _ => None,
             };
-            // Errs only when nobody is subscribed — the common case.
+            // Errs only when nobody is subscribed.
             let _ = changes.send(VaultChange { vault: nsid, path });
-            let _ = app.emit("vault-changed", &vault_id);
         }
     });
     Ok(())
 }
+
+/// Desktop: arm the vault, and make sure the node's change channel is being
+/// bridged to the `vault-changed` Tauri event the frontend listens on.
+#[cfg(feature = "desktop")]
+pub async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<(), String> {
+    // Once per process, not once per vault: `VaultChange` carries the vault id,
+    // so one bridge serves every armed vault. Subscribed before arming so the
+    // initial nudge is not published into an empty channel.
+    EVENT_BRIDGE.get_or_init(|| {
+        let mut rx = node.subscribe_changes();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(change) => {
+                        let _ = app.emit("vault-changed", change.vault.to_string());
+                    }
+                    // Dropped events still mean something changed; the frontend
+                    // re-reads on any event, so a nudge is the right response.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    });
+    arm(node, nsid).await.map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "desktop")]
+static EVENT_BRIDGE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 
 /// Start emitting `vault-changed` events when a vault's document mutates.
 #[cfg(feature = "desktop")]
