@@ -1,5 +1,11 @@
 # Making a browser vault survive a reload
 
+> **Superseded — kept as the decision record.** Steps 1–8 below are all done,
+> in `crates/vellum-wasm` rather than here. The section that still describes
+> the shipped code is "What the spike still fakes": the durable content store
+> is still a copy-after-mutation rather than a real `iroh-blobs` store on OPFS,
+> and one tab per vault is still the rule.
+
 The spike proves a browser can be a real peer (see README). This is the other
 half: whether it can keep the notes.
 

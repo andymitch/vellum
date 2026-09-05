@@ -1,5 +1,11 @@
 # Spike: iroh-docs in the browser
 
+> **Superseded — kept as the decision record.** This spike's answer was built
+> for real: the vault is `crates/vellum-vault` (portable core), the browser
+> shell is `crates/vellum-wasm`, and the frontend talks to it through
+> `src/lib/vault-wasm.ts`. Read this for *why* the approach was chosen and what
+> it cost; read those for what actually ships.
+
 Asks one question for #221/#222: **can a browser be a real Vellum peer?** If it
 can, the hosted web version should run the same iroh-docs vault the native apps
 do (compiled to WASM) rather than a separate browser-only store.
