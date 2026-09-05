@@ -65,11 +65,26 @@ jobs:
           components: clippy
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
+      # Two crates since the vault moved to `crates/vellum-vault`: the core's
+      # suite (the vault rules, p2p sync) and the desktop shell's (MCP, linked
+      # folders). Running only src-tauri would silently skip 23 of the 51.
       - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        run: |
+          cargo test --manifest-path crates/vellum-vault/Cargo.toml --features desktop --lib
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # The point of the split: the browser build runs this same vault compiled
+      # to wasm rather than a second implementation of the same rules. If the
+      # core stops building for wasm, that plan is broken and this says so.
+      - name: Check the vault core still builds for the browser
+        env:
+          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --manifest-path crates/vellum-vault/Cargo.toml \
+            --target wasm32-unknown-unknown
       # NB: no `-D warnings` yet. There are pre-existing clippy warnings in
       # vault.rs; turning them into errors would make this job red on the commit
       # that introduces it. Clean those up, then add the flag.
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo clippy --workspace --all-targets

@@ -20,3 +20,6 @@ keystore.properties
 /spike/*/web/pkg
 /spike/*/Cargo.lock
 /.spike-vendor
+
+# Cargo build output (workspace target)
+/target

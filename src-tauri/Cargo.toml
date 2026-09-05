@@ -42,6 +42,11 @@ rustls = { version = "0.23", features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 iroh-mdns-address-lookup = "0.4"
+# The vault itself, shell-free, so the browser build can run the same code
+# compiled to wasm rather than a second implementation of the same rules.
+# `desktop` adds what needs a host: FsStore, the app data dir, mDNS, and the
+# Tauri command + event surface.
+vellum-vault = { path = "../crates/vellum-vault", features = ["desktop"] }
 # Markdown export/import (#79): zip a vault's notes on export / unzip on import.
 # No C deps (deflate via miniz_oxide). dialog picks the file; fs reads/writes it
 # and abstracts Android's SAF content URIs — both needed on every platform.

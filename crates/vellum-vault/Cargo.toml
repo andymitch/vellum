@@ -1,0 +1,58 @@
+[package]
+name = "vellum-vault"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The vault, minus a shell.
+#
+# Everything here has to compile for wasm32-unknown-unknown as well as for the
+# desktop and Android targets, because the browser build runs this same code —
+# the real iroh-docs replica — rather than a second implementation of the same
+# rules in TypeScript. That is the whole point: #167 came from having two
+# sources of truth for note text, and a browser-only store would have been a
+# third.
+#
+# The `desktop` feature adds the parts that need a host: a filesystem
+# (`FsStore`, the app data dir), mDNS, and the Tauri command + event surface.
+# The browser shell leaves it off and supplies its own storage and bridge.
+
+[features]
+default = []
+# `default` on both iroh crates, not a hand-picked subset: that is what
+# src-tauri built against before this split, and iroh-docs' defaults include
+# `redb-v2-migration`, which is what lets an existing install read the vaults it
+# already has. The browser shell leaves the feature off and gets neither
+# `fs-store` (redb on a file) nor `rpc` (which pulls tokio's mio-backed `net`),
+# neither of which builds for wasm.
+desktop = [
+  "dep:tauri",
+  "dep:iroh-mdns-address-lookup",
+  "iroh-docs/default",
+  "iroh-blobs/default",
+]
+
+[dependencies]
+# Versions tracked with src-tauri/Cargo.toml — the same stack, two shells.
+iroh = "1.0.0"
+iroh-docs = { version = "0.101.0", default-features = false }
+iroh-blobs = { version = "0.103.0", default-features = false }
+iroh-gossip = { version = "0.101.0", default-features = false, features = ["net"] }
+anyhow = "1.0.102"
+futures-lite = "2.6.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+yrs = "0.27.2"
+diffy = "0.5.0"
+tracing = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tokio = { version = "1.52.3", default-features = false, features = ["sync"] }
+
+tauri = { version = "2", optional = true }
+iroh-mdns-address-lookup = { version = "0.4", optional = true }
+
+[dev-dependencies]
+# The suite drives a real node, so it needs a runtime and the macros; the
+# desktop feature is what makes `init()` exist for it to drive.
+tokio = { version = "1.52.3", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
