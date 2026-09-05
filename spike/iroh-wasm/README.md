@@ -21,7 +21,13 @@ do (compiled to WASM) rather than a separate browser-only store.
    (`HOST SUCCESS`). The native side ran with default features — `fs-store`,
    `rpc` — i.e. the stack the desktop app actually ships.
    (`crossshell.mjs` + `../iroh-native-peer`)
-4. **Payload**: 8.8 MB wasm, **2.7 MB gzipped** over the wire, before
+4. **It survives a reload.** With the replica on OPFS (redb storage backend in
+   `src/opfs.rs`) and note content in an append-only log beside it, a vault
+   written in one session is read back in the next — content included, no peer
+   involved. Needs the local iroh-docs patch in `patches/`.
+   (`persistence.mjs`, and PERSISTENCE.md for the design and what it still
+   fakes.)
+5. **Payload**: 8.8 MB wasm, **2.7 MB gzipped** over the wire, before
    `wasm-opt`.
 
 ## What it took
@@ -43,16 +49,19 @@ do (compiled to WASM) rather than a separate browser-only store.
 
 ## What is still unproven
 
-- **Persistence.** Both stores above are in memory: reload the tab and the notes
-  are gone. This is the substantial remaining question — see PERSISTENCE.md for
-  the options and a recommendation.
+- **Wiring it into Vellum**: splitting `vault.rs` into a portable core plus
+  desktop-only shims, and exporting the command surface through `wasm-bindgen`
+  behind the `VaultBackend` seam from PR #235. Steps 4–6 in PERSISTENCE.md.
+- The spike's shortcuts, listed under "What the spike still fakes" there —
+  notably an unbounded blob log, a regenerated device identity each session, and
+  one-writer-only (OPFS holds an exclusive lock).
 - **Blocking the UI.** iroh's browser build is single-threaded; CRDT merges and
   blob hashing on the main thread would jank the editor. A Worker is probably
   required regardless of the storage choice.
 
 ## Running it
 
-### Browser to browser
+### Setup
 
 ```sh
 export CC_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/clang"
@@ -61,6 +70,7 @@ export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.128   # match the wasm-bindgen dep
 
+./patches/apply.sh          # vendor + patch iroh-docs (needed to build at all)
 cargo build --release --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-dir web/pkg --no-typescript \
   target/wasm32-unknown-unknown/release/iroh_wasm_spike.wasm
@@ -68,8 +78,19 @@ wasm-bindgen --target web --out-dir web/pkg --no-typescript \
 (cd web && python3 -m http.server 9334 --bind 127.0.0.1 &)
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
   --disable-gpu --no-sandbox --user-data-dir=/tmp/spike-profile \
-  --remote-debugging-port=9333 --remote-allow-origins='*' about:blank &
+  --remote-debugging-port=9333 --remote-allow-origins='*' &
+```
+
+### Browser to browser
+
+```sh
 node twopeers.mjs   # exits 0 only if both directions synced
+```
+
+### Survives a reload
+
+```sh
+node persistence.mjs   # exits 0 only if the reopened vault has the notes
 ```
 
 ### Browser to native

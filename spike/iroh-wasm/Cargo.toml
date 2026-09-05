@@ -28,3 +28,20 @@ wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# Must resolve to the same redb iroh-docs uses, or `StorageBackend` is a
+# different trait and the backend below won't fit.
+redb = "4.1"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "FileSystemDirectoryHandle",
+  "FileSystemFileHandle",
+  "FileSystemGetFileOptions",
+  "FileSystemReadWriteOptions",
+  "FileSystemSyncAccessHandle",
+] }
+
+# The one upstream change this needs: a public constructor on the replica store
+# taking a redb::StorageBackend (see patches/store-with-backend.patch and the
+# README). Run patches/apply.sh to produce ../../.spike-vendor/iroh-docs-0.101.0.
+[patch.crates-io]
+iroh-docs = { path = "../../.spike-vendor/iroh-docs-0.101.0" }

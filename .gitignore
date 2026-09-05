@@ -19,3 +19,4 @@ keystore.properties
 /spike/*/target
 /spike/*/web/pkg
 /spike/*/Cargo.lock
+/.spike-vendor

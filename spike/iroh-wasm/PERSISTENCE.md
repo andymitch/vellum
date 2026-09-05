@@ -1,9 +1,12 @@
 # Making a browser vault survive a reload
 
-The spike proves a browser can be a real peer (see README). It does **not**
-persist anything: the replica is redb's in-memory backend and blobs are
-`MemStore`, so closing the tab loses the notes. This is the design decision that
-decides whether the WASM route is a product or a demo.
+The spike proves a browser can be a real peer (see README). This is the other
+half: whether it can keep the notes.
+
+**It can — steps 1–3 below are implemented and passing** (`persistence.mjs`):
+notes written in one session, with the tab then closed, are read back in the
+next session from OPFS with **no peer involved**, content included. The rest of
+this document is the design that got there, and what is left.
 
 ## What has to persist
 
@@ -18,6 +21,11 @@ decides whether the WASM route is a product or a demo.
 The last three are trivial in IndexedDB. The interesting ones are the first two.
 
 ## The upstream hook this needs
+
+**Confirmed, and patched locally** — see `patches/`, applied by
+`patches/apply.sh` and pointed at by `[patch.crates-io]` in Cargo.toml. It is
+exactly the ~5 lines predicted below, because `Engine::spawn` already accepts a
+`Store`; nothing else upstream had to move.
 
 `iroh_docs::store::fs::Store` builds redb itself:
 
@@ -36,7 +44,7 @@ addition** — a public constructor taking a `redb::StorageBackend` (or a
 ~5-line PR to iroh-docs; until it merges, `[patch.crates-io]` against a fork
 keeps us moving. Worth confirming with n0 before building on it.
 
-## Option A — redb on OPFS (recommended)
+## Option A — redb on OPFS (chosen; implemented in `src/opfs.rs`)
 
 Implement `redb::StorageBackend` over an OPFS
 `FileSystemSyncAccessHandle`. The two interfaces line up almost exactly:
@@ -87,25 +95,47 @@ Rejected unless A and B both fail: it needs a peer online to be whole, so the
 first offline launch shows an incomplete vault, and it keeps two sources of
 truth for note text — the failure mode that produced #167.
 
-## Recommendation
+## Status
 
 Option A, sequenced so each step is independently checkable:
 
-1. Confirm (or open) the upstream constructor; patch locally to unblock.
-2. redb `StorageBackend` over OPFS in a Worker. **Done when**: write notes,
-   reload the tab, notes are still there, with no peer involved.
-3. Blob rehydration (`hash -> bytes`). **Done when**: a reloaded tab can read
-   note *content* offline, not just entry metadata.
-4. Move the node into the Worker behind a message bridge whose messages are the
-   `VaultBackend` commands — the seam already in PR #235.
+1. **Done.** Upstream constructor confirmed and patched locally (`patches/`).
+2. **Done.** redb `StorageBackend` over OPFS, in a worker. *Checked by*: write
+   notes, close the tab, reopen the same file — entries are there, no peer.
+3. **Done.** Note content survives, via an append-only blob log beside the
+   replica. *Checked by*: the reopened vault reads note **values**, not just
+   keys.
+4. Move the node into the worker behind a message bridge whose messages are the
+   `VaultBackend` commands — the seam already in PR #235. (`web/worker.js` is a
+   sketch of exactly this shape: `{ cmd, args } -> value | error`.)
 5. Split `vault.rs` into portable core and platform shims (`FsStore`, `notify`,
    mDNS, MCP, linked folders, tray stay desktop-only), and export the command
    surface through `wasm-bindgen`.
 6. `vault-wasm.ts` behind `VaultBackend`; keep `zip.ts` for export/import; drop
    `vault-web.ts`.
 
-Risks to keep in view: the 2.7 MB (gzipped) module has to download and compile
-before the app works on a phone; iOS still evicts storage for a site that is not
-installed, so "Add to Home Screen" stays load-bearing; sync from a browser is
-relay-only, so no LAN-speed transfers and no mDNS; and step 1 is an external
-dependency, which is the main scheduling risk.
+## What the spike still fakes
+
+Things a real port must do that this deliberately does not:
+
+- **The blob log replays every version on boot.** Blobs are written per save, so
+  the log grows without bound and startup cost grows with it. Needs compaction,
+  or a real blob store on OPFS rather than `MemStore` plus a log.
+- **Entry and content are written separately** (entry first, then the log), so a
+  crash between them leaves an entry whose content is missing until a peer
+  supplies it. Acceptable for a spike; a port should make the pair atomic or
+  order it content-first.
+- **The endpoint secret and author key are regenerated every session**, so each
+  reload looks like a new device to peers. Both are 32 bytes and belong in
+  IndexedDB; nothing here is hard, it just is not done.
+- **One writer only.** The OPFS handle is an exclusive lock, so a second tab
+  cannot open the same vault. The real app needs to either coordinate tabs
+  (shared worker / lock negotiation) or tell the user plainly.
+
+## Risks to keep in view
+
+The 2.7 MB (gzipped) module has to download and compile before the app works on
+a phone; iOS still evicts storage for a site that is not installed, so "Add to
+Home Screen" stays load-bearing; sync from a browser is relay-only, so no
+LAN-speed transfers and no mDNS; and the upstream patch is a dependency we
+carry until n0 takes it (or forever, if they would rather not).
