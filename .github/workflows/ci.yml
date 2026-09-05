@@ -93,9 +93,6 @@ jobs:
         run: |
           cargo test --manifest-path crates/vellum-vault/Cargo.toml --features desktop --lib
           cargo test --manifest-path src-tauri/Cargo.toml --lib
-      # The point of the split: the browser build runs this same vault compiled
-      # to wasm rather than a second implementation of the same rules. If the
-      # core stops building for wasm, that plan is broken and this says so.
       # NB: no `-D warnings` yet. There are pre-existing clippy warnings in
       # vault.rs; turning them into errors would make this job red on the commit
       # that introduces it. Clean those up, then add the flag.
