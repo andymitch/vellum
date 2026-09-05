@@ -1455,6 +1455,165 @@ pub fn rename(node: &Node, vault: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The vault's folder tree.
+pub async fn tree(node: &Node, vault: &str) -> Result<Vec<TreeNode>> {
+    build_tree(&open(node, vault).await?).await
+}
+
+/// A note's text. A path with no entry reads as empty rather than erroring —
+/// the editor opens a blank buffer.
+pub async fn read(node: &Node, vault: &str, path: &str) -> Result<String> {
+    let doc = open(node, vault).await?;
+    Ok(read_note_text(node, &doc, path.as_bytes()).await?.unwrap_or_default())
+}
+
+/// Save a note, 3-way merging against any concurrent peer edit (#99).
+pub async fn write(node: &Node, vault: &str, path: &str, base: &str, content: &str) -> Result<()> {
+    let doc = open(node, vault).await?;
+    write_note_merged(node, &doc, path.as_bytes(), base, content).await
+}
+
+/// Create a note, de-duplicating the path against existing notes. Returns the
+/// path actually used.
+pub async fn create_note_at(node: &Node, vault: &str, path: &str) -> Result<String> {
+    let doc = open(node, vault).await?;
+    let free = free_key(&doc, path).await?;
+    doc.set_bytes(node.author, free.clone().into_bytes(), fresh_note("")).await?;
+    Ok(free)
+}
+
+pub async fn create_folder_at(node: &Node, vault: &str, path: &str) -> Result<()> {
+    let doc = open(node, vault).await?;
+    create_folder_key(node, &doc, path).await
+}
+
+pub async fn rename_at(node: &Node, vault: &str, from: &str, to: &str, is_dir: bool) -> Result<()> {
+    let doc = open(node, vault).await?;
+    rename_key(node, &doc, from, to, is_dir).await
+}
+
+pub async fn delete_at(node: &Node, vault: &str, path: &str, is_dir: bool) -> Result<()> {
+    let doc = open(node, vault).await?;
+    delete_key(node, &doc, path, is_dir).await
+}
+
+/// Arm every vault, so this device carries all of them for peers that are only
+/// intermittently online.
+pub async fn arm_all(node: &Node) -> Result<()> {
+    let mut stream = node.docs.list().await?;
+    let mut ids = Vec::new();
+    while let Some(item) = stream.next().await {
+        if let Ok((id, _cap)) = item {
+            ids.push(id);
+        }
+    }
+    for id in ids {
+        let _ = arm(node, id).await;
+    }
+    Ok(())
+}
+
+/// Export every note as a zip of `.md` files mirroring the folder tree (#79).
+/// Empty folders are preserved as directory entries; the meta name is skipped.
+pub async fn export_zip(node: &Node, vault: &str) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let doc = open(node, vault).await?;
+    let keys = list_keys(&doc).await?;
+    // Read all contents first — the zip writer isn't Send, so it must not be
+    // held across an await. (name, Some(content)) = file; None = dir.
+    let mut items: Vec<(String, Option<String>)> = Vec::new();
+    for key in &keys {
+        if key.as_bytes().first() == Some(&0) {
+            continue; // \x00meta/* — internal, not a note
+        }
+        if key == KEEP || key.ends_with(&format!("/{KEEP}")) {
+            let dir = &key[..key.len() - KEEP.len()]; // keeps trailing '/'
+            if !dir.is_empty() {
+                items.push((dir.to_string(), None));
+            }
+            continue;
+        }
+        let content = read_note_text(node, &doc, key.as_bytes()).await?.unwrap_or_default();
+        items.push((key.clone(), Some(content)));
+    }
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
+    for (name, content) in items {
+        match content {
+            None => zip.add_directory(&name, opts)?,
+            Some(c) => {
+                zip.start_file(&name, opts)?;
+                zip.write_all(c.as_bytes())?;
+            }
+        }
+    }
+    Ok(zip.finish()?.into_inner())
+}
+
+/// Import a zip of `.md` files (#79), recreating the folder tree. Collisions are
+/// de-duplicated against existing notes. Returns the number of notes added.
+pub async fn import_zip(node: &Node, vault: &str, data: Vec<u8>) -> Result<usize> {
+    use std::io::Read;
+    // Drain the archive into memory first — ZipArchive isn't Send, so it must be
+    // fully read (and dropped) before any await.
+    let items: Vec<(String, Option<String>)> = {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data))?;
+        let mut v = Vec::new();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i)?;
+            let name = entry.name().replace('\\', "/");
+            let name = name.trim_start_matches('/').to_string();
+            // Entry names become iroh-docs keys, so reject a crafted archive's
+            // path traversal ('..'), empty segments, and meta-namespace
+            // injection (a \x00-prefixed segment).
+            if name
+                .trim_end_matches('/')
+                .split('/')
+                .any(|c| c.is_empty() || c == ".." || c.as_bytes().first() == Some(&0))
+            {
+                continue;
+            }
+            if entry.is_dir() {
+                v.push((name, None));
+                continue;
+            }
+            let lower = name.to_lowercase();
+            if !(lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")) {
+                continue; // only text/markdown
+            }
+            let mut s = String::new();
+            if entry.read_to_string(&mut s).is_err() {
+                continue; // non-utf8 — skip rather than fail the whole import
+            }
+            v.push((name, Some(s)));
+        }
+        v
+    };
+    let doc = open(node, vault).await?;
+    let mut count = 0usize;
+    for (name, content) in items {
+        match content {
+            None => {
+                let key = format!("{}{}", name.trim_end_matches('/'), format!("/{KEEP}"));
+                doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
+            }
+            Some(c) => {
+                // .txt imports normalize to .md so they open as notes.
+                let path = if name.to_lowercase().ends_with(".txt") {
+                    format!("{}.md", &name[..name.len() - 4])
+                } else {
+                    name
+                };
+                let free = free_key(&doc, &path).await?;
+                doc.set_bytes(node.author, free.into_bytes(), fresh_note(&c)).await?;
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn list_vaults(state: State<'_, VaultManager>) -> Result<Vec<VaultInfo>, String> {
@@ -1536,13 +1695,7 @@ pub async fn build_tree(doc: &iroh_docs::api::Doc) -> Result<Vec<TreeNode>> {
 #[tauri::command]
 pub async fn list_tree(state: State<'_, VaultManager>, vault: String) -> Result<Vec<TreeNode>, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            build_tree(&doc).await
-        }
-        .await,
-    )
+    map_err(tree(node, &vault).await)
 }
 
 /// Search a vault's notes (#15). Case-insensitive substring match, except for a
@@ -1591,13 +1744,7 @@ pub async fn list_tags(
 #[tauri::command]
 pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<String, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            Ok(read_note_text(node, &doc, path.as_bytes()).await?.unwrap_or_default())
-        }
-        .await,
-    )
+    map_err(read(node, &vault, &path).await)
 }
 
 /// Export every note in the vault as a zip of `.md` files mirroring the folder
@@ -1606,45 +1753,8 @@ pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: Stri
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn export_vault(state: State<'_, VaultManager>, vault: String) -> Result<Vec<u8>, String> {
-    use std::io::Write;
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            let keys = list_keys(&doc).await?;
-            // Read all contents first — the zip writer isn't Send, so it must not
-            // be held across an await. (name, Some(content)) = file; None = dir.
-            let mut items: Vec<(String, Option<String>)> = Vec::new();
-            for key in &keys {
-                if key.as_bytes().first() == Some(&0) {
-                    continue; // \x00meta/* — internal, not a note
-                }
-                if key == KEEP || key.ends_with(&format!("/{KEEP}")) {
-                    let dir = &key[..key.len() - KEEP.len()]; // keeps trailing '/'
-                    if !dir.is_empty() {
-                        items.push((dir.to_string(), None));
-                    }
-                    continue;
-                }
-                let content = read_note_text(node, &doc, key.as_bytes()).await?.unwrap_or_default();
-                items.push((key.clone(), Some(content)));
-            }
-            let opts = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
-            for (name, content) in items {
-                match content {
-                    None => zip.add_directory(&name, opts)?,
-                    Some(c) => {
-                        zip.start_file(&name, opts)?;
-                        zip.write_all(c.as_bytes())?;
-                    }
-                }
-            }
-            Ok(zip.finish()?.into_inner())
-        }
-        .await,
-    )
+    map_err(export_zip(node, &vault).await)
 }
 
 /// Import a zip of `.md` files into the vault (#79), recreating the folder tree.
@@ -1657,70 +1767,8 @@ pub async fn import_vault(
     vault: String,
     data: Vec<u8>,
 ) -> Result<usize, String> {
-    use std::io::Read;
     let node = state.node().await?;
-    map_err(
-        async {
-            // Drain the archive into memory first — ZipArchive isn't Send, so it
-            // must be fully read (and dropped) before any await.
-            let items: Vec<(String, Option<String>)> = {
-                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data))?;
-                let mut v = Vec::new();
-                for i in 0..archive.len() {
-                    let mut entry = archive.by_index(i)?;
-                    let name = entry.name().replace('\\', "/");
-                    let name = name.trim_start_matches('/').to_string();
-                    // Entry names become iroh-docs keys, so reject a crafted
-                    // archive's path traversal ('..'), empty segments, and
-                    // meta-namespace injection (a \x00-prefixed segment).
-                    if name
-                        .trim_end_matches('/')
-                        .split('/')
-                        .any(|c| c.is_empty() || c == ".." || c.as_bytes().first() == Some(&0))
-                    {
-                        continue;
-                    }
-                    if entry.is_dir() {
-                        v.push((name, None));
-                        continue;
-                    }
-                    let lower = name.to_lowercase();
-                    if !(lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")) {
-                        continue; // only text/markdown
-                    }
-                    let mut s = String::new();
-                    if entry.read_to_string(&mut s).is_err() {
-                        continue; // non-utf8 — skip rather than fail the whole import
-                    }
-                    v.push((name, Some(s)));
-                }
-                v
-            };
-            let doc = open(node, &vault).await?;
-            let mut count = 0usize;
-            for (name, content) in items {
-                match content {
-                    None => {
-                        let key = format!("{}{}", name.trim_end_matches('/'), format!("/{KEEP}"));
-                        doc.set_bytes(node.author, key.into_bytes(), encode("")).await?;
-                    }
-                    Some(c) => {
-                        // .txt imports normalize to .md so they open as notes.
-                        let path = if name.to_lowercase().ends_with(".txt") {
-                            format!("{}.md", &name[..name.len() - 4])
-                        } else {
-                            name
-                        };
-                        let free = free_key(&doc, &path).await?;
-                        doc.set_bytes(node.author, free.into_bytes(), fresh_note(&c)).await?;
-                        count += 1;
-                    }
-                }
-            }
-            Ok(count)
-        }
-        .await,
-    )
+    map_err(import_zip(node, &vault, data).await)
 }
 
 /// Save a note. `base` is the text the editor last loaded; it lets the backend
@@ -1736,28 +1784,14 @@ pub async fn write_note(
     content: String,
 ) -> Result<(), String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            write_note_merged(node, &doc, path.as_bytes(), &base, &content).await
-        }
-        .await,
-    )
+    map_err(write(node, &vault, &path, &base, &content).await)
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn create_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<String, String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            let free = free_key(&doc, &path).await?;
-            doc.set_bytes(node.author, free.clone().into_bytes(), fresh_note("")).await?;
-            Ok(free)
-        }
-        .await,
-    )
+    map_err(create_note_at(node, &vault, &path).await)
 }
 
 /// Create a folder by writing its `.keep` marker (folders are implicit from key
@@ -1776,13 +1810,7 @@ pub async fn create_folder_key(
 #[tauri::command]
 pub async fn create_folder(state: State<'_, VaultManager>, vault: String, path: String) -> Result<(), String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            create_folder_key(node, &doc, &path).await
-        }
-        .await,
-    )
+    map_err(create_folder_at(node, &vault, &path).await)
 }
 
 /// Remove every entry under `prefix`, whichever device wrote it.
@@ -1902,13 +1930,7 @@ pub async fn rename_path(
     is_dir: bool,
 ) -> Result<(), String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            rename_key(node, &doc, &from, &to, is_dir).await
-        }
-        .await,
-    )
+    map_err(rename_at(node, &vault, &from, &to, is_dir).await)
 }
 
 #[cfg(feature = "desktop")]
@@ -1920,13 +1942,7 @@ pub async fn delete_path(
     is_dir: bool,
 ) -> Result<(), String> {
     let node = state.node().await?;
-    map_err(
-        async {
-            let doc = open(node, &vault).await?;
-            delete_key(node, &doc, &path, is_dir).await
-        }
-        .await,
-    )
+    map_err(delete_at(node, &vault, &path, is_dir).await)
 }
 
 /// Begin live-syncing a vault, publishing every mutation on the node's change
@@ -2001,9 +2017,17 @@ pub async fn arm(node: &Node, nsid: NamespaceId) -> Result<()> {
 /// bridged to the `vault-changed` Tauri event the frontend listens on.
 #[cfg(feature = "desktop")]
 pub async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Result<(), String> {
-    // Once per process, not once per vault: `VaultChange` carries the vault id,
-    // so one bridge serves every armed vault. Subscribed before arming so the
-    // initial nudge is not published into an empty channel.
+    ensure_event_bridge(app, node);
+    arm(node, nsid).await.map_err(|e| e.to_string())
+}
+
+/// Bridge the node's change channel to the `vault-changed` Tauri event.
+///
+/// Once per process, not once per vault: `VaultChange` carries the vault id, so
+/// one bridge serves every armed vault. Callers must run this *before* arming,
+/// so a vault's initial nudge is not published into an empty channel.
+#[cfg(feature = "desktop")]
+fn ensure_event_bridge(app: &AppHandle, node: &Node) {
     EVENT_BRIDGE.get_or_init(|| {
         let mut rx = node.subscribe_changes();
         let app = app.clone();
@@ -2021,7 +2045,6 @@ pub async fn arm_vault(app: &AppHandle, node: &Node, nsid: NamespaceId) -> Resul
             }
         });
     });
-    arm(node, nsid).await.map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "desktop")]
@@ -2057,17 +2080,8 @@ pub async fn watch_vault(
 #[cfg(feature = "desktop")]
 pub async fn arm_all_vaults(app: &AppHandle, mgr: &VaultManager) -> Result<(), String> {
     let node = mgr.node().await?;
-    let mut stream = node.docs.list().await.map_err(|e| e.to_string())?;
-    let mut ids = Vec::new();
-    while let Some(item) = stream.next().await {
-        if let Ok((id, _cap)) = item {
-            ids.push(id);
-        }
-    }
-    for id in ids {
-        let _ = arm_vault(app, node, id).await;
-    }
-    Ok(())
+    ensure_event_bridge(app, node);
+    arm_all(node).await.map_err(|e| e.to_string())
 }
 
 #[cfg(all(test, feature = "desktop"))]
