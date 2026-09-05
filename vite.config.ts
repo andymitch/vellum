@@ -126,6 +126,13 @@ export default defineConfig(({ mode }) => {
 
     resolve: {
       alias: {
+        // More specific first: the desktop and Android builds can never select
+        // the wasm backend (`isTauri` is true there), but a static import would
+        // still bundle its ~10 MB WebAssembly module and worker. Swapping in an
+        // empty module drops both from the shipped app.
+        ...(web
+          ? {}
+          : { "$lib/vault-wasm": path.resolve("./src/lib/vault-wasm-absent.ts") }),
         $lib: path.resolve("./src/lib"),
       },
     },

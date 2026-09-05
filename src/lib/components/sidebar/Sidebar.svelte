@@ -101,6 +101,11 @@
     let chosenType = $state<NoteType>("markdown");
 
     let vaults = $state<VaultInfo[]>([]);
+    /// Why the vault list is empty, when it is empty for a reason. Shown in
+    /// place of the "no vaults yet" copy so a recoverable condition — most
+    /// often the browser build's one-tab-per-vault rule — never reads as though
+    /// the notes are gone.
+    let vaultsError = $state<string | null>(null);
     let activeVault = $state<string | null>(null);
     let tree = $state<TreeNode[]>([]);
     // path -> note type, for the tree's per-type icons (#180/#181). Fetched
@@ -272,7 +277,19 @@
     const displayName = (n: TreeNode) => (n.is_dir ? n.name : n.name.replace(/\.md$/, ""));
 
     async function refreshVaults() {
-        vaults = await listVaults();
+        try {
+            vaults = await listVaults();
+            vaultsError = null;
+        } catch (e) {
+            // Without this the browser build's one-writer rule reads as data
+            // loss: a second tab cannot open the vault database (OPFS hands out
+            // an exclusive lock), `listVaults` rejects, and the sidebar would
+            // fall through to its empty state — telling someone with a vault
+            // full of notes that they have none, and inviting them to create a
+            // duplicate. Show what actually happened instead.
+            vaultsError = e instanceof Error ? e.message : String(e);
+            vaults = [];
+        }
     }
     async function refreshTree() {
         tree = activeVault ? await listTree(activeVault) : [];
@@ -694,6 +711,10 @@ Delete this note whenever you're ready. Happy writing!
             />
         {:else if activeVault}
             <p class="px-2 py-4 text-sm text-muted-foreground">Empty vault.</p>
+        {:else if vaultsError}
+            <p class="px-2 py-4 text-sm text-destructive" role="alert">
+                {vaultsError}
+            </p>
         {:else}
             <p class="px-2 py-4 text-sm text-muted-foreground">
                 {canSync ? "Create or join a vault to begin." : "Create a vault to begin."}
@@ -736,7 +757,14 @@ Delete this note whenever you're ready. Happy writing!
 
             <!-- Vault list -->
             <div class="min-h-0 flex-1 overflow-auto py-1">
-                {#if !vaults.length}
+                {#if vaultsError}
+                    <p
+                        class="px-4 py-6 text-center text-sm text-destructive"
+                        role="alert"
+                    >
+                        {vaultsError}
+                    </p>
+                {:else if !vaults.length}
                     <p
                         class="px-4 py-6 text-center text-sm text-muted-foreground"
                     >

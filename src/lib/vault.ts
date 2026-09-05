@@ -17,7 +17,7 @@
 // forgotten in the other doesn't compile.
 import { isTauri } from "./platform";
 import * as tauriBackend from "./vault-tauri";
-import * as wasmBackend from "./vault-wasm";
+import * as wasmBackend from "$lib/vault-wasm";
 
 export type VaultInfo = { id: string; name: string; pending: boolean; hash: string };
 export type TreeNode = {
