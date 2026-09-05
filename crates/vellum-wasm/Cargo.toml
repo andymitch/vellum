@@ -21,6 +21,7 @@ iroh-docs = { version = "0.101.0", default-features = false }
 iroh-blobs = { version = "0.103.0", default-features = false }
 iroh-gossip = { version = "0.101.0", default-features = false, features = ["net"] }
 anyhow = "1"
+tracing = "0.1"
 futures-lite = "2"
 # Spawn that works in a browser (spawn_local), and the broadcast channel the
 # vault publishes changes on.

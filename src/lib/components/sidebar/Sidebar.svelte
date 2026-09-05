@@ -49,14 +49,14 @@
     import { createAndOpenNote, duplicateNote } from "$lib/notes";
     import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
-    // Sharing a vault mints a write-capability ticket for another device to
-    // join. Every build can do it now: the web build runs the same iroh node
-    // compiled to wasm, so a browser tab is a real peer (#221/#222). It reaches
-    // others only through a relay — no mDNS, so no LAN-speed transfers — but
-    // that is a performance difference, not a missing feature.
-    const canSync = true;
-    // The native camera scanner is a Tauri plugin and only exists on mobile; a
-    // browser pastes the ticket instead.
+    // Sharing and joining used to be hidden in the web build, which had no node
+    // to sync with. Every build is a real peer now — the browser runs the same
+    // iroh node compiled to wasm (#221/#222) — so there is no capability left
+    // to branch on. It reaches peers only through a relay, with no mDNS, but
+    // that is a speed difference rather than a missing feature.
+    //
+    // The native camera scanner is still a Tauri plugin and only exists on
+    // mobile; a browser pastes the ticket instead.
     const canScan = isTauri && isMobile;
 
     async function scanQr(): Promise<string | null> {
@@ -361,9 +361,7 @@
         const v = vaults.find((x) => x.id === id);
         if (
             !(await askConfirm(
-                canSync
-                    ? `Forget "${v?.name ?? "vault"}"? It stays on other devices and can be rejoined from a ticket.`
-                    : `Delete "${v?.name ?? "vault"}" and its notes from this browser? This can't be undone.`,
+                `Forget "${v?.name ?? "vault"}"? It stays on other devices and can be rejoined from a ticket.`,
             ))
         )
             return;
@@ -545,17 +543,11 @@
     // brand-new install isn't an empty void. Gated by a localStorage flag so it
     // runs once — deleting everything later won't regenerate it.
     const SEEDED_KEY = "vellum-seeded";
-    // The intro and the sync section differ by build: the installed apps sync
-    // peer-to-peer, the web app keeps notes in this browser. A first note that
-    // described a feature you don't have would be worse than no first note.
-    const INTRO = canSync
-        ? "Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices."
-        : "Welcome to **Vellum** — a Markdown notes app running entirely in your browser. No account and no server: your notes are stored on this device.";
-    const SYNC_SECTION = canSync
-        ? `## Sync across devices
-Tap **Share** on a vault to show a QR code, then **Join** it from another device. Edits flow both ways automatically — over the internet or the same Wi-Fi.`
-        : `## Getting your notes out
-The web version doesn't sync. **Export vault (.zip)** in Settings takes everything with you — including into the macOS or Android app, which *does* sync peer-to-peer.`;
+    // One first note for every build, because every build syncs.
+    const INTRO =
+        "Welcome to **Vellum** — a local-first Markdown notes app that syncs **peer-to-peer**. No account, no server, no cloud; your notes live on your devices.";
+    const SYNC_SECTION = `## Sync across devices
+Tap **Share** on a vault to show a QR code, then **Join** it from another device. Edits flow both ways automatically — over the internet or the same Wi-Fi.`;
     const WELCOME_NOTE = `# Hello Vellum 👋
 
 ${INTRO}
@@ -717,7 +709,7 @@ Delete this note whenever you're ready. Happy writing!
             </p>
         {:else}
             <p class="px-2 py-4 text-sm text-muted-foreground">
-                {canSync ? "Create or join a vault to begin." : "Create a vault to begin."}
+                Create or join a vault to begin.
             </p>
         {/if}
     </div>
@@ -768,9 +760,7 @@ Delete this note whenever you're ready. Happy writing!
                     <p
                         class="px-4 py-6 text-center text-sm text-muted-foreground"
                     >
-                        {canSync
-                            ? "No vaults yet. Create or join one below."
-                            : "No vaults yet. Create one below."}
+                        No vaults yet. Create or join one below.
                     </p>
                 {/if}
                 {#each vaults as v (v.id)}
@@ -808,17 +798,15 @@ Delete this note whenever you're ready. Happy writing!
                                 </span>
                             {/if}
                         </button>
-                        {#if canSync}
-                            <button
-                                type="button"
-                                class="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                                title="Share vault"
-                                aria-label="Share {v.name}"
-                                onclick={() => share(v.id)}
-                            >
-                                <Share2 class="h-4.5 w-4.5" />
-                            </button>
-                        {/if}
+                        <button
+                            type="button"
+                            class="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                            title="Share vault"
+                            aria-label="Share {v.name}"
+                            onclick={() => share(v.id)}
+                        >
+                            <Share2 class="h-4.5 w-4.5" />
+                        </button>
                         <button
                             type="button"
                             class="rounded p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -850,15 +838,13 @@ Delete this note whenever you're ready. Happy writing!
                 >
                     <Plus class="h-4 w-4" /> New vault
                 </button>
-                {#if canSync}
-                    <button
-                        type="button"
-                        class="flex flex-1 items-center justify-center gap-2 rounded-md border border-border px-3 py-2.5 text-sm font-medium hover:bg-muted"
-                        onclick={joinPrompt}
-                    >
-                        <Download class="h-4 w-4" /> Join vault
-                    </button>
-                {/if}
+                <button
+                    type="button"
+                    class="flex flex-1 items-center justify-center gap-2 rounded-md border border-border px-3 py-2.5 text-sm font-medium hover:bg-muted"
+                    onclick={joinPrompt}
+                >
+                    <Download class="h-4 w-4" /> Join vault
+                </button>
             </div>
         </div>
     </div>

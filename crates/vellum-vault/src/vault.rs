@@ -965,13 +965,23 @@ pub async fn list_entries(doc: &iroh_docs::api::Doc) -> Result<Vec<NoteEntry>> {
 }
 
 /// Collect all visible note keys (paths) in a vault.
-/// Content hashes of every live entry, so a shell can tell which blobs are
-/// still referenced — what to keep, and what to sweep.
+/// Content hashes of every referenced blob, so a shell that has to keep blobs
+/// durably itself knows what to keep and what to sweep.
+///
+/// `Query::all()`, deliberately, not `single_latest_per_key`: a note is the
+/// *merge* of every author's entry for its key (see `merged_note`), so each
+/// author's blob is live content. Keeping only the newest would sweep a peer's
+/// concurrent edit and lose it on the next read — the very case the 3-way merge
+/// exists to protect (#99).
 pub async fn live_content_hashes(doc: &iroh_docs::api::Doc) -> Result<Vec<iroh_blobs::Hash>> {
     let mut out = Vec::new();
-    let mut stream = Box::pin(doc.get_many(Query::single_latest_per_key()).await?);
+    let mut stream = Box::pin(doc.get_many(Query::all()).await?);
     while let Some(entry) = stream.next().await {
-        out.push(entry?.content_hash());
+        let entry = entry?;
+        if entry.content_len() == 0 {
+            continue; // tombstone — no blob to keep
+        }
+        out.push(entry.content_hash());
     }
     Ok(out)
 }

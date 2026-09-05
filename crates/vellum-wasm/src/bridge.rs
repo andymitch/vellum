@@ -105,13 +105,22 @@ async fn dispatch(request: &JsValue) -> Result<JsValue, JsValue> {
         claim(&file).await?;
         let n = crate::boot(&file).await.map_err(oops)?;
         set_node(n);
+        crate::start_syncing().await.map_err(oops)?;
         return Ok(JsValue::UNDEFINED);
     }
 
     let n = node().ok_or_else(|| JsValue::from_str("open a vault database first"))?;
     match cmd.as_str() {
         "list_vaults" => json(&v::all_vaults(&n).await.map_err(oops)?),
-        "create_vault" => json(&v::create(&n, s(0)?).await.map_err(oops)?),
+        "create_vault" => {
+            // The vault's name is a blob like any note's content, so this needs
+            // persisting as much as a write does. Without it a vault created
+            // and reloaded before its first note reads as "Waiting for a peer…"
+            // — its name gone for good.
+            let info = v::create(&n, s(0)?).await.map_err(oops)?;
+            crate::persist_content(&n, &info.id).await.map_err(oops)?;
+            json(&info)
+        }
         "join_vault" => json(&v::join(&n, &s(0)?).await.map_err(oops)?),
         "share_vault" => Ok(JsValue::from_str(&v::share(&n, &s(0)?).await.map_err(oops)?)),
         "forget_vault" => v::forget(&n, &s(0)?).await.map(|_| JsValue::UNDEFINED).map_err(oops),

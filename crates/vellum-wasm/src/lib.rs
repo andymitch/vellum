@@ -46,6 +46,46 @@ pub(crate) fn set_node(n: Node) {
     NODE.with(|slot| *slot.borrow_mut() = Some(Rc::new(n)));
 }
 
+/// Start syncing every vault, and forward the node's change channel to the page.
+///
+/// The desktop bridges the same channel to a Tauri event. Subscribing *before*
+/// arming matters: `arm` publishes an initial nudge per vault, and a broadcast
+/// channel drops anything sent with no receiver — the desktop path documents
+/// and obeys the same order.
+///
+/// `spawn_local` rather than a `Send` spawn, because this holds an `Rc<Node>`;
+/// a browser wasm build is single-threaded, which is what makes that sound.
+pub(crate) async fn start_syncing() -> Result<()> {
+    let Some(node) = node() else {
+        return Ok(());
+    };
+    let mut changes = node.subscribe_changes();
+    let synced = node.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            match changes.recv().await {
+                Ok(change) => {
+                    // Content that arrives from a peer lands in MemStore, which
+                    // dies with the tab. Copying it here is what makes a synced
+                    // note readable after a reload rather than reading as empty
+                    // — and an empty read is worse than a missing one, because
+                    // the next autosave would write that emptiness back.
+                    let vault = change.vault.to_string();
+                    if let Err(e) = persist_content(&synced, &vault).await {
+                        tracing::warn!(?e, "could not persist synced content");
+                    }
+                    bridge::publish_change(&vault);
+                }
+                // A dropped event still means something changed, and the page
+                // re-reads on any event.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    vellum_vault::vault::arm_all(&node).await
+}
+
 /// Copy any note content the replica references but the durable store lacks.
 ///
 /// Blobs live in `MemStore`, which does not survive a reload, so the bytes have
@@ -118,7 +158,19 @@ pub async fn boot(file: &str) -> Result<Node> {
     // A browser endpoint has no direct addresses, so a share ticket minted
     // before the home relay is up is undialable — the join is accepted and then
     // nothing ever syncs, with no error anywhere.
-    endpoint.online().await;
+    //
+    // Bounded, because offline it never resolves: this app is local-first, and
+    // waiting forever for a relay would mean a plane or a tunnel hangs `boot`
+    // and every command behind it, leaving the sidebar insisting there are no
+    // vaults. Timing out costs only a ticket minted before the relay is up,
+    // which is recoverable — the vault opens, edits are local, and sync starts
+    // when the network does.
+    if n0_future::time::timeout(std::time::Duration::from_secs(10), endpoint.online())
+        .await
+        .is_err()
+    {
+        tracing::warn!("no relay yet; opening the vault offline");
+    }
 
     let blobs = MemStore::new();
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -196,23 +248,9 @@ pub async fn boot(file: &str) -> Result<Node> {
     }
     store.retain_blobs(&live)?;
 
-    // Start every vault syncing, and forward the node's change channel to the
-    // page. The desktop bridges the same channel to a Tauri event.
-    vellum_vault::vault::arm_all(&node).await?;
-    let mut changes = node.subscribe_changes();
-    n0_future::task::spawn(async move {
-        loop {
-            match changes.recv().await {
-                Ok(change) => bridge::publish_change(&change.vault.to_string()),
-                // A dropped event still means something changed, and the page
-                // re-reads on any event.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
     Ok(node)
 }
+
 
 /// Every vault id in the replica store.
 async fn vaults(node: &Node) -> Result<Vec<String>> {

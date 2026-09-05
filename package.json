@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "bun run build:wasm && vite build",
-    "dev:web": "vite dev --mode web",
+    "build": "vite build",
+    "dev:web": "bun run build:wasm && vite dev --mode web",
     "build:web": "bun run build:wasm && vite build --mode web",
     "preview": "vite preview --mode web",
     "test": "bun test",

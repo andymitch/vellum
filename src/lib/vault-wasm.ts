@@ -36,10 +36,35 @@ let next = 0;
 const pending = new Map<number, Pending>();
 const changeListeners = new Set<(vaultId: string) => void>();
 let opened: Promise<void> | null = null;
+/// Set once the worker is unrecoverable, so later commands fail fast with the
+/// original reason rather than starting a second worker that will fail the same
+/// way.
+let failed: Error | null = null;
+
+/// Fail every in-flight and future command with the same error.
+///
+/// Without this a worker that dies — most likely instantiating ~10 MB of wasm
+/// that was never cached, on a first visit with no network — leaves every
+/// command pending forever: no rejection, no error, just an app that never
+/// finishes loading. A stated failure is recoverable; a hang is not.
+function collapse(reason: Error) {
+  for (const [, settle] of pending) settle.reject(reason);
+  pending.clear();
+  opened = Promise.reject(reason);
+  // Nothing is listening on a rejected `opened` until the next command awaits
+  // it, and an unobserved rejection is a console error in its own right.
+  opened.catch(() => {});
+  failed = reason;
+}
 
 function start(): Promise<void> {
+  if (failed) return Promise.reject(failed);
   if (opened) return opened;
   worker = new Worker(new URL("./wasm/worker.js", import.meta.url), { type: "module" });
+  worker.onerror = (e: ErrorEvent) =>
+    collapse(new Error(e.message || "The vault worker failed to start."));
+  worker.onmessageerror = () =>
+    collapse(new Error("The vault worker sent a message that could not be read."));
   worker.onmessage = (e: MessageEvent) => {
     const data = e.data;
     // Unsolicited messages are events, not replies: the worker forwarding the

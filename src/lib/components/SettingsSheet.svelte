@@ -478,13 +478,14 @@
           <span>Import vault (.zip)</span>
         </button>
         {#if isWeb}
-          <!-- The browser build has no p2p sync and no files on disk, so the
-               export above is the only way notes leave this device — say so
-               where the button is, not in a FAQ somewhere (#221). -->
+          <!-- The browser build syncs like any other now (#221/#222), but with
+               one real limitation worth stating where it bites: no local
+               network discovery, so peers meet through a relay. Say it here
+               rather than in a FAQ somewhere. -->
           <p class="px-2 pt-1 text-xs text-muted-foreground">
-            Notes in the web app are stored in this browser only — they don't sync.
-            Export a zip to move them to another device, or to the desktop or Android
-            app.
+            The web app syncs peer-to-peer like the desktop and Android apps. It
+            reaches other devices over the internet rather than the local network,
+            so transfers can be slower. Export a zip any time for a copy you keep.
           </p>
         {/if}
 

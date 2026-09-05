@@ -17,7 +17,7 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
 - **Eight themes & several fonts** — including a GitHub theme, and on Android 12+ a Material You theme that follows your wallpaper.
 - **Cross-platform** — macOS desktop, Android, and a [hosted web version](https://andymitch.github.io/vellum/app/) you can install as an app (the iOS route, since there's no App Store build), all from one codebase.
-- **Runs in a browser too** — the same app, storing notes in the browser instead of an iroh replica. No sync there; a zip export moves notes into the installed apps.
+- **Runs in a browser too** — the same app, and the same vault: the Rust backend compiled to WebAssembly over an iroh replica in the browser's own storage. It syncs peer-to-peer like the installed builds, over a relay rather than the local network.
 - **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store). Opt in to **beta updates** in Settings to track pre-releases.
 
 ## How sync works (in brief)
@@ -72,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/andymitch/vellum/main/scripts/insta
 
 **macOS** — download `Vellum_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
 
-**iPhone / iPad** — there is no App Store build; install the web version instead. Open [andymitch.github.io/vellum/app/](https://andymitch.github.io/vellum/app/) in Safari, tap **Share** → **Add to Home Screen**. It then launches full-screen and works offline. Notes live in that browser and **do not sync** — use **Settings → Export vault (.zip)** to move them to the desktop or Android app. Installing rather than leaving it as a tab also protects the data: Safari clears an unused site's storage after a week, but keeps an installed app's.
+**iPhone / iPad** — there is no App Store build; install the web version instead. Open [andymitch.github.io/vellum/app/](https://andymitch.github.io/vellum/app/) in Safari, tap **Share** → **Add to Home Screen**. It then launches full-screen and works offline. It runs the same vault as the installed apps and **syncs peer-to-peer**, reaching peers over a relay rather than the local network. Installing rather than leaving it as a tab also protects the data: Safari clears an unused site's storage after a week, but keeps an installed app's.
 
 **Any browser** — same link, no install required. It updates on reload, and tracks `main` rather than the latest release.
 
@@ -184,12 +184,28 @@ The Rust P2P backend has integration tests that spin up real iroh nodes:
 cd src-tauri && cargo test
 ```
 
-The frontend's tests cover the browser vault's rules — tree shape, name
-de-duplication, search ranking, tag counts, the zip container — which are
-re-implementations of logic in `vault.rs` and would otherwise drift from it:
+The vault's rules — tree shape, name de-duplication, search ranking, tag
+counts, the zip container — are tested in `crates/vellum-vault`, the crate both
+the installed apps and the browser run. They used to be re-implemented in
+TypeScript for the web build and tested separately; there is only one
+implementation now, so there is only one suite:
 
 ```sh
-bun test
+cargo test --manifest-path crates/vellum-vault/Cargo.toml --features desktop
+cargo test --manifest-path src-tauri/Cargo.toml            # the desktop shell
+bun test                                                   # editor-side tag rules
+```
+
+The browser build needs a wasm toolchain — `bun run build:web` and
+`bun run dev:web` build the vault first. On macOS that also needs a
+wasm-capable clang, since Apple's cannot target wasm and `ring` has a build
+script:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.128
+export CC_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/clang"
+export AR_wasm32_unknown_unknown="$(brew --prefix llvm)/bin/llvm-ar"
 ```
 
 ### Releases
@@ -212,10 +228,11 @@ changelog; a PR closing several issues collapses to a single entry.
 | `src/` | Svelte 5 frontend — editor, sidebar, components |
 | `src/lib/vault.ts` | The vault API, and the switch between its two backends |
 | `src/lib/vault-tauri.ts` | Backend 1: the Tauri commands (desktop + Android) |
-| `src/lib/vault-web.ts` | Backend 2: IndexedDB, for the web build / iOS PWA |
+| `src/lib/vault-wasm.ts` | Backend 2: the same vault in WebAssembly, for the web build / iOS PWA |
 | `src/lib/platform.ts` | Which shell we're in — the only user-agent sniffing |
 | `src/lib/theme.svelte.ts` | Theme/font state + Material You (Android) |
-| `src-tauri/src/vault.rs` | The iroh-docs P2P vault backend (the heart of the app) |
+| `crates/vellum-vault` | The iroh-docs P2P vault (the heart of the app), shell-free so both builds run it |
+| `crates/vellum-wasm` | The browser shell: the vault on OPFS, behind a worker |
 | `src-tauri/src/lib.rs` | Tauri setup, command registration, Android JNI glue |
 | `scripts/` | Build/install helpers + `dev-*` side-by-side builds |
 | `.github/workflows/release.yml` | One-click release CI |
