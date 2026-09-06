@@ -3,7 +3,6 @@ name: Pages
 # Publishes to GitHub Pages (#106, #221):
 #
 #   /      the app itself, which iOS installs as a PWA
-#   /app/  a redirect to /, so PWAs installed at the old address still launch
 #
 # Requires a one-time repo setting: Settings → Pages → Source = "GitHub Actions".
 # Without it, the deploy step fails with "Pages site not found" — the workflow
@@ -73,28 +72,14 @@ jobs:
           export VELLUM_VERSION="$(git describe --tags --always | sed 's/-\([0-9]*\)-g[0-9a-f]*$/+\1/')"
           echo "base $VELLUM_BASE, version $VELLUM_VERSION"
           bun run build:web
+      # The published site is the build, nothing else. The app briefly lived at
+      # /app/ with a redirect left behind for installs made from there; nobody
+      # had installed one, so the redirect went with it.
       - name: Assemble the artifact
-        env:
-          BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: |
           set -euo pipefail
           rm -rf _site
           cp -r build-web _site
-          # The app used to live at /app/, and anything installed from there has
-          # that baked into its start_url — removing the path outright would
-          # make an installed PWA launch into a 404. A redirect keeps it opening.
-          # Notes are unaffected either way: OPFS is scoped to the origin, not
-          # the path, so the vault is the same one the new address reads.
-          BASE="${BASE_PATH:-/}"
-          mkdir -p _site/app
-          cat > _site/app/index.html <<HTML
-          <!doctype html>
-          <meta charset="utf-8" />
-          <title>Vellum moved</title>
-          <meta http-equiv="refresh" content="0; url=${BASE%/}/" />
-          <link rel="canonical" href="${BASE%/}/" />
-          <p>Vellum now lives at <a href="${BASE%/}/">${BASE%/}/</a>. Redirecting…</p>
-          HTML
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
