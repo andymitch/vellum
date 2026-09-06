@@ -148,7 +148,10 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -e
-          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          # `target/`, not `src-tauri/target/`: the crates share a workspace at
+          # the repo root, so cargo's target directory is there too. The Android
+          # job is unaffected because gradle writes under src-tauri/gen.
+          DMG=$(ls target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -1)
           cp "$DMG" "Vellum_aarch64.dmg"
           gh release upload "$TAG" "Vellum_aarch64.dmg" --clobber
           # Drop the version-stamped dmg tauri-action attached; the stable-named
