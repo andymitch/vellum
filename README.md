@@ -16,7 +16,7 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 - **No server** — there's nothing to sign up for and nothing to host. Devices find and sync with each other directly.
 - **Folder tree** with drag-and-drop, rename, duplicate, and delete.
 - **Eight themes & several fonts** — including a GitHub theme, and on Android 12+ a Material You theme that follows your wallpaper.
-- **Cross-platform** — macOS desktop, Android, and a [hosted web version](https://andymitch.github.io/vellum/app/) you can install as an app (the iOS route, since there's no App Store build), all from one codebase.
+- **Cross-platform** — macOS desktop, Android, and a [hosted web version](https://andymitch.github.io/vellum/) you can install as an app (the iOS route, since there's no App Store build), all from one codebase.
 - **Runs in a browser too** — the same app, and the same vault: the Rust backend compiled to WebAssembly over an iroh replica in the browser's own storage. It syncs peer-to-peer like the installed builds, over a relay rather than the local network.
 - **Self-updating** — desktop builds check for updates on launch and install them in place; Android updates via [Komi Store](https://github.com/kurikomi-labs/komi-store). Opt in to **beta updates** in Settings to track pre-releases.
 
@@ -72,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/andymitch/vellum/main/scripts/insta
 
 **macOS** — download `Vellum_aarch64.dmg`, open it, drag Vellum to Applications. The app is unsigned, so on first launch right-click it → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Vellum.app`). After that it **updates itself** — it checks on launch and prompts to download + install new releases.
 
-**iPhone / iPad** — there is no App Store build; install the web version instead. Open [andymitch.github.io/vellum/app/](https://andymitch.github.io/vellum/app/) in Safari, tap **Share** → **Add to Home Screen**. It then launches full-screen and works offline. It runs the same vault as the installed apps and **syncs peer-to-peer**, reaching peers over a relay rather than the local network. Installing rather than leaving it as a tab also protects the data: Safari clears an unused site's storage after a week, but keeps an installed app's.
+**iPhone / iPad** — there is no App Store build; install the web version instead. Open [andymitch.github.io/vellum/](https://andymitch.github.io/vellum/) in Safari, tap **Share** → **Add to Home Screen**. It then launches full-screen and works offline. It runs the same vault as the installed apps and **syncs peer-to-peer**, reaching peers over a relay rather than the local network. Installing rather than leaving it as a tab also protects the data: Safari clears an unused site's storage after a week, but keeps an installed app's.
 
 **Any browser** — same link, no install required. It updates on reload, and tracks `main` rather than the latest release.
 
@@ -172,7 +172,7 @@ bun run build:web          # production build into build-web/
 bun run preview            # serve that build locally
 ```
 
-It is published to GitHub Pages under `/app/` by `.github/workflows/pages.yml`,
+It is published to GitHub Pages at the site root by `.github/workflows/pages.yml`,
 alongside the marketing site. `VELLUM_BASE` sets the subdirectory it is served
 from and `VELLUM_VERSION` the version it reports; both are set by that workflow.
 
