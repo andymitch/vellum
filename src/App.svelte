@@ -4,7 +4,6 @@
   import type { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
-  import TodoList from "$lib/components/editor/TodoList.svelte";
   import JournalView from "$lib/components/editor/JournalView.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
@@ -37,14 +36,13 @@
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
   import { initLinkFolders } from "$lib/link-folders.svelte";
-  import { noteTypeInfo, noteTypeOf, countChecked, sweepChecked } from "$lib/note-type";
+  import { noteTypeInfo, noteTypeOf } from "$lib/note-type";
   import {
     Code,
     Eye,
     PanelLeft,
     NotebookPen,
     Settings,
-    BrushCleaning,
     Search,
   } from "@lucide/svelte";
 
@@ -280,24 +278,9 @@
   const noteType = $derived(noteTypeOf(content));
   const typeInfo = $derived(noteTypeInfo(noteType));
   const singleView = $derived(!!activePath && typeInfo.singleView);
-  const checkedCount = $derived(noteType === "todo" ? countChecked(content) : 0);
-  // Which view actually renders. Typed notes are always the editor: a TODO note
-  // needs text entry as much as it needs tickable boxes, and forcing it to
-  // preview left it with no way to add an item at all (#174). The checkboxes are
-  // drawn in the editor instead, by the taskCheckboxes decoration.
-  const view = $derived(
-    noteType === "todo" ? "todo" : noteType === "journal" ? "journal" : singleView ? "source" : mode,
-  );
-
-  // Remove every ticked item. Behind a confirm because a delete propagates to
-  // every synced device — there is no undo that would work across sync. The
-  // rewrite goes through `content`, so it is an ordinary CRDT-merged edit.
-  async function sweepDone() {
-    if (!checkedCount) return;
-    const plural = checkedCount === 1 ? "item" : "items";
-    if (!(await sidebar?.confirmAction(`Remove ${checkedCount} completed ${plural}?`))) return;
-    content = sweepChecked(content);
-  }
+  // Which view actually renders. A typed note is always the editor: it has
+  // exactly one operational mode, drawn by its own component.
+  const view = $derived(noteType === "journal" ? "journal" : singleView ? "source" : mode);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   // Per-open id for the editor's {#key}, so switching notes remounts the editor
@@ -452,9 +435,8 @@
 
   // Quick edit is a Markdown-note affordance: tap the preview to jump into
   // source. A typed note (#180/#181) has a single operational mode, so there is
-  // nothing to jump to — and letting these run swallowed taps on the checklist's
-  // own controls, which is why a TODO note felt dead on mobile (#174 again, from
-  // a different direction).
+  // nothing to jump to — and letting these run would swallow taps on the note's
+  // own controls instead.
   const quickEditable = $derived(mobile && editorSettings.quickEdit && !singleView);
 
   function onPreviewPointerDown(e: PointerEvent) {
@@ -997,21 +979,6 @@
     </div>
 
     <div data-tauri-drag-region class="flex items-center gap-1.5">
-      {#if noteType === "todo" && checkedCount}
-        <!-- Sweep completed items (#104). Only shown when there's something to
-             sweep, so it doesn't sit there as dead chrome. -->
-        <button
-          type="button"
-          class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacApp
-            ? 'p-1'
-            : 'p-2'}"
-          aria-label="Remove completed items"
-          title="Remove {checkedCount} completed item{checkedCount === 1 ? '' : 's'}"
-          onclick={sweepDone}
-        >
-          <BrushCleaning size={chromeIcon} />
-        </button>
-      {/if}
       <!-- Single toggle: click anywhere flips Source<->Preview; active half is lit.
            Hidden for typed notes (#104), which have exactly one view. -->
       {#if !singleView}
@@ -1133,7 +1100,7 @@
       bind:this={mainEl}
       class="min-w-0 flex-1 {view === 'journal' ? 'flex flex-col overflow-hidden' : 'overflow-auto'}"
       style={mobile
-        ? `padding-top:${view === "preview" || view === "todo" || view === "journal" ? headerH : 0}px;`
+        ? `padding-top:${view === "preview" || view === "journal" ? headerH : 0}px;`
         : ""}
       onpointerdown={onPreviewPointerDown}
       onpointerup={onPreviewPointerUp}
@@ -1145,8 +1112,6 @@
           <NotebookPen size={40} class="opacity-30" />
           <p class="text-sm">Select or create a note.</p>
         </div>
-      {:else if view === "todo"}
-        <TodoList bind:value={content} />
       {:else if view === "journal"}
         <JournalView bind:value={content} {mobile} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
       {:else if view === "preview"}

@@ -2,9 +2,9 @@
 // of its Markdown:
 //
 //     ---
-//     type: todo
+//     type: journal
 //     ---
-//     - [ ] buy milk
+//     entry text
 //
 // Frontmatter was chosen over a sidecar metadata entry precisely because it is
 // just text: it syncs through the same CRDT as the body, survives .md
@@ -14,7 +14,7 @@
 // This module is the only place that knows about the block. Everything else
 // treats a note as ordinary Markdown.
 
-export type NoteType = "markdown" | "todo" | "journal";
+export type NoteType = "markdown" | "journal";
 
 export type NoteTypeInfo = {
   id: NoteType;
@@ -27,7 +27,6 @@ export type NoteTypeInfo = {
 
 export const NOTE_TYPES: NoteTypeInfo[] = [
   { id: "markdown", label: "Markdown", initialBody: "", singleView: false },
-  { id: "todo", label: "TODO list", initialBody: "- [ ] ", singleView: true },
   { id: "journal", label: "Journal", initialBody: "", singleView: true },
 ];
 
@@ -35,9 +34,11 @@ export const noteTypeInfo = (t: NoteType): NoteTypeInfo =>
   NOTE_TYPES.find((n) => n.id === t) ?? NOTE_TYPES[0];
 
 // `scratchpad` was the name in the v8 betas before the type was simplified into
-// Journal (#181). Read it as an alias so a beta-era note keeps working rather
-// than silently reverting to plain Markdown.
-const ALIASES: Record<string, NoteType> = { scratchpad: "journal" };
+// Journal (#181). `todo` was a dedicated checklist type before it was dropped
+// (#243) in favor of plain Markdown, which already renders task lines as
+// checkboxes. Read both as aliases so an existing note keeps behaving the same
+// way rather than silently reverting to a different type.
+const ALIASES: Record<string, NoteType> = { scratchpad: "journal", todo: "markdown" };
 
 const asType = (s: string): NoteType | null =>
   NOTE_TYPES.some((t) => t.id === s) ? (s as NoteType) : (ALIASES[s] ?? null);
@@ -108,55 +109,6 @@ function stripTypeKey(frontmatter: string): string {
 export const newNoteContent = (type: NoteType): string =>
   withType(noteTypeInfo(type).initialBody, type);
 
-// ---- TODO helpers ----
-
-// A GFM task line, capturing the checkbox state. Mirrors the marker rewriting
-// Preview.svelte already does when a checkbox is clicked.
-const TASK_LINE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\]/;
-
-/// How many checked items the note has — drives whether the sweep button shows.
-export const countChecked = (text: string): number =>
-  text.split("\n").filter((l) => /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[xX]\]/.test(l)).length;
-
-/// Remove every checked task line. Unchecked items, prose, and any frontmatter
-/// are left exactly as they were.
-export function sweepChecked(text: string): string {
-  const { body, frontmatter } = parseNote(text);
-  const kept = body
-    .split("\n")
-    .filter((l) => !/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[[xX]\]/.test(l));
-  return frontmatter + kept.join("\n");
-}
-
-/// One row of a TODO note. A row that isn't a task keeps its raw text, so prose
-/// (or anything a peer wrote) survives editing rather than being destroyed.
-export type TodoRow = { task: boolean; checked: boolean; text: string };
-
-const TASK_ROW = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]?(.*)$/;
-
-/// Split a TODO note's body into rows for the checklist UI.
-export function parseTodoRows(text: string): TodoRow[] {
-  const { body } = parseNote(text);
-  // A single trailing newline is an artifact of the format, not an empty row.
-  const lines = body.replace(/\n$/, "").split("\n");
-  if (lines.length === 1 && lines[0] === "") return [];
-  return lines.map((line) => {
-    const m = TASK_ROW.exec(line);
-    return m
-      ? { task: true, checked: m[1] !== " ", text: m[2] }
-      : { task: false, checked: false, text: line };
-  });
-}
-
-/// Rebuild the note from its rows, preserving the frontmatter untouched.
-export function serializeTodoRows(original: string, rows: TodoRow[]): string {
-  const { frontmatter } = parseNote(original);
-  const body = rows
-    .map((r) => (r.task ? `- [${r.checked ? "x" : " "}] ${r.text}` : r.text))
-    .join("\n");
-  return frontmatter + body + (body ? "\n" : "");
-}
-
 // ---- Journal helpers ----
 
 /// One cell of a Journal note (#227) — a long-running note divided into
@@ -165,8 +117,8 @@ export function serializeTodoRows(original: string, rows: TodoRow[]): string {
 /// instant its text last changed (present only once it differs from
 /// `created`, i.e. the cell has actually been edited since). Both are null
 /// for content with no marker line (legacy content from before this format,
-/// or something a peer wrote by hand) — kept rather than discarded, same
-/// principle as a TODO row that isn't a task (see `TodoRow` above).
+/// or something a peer wrote by hand) — kept rather than discarded, since this
+/// module never destroys content it doesn't recognize.
 export type JournalCell = { created: string | null; updated: string | null; text: string };
 
 /// A cell's marker: an HTML comment on its own line, invisible wherever the

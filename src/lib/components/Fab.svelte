@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus, FileText, ListChecks, NotebookPen } from "@lucide/svelte";
+  import { Plus, FileText, NotebookPen } from "@lucide/svelte";
   import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
   // `hidden` slides the button off the bottom edge (auto-hide on scroll, #85);
@@ -19,7 +19,6 @@
 
   const ICONS: Record<NoteType, typeof FileText> = {
     markdown: FileText,
-    todo: ListChecks,
     // Matches the tree (#190) — a bound notebook, not another lined page.
     journal: NotebookPen,
   };

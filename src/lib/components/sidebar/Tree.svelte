@@ -7,7 +7,6 @@
     ChevronDown,
     FileText,
     Folder,
-    ListChecks,
     NotebookPen,
   } from "@lucide/svelte";
 
@@ -35,10 +34,9 @@
     noteTypes?: Record<string, string>;
   } = $props();
 
-  // Icon per note type, so a TODO and a journal are distinguishable at a glance
-  // in the tree rather than all reading as generic documents.
+  // Icon per note type, so a journal is distinguishable at a glance in the
+  // tree rather than reading as a generic document.
   const ICONS: Record<string, typeof FileText> = {
-    todo: ListChecks,
     // NotebookPen, not NotepadText: at tree size a lined pad reads almost
     // identically to the plain-note page icon (#190). This is the same icon the
     // empty state uses as its watermark, so it's already familiar.

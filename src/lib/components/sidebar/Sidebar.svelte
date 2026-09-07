@@ -453,12 +453,6 @@
         await refreshTree();
     }
 
-    // Confirm dialog for callers outside the sidebar (App's TODO sweep, #104),
-    // so there's one dialog implementation rather than two.
-    export function confirmAction(title: string): Promise<boolean> {
-        return askConfirm(title);
-    }
-
     // Imperative hooks for global hotkeys (App owns the keydown listener).
     export function createFolderHotkey() {
         newRootFolder();
