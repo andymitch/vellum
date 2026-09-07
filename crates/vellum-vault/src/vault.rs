@@ -436,10 +436,10 @@ pub async fn merged_note(
 }
 
 /// What `merged_note` was able to recover. The two empty-handed cases have to be
-/// told apart, because one of them is temporary and the other is not (#251): a
-/// blob that hasn't arrived will, so a write must wait rather than merge against
-/// nothing, while bytes that don't decode never will, so refusing forever would
-/// leave the note permanently unwritable.
+/// told apart because they want opposite handling (#251): a blob that hasn't
+/// arrived will, so a write waits rather than merging against nothing, while
+/// bytes that don't decode never will, so waiting would strand the note — that
+/// one is allowed through to be overwritten instead (#255).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteRead {
     /// At least one author's entry contributed text.
@@ -476,15 +476,19 @@ pub async fn read_note_text(
 /// delta is applied relative to `cur`, so yrs offsets are always in bounds even
 /// when a remote edit shifted them.
 ///
-/// A note whose current state can't be read is never merged against (#251).
+/// Merging against a note we can't read is what corrupted them (#251).
 /// `merged_note` yields empty text for a deleted note, for one whose content
 /// blob hasn't arrived, and for bytes that don't decode — and merging against
 /// empty reads as "the other side deleted everything", which then gets written
-/// back and synced to every peer. So the merge only ever runs on text we
-/// actually have: an edit to a note that is gone is refused, and so is one to a
-/// note still downloading or unreadable. The caller keeps its text and retries
-/// (the editor restores its base and re-fires; `ContentReady` re-fires the
-/// read).
+/// back and synced to every peer. Two of those three are handled here:
+///
+/// - Nothing current, and a caller that claims to have loaded text: refused,
+///   since its base describes a note that is gone. With an *empty* base it is
+///   allowed instead, and seeded from `content` alone — a new note, or a
+///   recreate at a freed name.
+/// - Still downloading: refused, and the caller retries (the editor restores
+///   its base and re-fires; `ContentReady` re-fires the read).
+/// - Bytes that don't decode: still overwritten, see #255 below.
 ///
 /// This does not make deletion airtight. A pre-deletion entry belonging to
 /// *another* author survives our tombstone — pruning is author-scoped — and
@@ -536,20 +540,18 @@ pub async fn write_note_merged(
     if state == NoteRead::AwaitingContent {
         return Err(anyhow!("note is still syncing; try again"));
     }
-    // An entry with content that yields no text at all — bytes that don't
-    // decode. Tempting to treat the write as a repair, but "doesn't decode
-    // here" is not "will never decode anywhere": a format the running build
-    // doesn't understand, or a value from a newer version, decodes fine on the
-    // peer that wrote it. Overwriting would destroy it for everyone, and since
-    // the note reads as empty the user needs only one keystroke to trigger
-    // that. Refuse and say so loudly instead. The cost is that such a note is
-    // unwritable until #253 offers a way to copy the text out.
+    // `NoteRead::Nothing` — an entry with content whose bytes don't decode —
+    // deliberately falls through to the merge below, which overwrites it. That
+    // is its own bug (the note reads as empty, so one keystroke destroys it for
+    // every peer) but refusing here proved worse until the paths around it can
+    // cope: the autosave retries a refusal that never resolves, and one such
+    // note aborts a linked folder's whole reconcile pass. Left as it is today
+    // and tracked in #255 — logged, at least, since today it is silent.
     if state == NoteRead::Nothing {
         tracing::warn!(
             key = %String::from_utf8_lossy(key),
-            "note has content that does not decode; refusing to overwrite it"
+            "stored note content does not decode; it is about to be overwritten (#255)"
         );
-        return Err(anyhow!("note content can't be read; copy your text elsewhere"));
     }
 
     let cur = doc_text(&ydoc);

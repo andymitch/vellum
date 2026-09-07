@@ -873,7 +873,13 @@
         // Restore the prior base so the effect retries this edit — the base
         // stays truthful, which is the whole point of #251.
         if (lastLoaded === c) lastLoaded = base;
-        if (String(e).includes("no longer exists")) rejectedEdit = { path: p, content: c };
+        // Retrying is the exception, not the rule: only a write that says it is
+        // waiting on a sync will succeed if we just try again. Anything else
+        // fails identically every time, and since restoring the base re-fires
+        // this effect, retrying it is a 400ms loop that never ends. Latching on
+        // "not retryable" rather than listing the failures that aren't keeps a
+        // future error from reintroducing that loop.
+        if (!String(e).includes("still syncing")) rejectedEdit = { path: p, content: c };
         throw e;
       }
     }, 400);
