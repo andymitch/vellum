@@ -34,11 +34,9 @@ export const noteTypeInfo = (t: NoteType): NoteTypeInfo =>
   NOTE_TYPES.find((n) => n.id === t) ?? NOTE_TYPES[0];
 
 // `scratchpad` was the name in the v8 betas before the type was simplified into
-// Journal (#181). `todo` was a dedicated checklist type before it was dropped
-// (#243) in favor of plain Markdown, which already renders task lines as
-// checkboxes. Read both as aliases so an existing note keeps behaving the same
-// way rather than silently reverting to a different type.
-const ALIASES: Record<string, NoteType> = { scratchpad: "journal", todo: "markdown" };
+// Journal (#181). Read it as an alias so a beta-era note keeps working rather
+// than silently reverting to plain Markdown.
+const ALIASES: Record<string, NoteType> = { scratchpad: "journal" };
 
 const asType = (s: string): NoteType | null =>
   NOTE_TYPES.some((t) => t.id === s) ? (s as NoteType) : (ALIASES[s] ?? null);
