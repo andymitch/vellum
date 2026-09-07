@@ -272,9 +272,12 @@
   let touchDragging = false;
 
   function onSwipeStart(e: TouchEvent) {
-    const first = e.touches[0];
-    if (first) {
-      touchOrigin = { x: first.clientX, y: first.clientY };
+    // The finger that just landed, which is not `touches[0]` when another one is
+    // already down — taking that one would move the origin to wherever the
+    // existing finger has got to, and forget that it was already dragging.
+    const landed = e.changedTouches[0];
+    if (landed && e.touches.length === 1) {
+      touchOrigin = { x: landed.clientX, y: landed.clientY };
       touchDragging = false;
     }
     if (!mobile || settingsOpen || e.touches.length !== 1) return;
@@ -316,13 +319,17 @@
   function onWheelGesture() {
     lastScrollGestureAt = Date.now();
   }
-  function onSwipeEnd() {
-    // Only bookkeeping for the next touch — the fling that follows this one is
-    // already covered by the timestamp, and a touchend we never see (the
-    // quick-edit path unmounts the tapped node) is corrected by the next
+  function onSwipeEnd(e: TouchEvent) {
+    // Only once the last finger has gone: lifting one of two leaves a drag in
+    // progress, and forgetting its origin would stop the rest of it counting as
+    // scrolling. Bookkeeping for the next touch either way — the fling after
+    // this one is already covered by the timestamp, and a touchend we never see
+    // (the quick-edit path unmounts the tapped node) is corrected by the next
     // touchstart rather than leaving anything armed.
-    touchOrigin = null;
-    touchDragging = false;
+    if (e.touches.length === 0) {
+      touchOrigin = null;
+      touchDragging = false;
+    }
     if (panStart && panLocked && drawerPan !== null)
       setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
