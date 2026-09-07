@@ -453,6 +453,15 @@ pub async fn read_note_text(
 /// `<<<<<<<`/`>>>>>>>` markers — surfaced, never silently dropped. The resulting
 /// delta is applied relative to `cur`, so yrs offsets are always in bounds even
 /// when a remote edit shifted them.
+///
+/// A note whose current state can't be read is never merged against (#251).
+/// `merged_note` yields empty text both for a deleted note and for one whose
+/// content blob hasn't arrived yet, and merging against empty reads as "the
+/// other side deleted everything" — which then gets written back and synced to
+/// every peer, resurrecting a note a peer deleted or scattering conflict
+/// markers through one it was still downloading. Both cases refuse the write
+/// instead; the caller keeps the text and retries (the editor already restores
+/// its base and re-fires, and `ContentReady` re-fires the read).
 pub async fn write_note_merged(
     node: &Node,
     doc: &iroh_docs::api::Doc,
@@ -460,8 +469,33 @@ pub async fn write_note_merged(
     base: &str,
     content: &str,
 ) -> Result<()> {
+    // Whether the note has any current text, decided the same way reads decide
+    // it (see `read_note_text`): newest entry wins, so a peer's delete is not
+    // undone by our next keystroke. Note that iroh-docs excludes tombstones
+    // from queries, so a deleted note and one that never existed are
+    // indistinguishable here — both simply have nothing to merge against.
+    let exists = doc
+        .get_one(Query::single_latest_per_key().key_exact(key))
+        .await?
+        .is_some_and(|e| e.content_len() > 0);
+
+    // Nothing to merge against. An empty base is a genuinely new note, so it
+    // writes. Any other base means the caller loaded text from a note that is
+    // gone now, and merging against empty would write it straight back —
+    // resurrecting it on every peer.
+    if !exists && !base.is_empty() {
+        return Err(anyhow!("note no longer exists; save it under a new name to keep this text"));
+    }
+
     let cid = client_id(node.author.to_string().as_bytes());
-    let (ydoc, _) = merged_note(node, doc, key, cid).await?;
+    let (ydoc, found) = merged_note(node, doc, key, cid).await?;
+    // The entry is there but its text isn't usable yet — an undownloaded blob,
+    // or an update that didn't decode. `cur` would be empty and the merge would
+    // destroy the note, so leave it alone and let the retry pick it up.
+    if exists && !found {
+        return Err(anyhow!("note is still syncing; try again"));
+    }
+
     let cur = doc_text(&ydoc);
     let merged = match diffy::merge(base, &cur, content) {
         Ok(m) | Err(m) => m,
@@ -2780,6 +2814,67 @@ mod tests {
         assert!(!key_exists(&doc, "Backlog.md").await.expect("exists2"));
         // The recreated note reuses the original name, no " 1" suffix.
         assert_eq!(free_key(&doc, "Backlog.md").await.expect("free"), "Backlog.md");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A write must never merge against a note it cannot read (#251). Both
+    /// unreadable states — deleted, and present-but-not-yet-downloaded — yield
+    /// empty text from `merged_note`, and merging against empty writes the note
+    /// away (or resurrects it) for every peer.
+    #[tokio::test]
+    async fn write_refuses_when_the_current_note_cannot_be_read() {
+        let dir = std::env::temp_dir().join(format!("notes-write-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init node");
+        let doc = node.docs.create().await.expect("create doc");
+
+        // A brand-new note still writes: no entry, and an empty base, so there
+        // is nothing to merge against and nothing to lose.
+        write_note_merged(&node, &doc, b"fresh.md", "", "hello\n").await.expect("create");
+        assert_eq!(
+            read_note_text(&node, &doc, b"fresh.md").await.expect("read").as_deref(),
+            Some("hello\n")
+        );
+
+        // Deleted elsewhere: typing into a note a peer removed must not bring
+        // it back, which is what merging against empty did. (A tombstone is
+        // excluded from queries, so this is the same "no current text" state as
+        // a note that never existed — what separates them is the caller's base.)
+        doc.del(node.author, b"fresh.md".to_vec()).await.expect("del");
+        let err = write_note_merged(&node, &doc, b"fresh.md", "hello\n", "hello\nmore\n")
+            .await
+            .expect_err("must refuse to write to a deleted note");
+        assert!(
+            err.to_string().contains("no longer exists"),
+            "unexpected error for a deleted note: {err}"
+        );
+        assert!(
+            !key_exists(&doc, "fresh.md").await.expect("exists"),
+            "the note was resurrected by a write"
+        );
+
+        // Content not downloaded yet: an entry pointing at a blob this node
+        // does not have. `set_hash` reproduces exactly the post-sync window the
+        // read path already guards against.
+        let missing = iroh_blobs::Hash::new(b"content that was never added here");
+        doc.set_hash(node.author, b"pending.md".to_vec(), missing, 42)
+            .await
+            .expect("set_hash");
+        let err = write_note_merged(&node, &doc, b"pending.md", "remote text\n", "my edit\n")
+            .await
+            .expect_err("must refuse while the content is unavailable");
+        assert!(
+            err.to_string().contains("syncing"),
+            "unexpected error for an undownloaded note: {err}"
+        );
+        // Crucially the entry is untouched — no empty-merge result was stored.
+        let entry = doc
+            .get_one(Query::single_latest_per_key().key_exact(b"pending.md"))
+            .await
+            .expect("get_one")
+            .expect("entry still present");
+        assert_eq!(entry.content_hash(), missing, "the unreadable note was overwritten");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
