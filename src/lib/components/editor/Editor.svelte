@@ -16,6 +16,7 @@
   import { thingsTheme } from "./things-theme";
   import { theme } from "$lib/theme.svelte";
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
+  import { markAppScroll } from "$lib/app-scroll";
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
   import { tagMarks } from "./tag-marks";
@@ -171,7 +172,13 @@
               const top = v.scrollDOM.scrollTop;
               const startY = e.clientY;
               const onScroll = () => {
-                if (v.scrollDOM.scrollTop !== top) v.scrollDOM.scrollTop = top;
+                // Undoing a scroll is still us scrolling: without claiming it,
+                // the correction reads as a gesture and flickers the mobile
+                // chrome, since this runs with a finger on the glass (#250).
+                if (v.scrollDOM.scrollTop !== top) {
+                  markAppScroll();
+                  v.scrollDOM.scrollTop = top;
+                }
               };
               const onMove = (ev: PointerEvent) => {
                 if (Math.abs(ev.clientY - startY) > 8) release();
