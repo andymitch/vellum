@@ -581,8 +581,14 @@
     transform: translateX(0);
   }
   /* A two-line timestamp reaches into the row below it, so that row's day
-     label steps aside rather than colliding with it. */
-  .cell-row-wrap:hover + .cell-row-wrap .rail-day {
+     label steps aside rather than colliding with it. The second selector is
+     the same row reached across a day rule: a row only *has* a day label when
+     it opens a new day, which is exactly when a rule sits between the two, so
+     without it this would miss every case it was written for. (The rule is
+     still in the sibling chain at these widths — it is hidden by
+     `display: none`, which doesn't take an element out of the DOM.) */
+  .cell-row-wrap:hover + .cell-row-wrap .rail-day,
+  .cell-row-wrap:hover + .day-rule + .cell-row-wrap .rail-day {
     opacity: 0;
   }
 
