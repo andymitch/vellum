@@ -217,12 +217,11 @@
     // (held by the name dialog's keeper) and transfers here.
     //
     // Put the caret at the END of the document, not CodeMirror's default of
-    // position 0. A typed note is seeded with a starter body (a TODO note gets
-    // `- [ ] `), and starting at 0 put the caret BEFORE that marker — so typing
-    // pushed the marker along ahead of the text and produced `Milk- [ ] `
-    // instead of `- [ ] Milk`, with the checkbox disappearing because the marker
-    // was no longer at the line start. Harmless for a plain note, whose document
-    // is empty, so end == 0 anyway.
+    // position 0. A typed note can be seeded with a non-empty starter body, and
+    // starting at 0 would put the caret BEFORE it — so typing would push the
+    // starter text along ahead of what's typed rather than following it.
+    // Harmless for today's types, whose starter bodies are empty, so end == 0
+    // anyway.
     if (focusOnMount) {
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();

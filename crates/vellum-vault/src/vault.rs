@@ -2468,13 +2468,13 @@ mod tests {
     /// block — a `---` inside a journal is a thematic break the user typed.
     #[test]
     fn note_type_reads_only_leading_frontmatter() {
-        assert_eq!(note_type_of("---\ntype: todo\n---\n- [ ] x").as_deref(), Some("todo"));
+        assert_eq!(note_type_of("---\ntype: custom\n---\n- [ ] x").as_deref(), Some("custom"));
         assert_eq!(note_type_of("---\ntype: journal\n---\nx").as_deref(), Some("journal"));
-        assert_eq!(note_type_of("---\nfoo: bar\ntype: todo\n---\nx").as_deref(), Some("todo"));
-        assert_eq!(note_type_of("---\ntype: \"todo\"\n---\nx").as_deref(), Some("todo"));
+        assert_eq!(note_type_of("---\nfoo: bar\ntype: custom\n---\nx").as_deref(), Some("custom"));
+        assert_eq!(note_type_of("---\ntype: \"custom\"\n---\nx").as_deref(), Some("custom"));
         // No frontmatter, and a mid-document rule, are both untyped.
         assert_eq!(note_type_of("plain note"), None);
-        assert_eq!(note_type_of("text\n\n---\n\ntype: todo\n"), None);
+        assert_eq!(note_type_of("text\n\n---\n\ntype: custom\n"), None);
         // A block with no type key.
         assert_eq!(note_type_of("---\nfoo: bar\n---\nx"), None);
     }
