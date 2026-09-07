@@ -17,14 +17,15 @@
   // the keyboard (which blurs the field).
   //
   // Chunks can be dragged to reorder (desktop only). Each tracks a created
-  // time and, once actually edited, an updated time, shown on a timeline in
-  // the right margin — outside the chunk, so it can never render over the
-  // chunk's own content.
+  // time and, once actually edited, an updated time. On a wide-enough pane
+  // that's a timeline in the right margin, outside the chunk so it can never
+  // render over the chunk's own content; on mobile — where there is no margin
+  // to speak of — it's a full-width day rule between chunks instead (#242).
   //
   // Storage is still a plain .md file. Each chunk's created/updated times are
   // an HTML comment marker, invisible wherever the note is rendered, and
-  // content with no marker is kept rather than discarded — same principle as
-  // a TodoRow that isn't a task (note-type.ts).
+  // content with no marker is kept rather than discarded, since note-type.ts
+  // never destroys content it doesn't recognize.
   import { tick } from "svelte";
   import { isToday, isYesterday, format } from "date-fns";
   import {
@@ -283,9 +284,14 @@
 
 <div class="journal-scroll h-full min-h-0 overflow-y-auto px-4 py-4" role="list">
   {#each displayCells as cell, i (i)}
-    <!-- Three columns: the chunk keeps a uniform full-width column of its own,
-         and the timeline gets the right margin beside it — never a slice of
-         the chunk's own width. The whole band is the drop target, so a drag
+    {#if mobile && dayMarkers[i]}
+      <!-- Mobile has no margin for a timeline rail, so a new day gets a
+           full-width rule instead, with the label justified against it (#242). -->
+      <div class="day-rule" aria-hidden="true"><span>{dayMarkers[i]}</span></div>
+    {/if}
+    <!-- The chunk keeps a uniform column of its own, and — wherever there's
+         room — the timeline gets a margin beside it, never a slice of the
+         chunk's own width. The whole band is the drop target, so a drag
          doesn't have to stay inside the chunk to aim between two of them. -->
     <div
       class="cell-row-wrap"
@@ -385,7 +391,8 @@
   /* A centred chunk column with a margin either side; the timeline lives in
      the right one. Equal 1fr margins keep the chunk column centred, and the
      chunk itself always fills it — its width never changes with hover, or
-     with whether a chunk happens to carry timestamps. */
+     with whether a chunk happens to carry timestamps. This is the widest
+     regime (#242); narrower panes override it below, down to 62rem. */
   .cell-row-wrap {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 48rem) minmax(0, 1fr);
@@ -571,11 +578,66 @@
     opacity: 0;
   }
 
-  /* No margin worth speaking of: drop the rail rather than crush the note. */
+  /* Below 62rem there isn't room for two full 1fr margins (the rail needs
+     ~7rem to read comfortably, so 48rem content + 7rem either side = 62rem).
+     Rather than snap straight from centred-with-rail to no-rail, three
+     regimes hand the margin over gradually as the pane narrows (#242): wide
+     enough (above) keeps both margins growing equally; the two below give
+     that share to the right margin alone first — so the note ends up
+     left-justified rather than losing width off both sides at once — and
+     only once that alone reaches the ~7rem the rail needs does the rail
+     appear and the left margin start catching up to match it. */
+
+  /* 55–62rem: the right margin has already reached the ~7rem the rail needs;
+     only the left margin is still growing, catching up to match it. */
   @container (max-width: 62rem) {
+    .cell-row-wrap {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 48rem) 7rem;
+    }
+  }
+
+  /* Below 55rem the right margin hasn't reached the ~7rem the rail's label
+     needs yet, so rather than clip that label against too narrow a column,
+     the rail simply isn't shown — the chunk pins to the left edge and a bare
+     right margin grows on its own from nothing, with nothing drawn in it,
+     until the 62rem rule above takes over and the rail appears already at
+     full width. */
+  @container (max-width: 55rem) {
+    .cell-row-wrap {
+      grid-template-columns: minmax(0, 48rem) minmax(0, 1fr);
+    }
+    .cell-slot {
+      grid-column: 1;
+    }
     .cell-rail {
       display: none;
     }
+  }
+
+  /* A day change, on mobile: a full-width rule with the label set off the end
+     of it, standing in for the margin rail there's no room for (#242). Same
+     visual language as the pre-notebook Journal's inline dated rule. */
+  .day-rule {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    margin: 1.2em 0 0.6em;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--editor-muted) 65%, transparent);
+    user-select: none;
+  }
+  .day-rule::before,
+  .day-rule::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid color-mix(in srgb, var(--editor-muted) 35%, transparent);
+  }
+  /* The trailing rule is deliberately short so the label reads as "———— date
+     ——" rather than centred. */
+  .day-rule::after {
+    flex: 0 0 1.5rem;
   }
 
   @media (prefers-reduced-motion: reduce) {
