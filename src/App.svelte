@@ -117,6 +117,12 @@
   let headerH = $state(56);
   let lastChromeTop = 0;
   let lastScroller: HTMLElement | null = null;
+  // Whether a finger is currently down. Only a real gesture is allowed to move
+  // the chrome (#248): CodeMirror scrolls the caret into view when you type onto
+  // a new line, and reading that few-pixel shift as a scroll-down slid the
+  // header away mid-sentence. Set from the window-level touch handlers, which
+  // already see every touch.
+  let touchActive = false;
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -151,10 +157,19 @@
         lastChromeTop = top;
       } else {
         const delta = top - lastChromeTop;
-        if (top < 8) chromeHidden = false;
-        else if (delta > 6) chromeHidden = true;
-        else if (delta < -6) chromeHidden = false;
+        // Re-baseline on every event, including the ones ignored below — a
+        // programmatic jump left in the baseline would be charged to whatever
+        // gesture came next, and hide the chrome on a scroll that never moved.
         lastChromeTop = top;
+        // Back at the top, the chrome comes back whatever moved the scroller.
+        if (top < 8) chromeHidden = false;
+        // Momentum after the finger lifts doesn't need to count: a real drag
+        // crosses the threshold while it's still down, so the chrome has
+        // already moved by the time the fling starts.
+        else if (touchActive) {
+          if (delta > 6) chromeHidden = true;
+          else if (delta < -6) chromeHidden = false;
+        }
       }
     }
     clearTimeout(scrollSaveTimer);
@@ -232,6 +247,9 @@
   let drawerPan = $state<number | null>(null);
 
   function onSwipeStart(e: TouchEvent) {
+    // Ahead of the drawer-swipe checks below: a touch is the user's hand on the
+    // screen whether or not it could become a drawer swipe (#248).
+    touchActive = true;
     if (!mobile || settingsOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
@@ -256,7 +274,10 @@
     drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
   }
   const COMMIT = 64;
-  function onSwipeEnd() {
+  function onSwipeEnd(e: TouchEvent) {
+    // `touches` holds the fingers still down after this one lifted, so a
+    // second finger mid-gesture keeps counting as the user's (#248).
+    touchActive = e.touches.length > 0;
     if (panStart && panLocked && drawerPan !== null)
       setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
