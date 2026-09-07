@@ -117,12 +117,21 @@
   let headerH = $state(56);
   let lastChromeTop = 0;
   let lastScroller: HTMLElement | null = null;
-  // Whether a finger is currently down. Only a real gesture is allowed to move
-  // the chrome (#248): CodeMirror scrolls the caret into view when you type onto
-  // a new line, and reading that few-pixel shift as a scroll-down slid the
-  // header away mid-sentence. Set from the window-level touch handlers, which
-  // already see every touch.
-  let touchActive = false;
+  // When the user last *moved* a finger or a wheel. Only a scroll that follows
+  // close behind real input is allowed to move the chrome (#248): CodeMirror
+  // scrolls the caret into view when you type onto a new line, and reading that
+  // few-pixel shift as a scroll-down slid the header away mid-sentence.
+  //
+  // Movement rather than contact, for two reasons. A tap is not a scroll: a
+  // quick-edit tap is followed by the editor mounting and scrolling itself, and
+  // that must not count. And movement keeps arriving for as long as a drag
+  // lasts, so there is no finger-down flag that can be left set by a touchend
+  // we never saw — the window simply lapses.
+  let lastScrollGestureAt = 0;
+  // Long enough to cover the fling after the finger lifts, short enough that
+  // the app's own scrolling never lands inside it.
+  const GESTURE_GRACE_MS = 350;
+  const userScrolling = () => Date.now() - lastScrollGestureAt < GESTURE_GRACE_MS;
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -163,10 +172,9 @@
         lastChromeTop = top;
         // Back at the top, the chrome comes back whatever moved the scroller.
         if (top < 8) chromeHidden = false;
-        // Momentum after the finger lifts doesn't need to count: a real drag
-        // crosses the threshold while it's still down, so the chrome has
-        // already moved by the time the fling starts.
-        else if (touchActive) {
+        // Anything else only moves the chrome if the user was scrolling just
+        // now — which includes the fling after they let go.
+        else if (userScrolling()) {
           if (delta > 6) chromeHidden = true;
           else if (delta < -6) chromeHidden = false;
         }
@@ -247,9 +255,6 @@
   let drawerPan = $state<number | null>(null);
 
   function onSwipeStart(e: TouchEvent) {
-    // Ahead of the drawer-swipe checks below: a touch is the user's hand on the
-    // screen whether or not it could become a drawer swipe (#248).
-    touchActive = true;
     if (!mobile || settingsOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
@@ -257,6 +262,9 @@
     panLocked = false;
   }
   function onSwipeMove(e: TouchEvent) {
+    // Ahead of the drawer-swipe checks: this is the record of the user moving,
+    // and those checks bail out on exactly the vertical drags that scroll (#248).
+    lastScrollGestureAt = Date.now();
     if (!panStart || e.touches.length !== 1) return;
     const t = e.touches[0];
     const dx = t.clientX - panStart.x;
@@ -274,10 +282,10 @@
     drawerPan = Math.max(-DRAWER_W, Math.min(0, base + dx));
   }
   const COMMIT = 64;
-  function onSwipeEnd(e: TouchEvent) {
-    // `touches` holds the fingers still down after this one lifted, so a
-    // second finger mid-gesture keeps counting as the user's (#248).
-    touchActive = e.touches.length > 0;
+  function onWheelGesture() {
+    lastScrollGestureAt = Date.now();
+  }
+  function onSwipeEnd() {
     if (panStart && panLocked && drawerPan !== null)
       setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
@@ -818,6 +826,10 @@
     window.addEventListener("touchmove", onSwipeMove, { capture: true, passive: false });
     window.addEventListener("touchend", onSwipeEnd, { capture: true });
     window.addEventListener("touchcancel", onSwipeEnd, { capture: true });
+    // A wheel counts as the user scrolling too: `mobile` is a width query, so a
+    // narrow window or a tablet with a mouse gets this layout with no touches
+    // at all, and the chrome would never hide for them (#248).
+    window.addEventListener("wheel", onWheelGesture, { capture: true, passive: true });
 
     // Detect the soft keyboard from the visual viewport. It shrinks (relative to
     // the tallest height we've seen with no keyboard) whenever the keyboard is
@@ -864,6 +876,7 @@
       window.removeEventListener("touchmove", onSwipeMove, { capture: true });
       window.removeEventListener("touchend", onSwipeEnd, { capture: true });
       window.removeEventListener("touchcancel", onSwipeEnd, { capture: true });
+      window.removeEventListener("wheel", onWheelGesture, { capture: true });
       vv?.removeEventListener("resize", onVv);
       vv?.removeEventListener("scroll", onVv);
       unlisten?.();
