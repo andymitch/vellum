@@ -9,7 +9,7 @@ A local-first Markdown notes app that syncs **peer-to-peer** — no account, no 
 ## Features
 
 - **Markdown editor** (CodeMirror 6) with live source/preview modes, syntax highlighting, and formatting shortcuts — plus a formatting toolbar on mobile.
-- **Note types** beyond Markdown — a **TODO list** that's a real checklist (tick, reorder by dragging, sweep away completed items) and a **Journal** that starts a new dated section each day. Typed notes have a single view: no source/preview toggle to think about.
+- **Note types** beyond Markdown — a **Journal** that keeps a long-running note as separately editable chunks, each stamped with when you wrote it. Typed notes have a single view: no source/preview toggle to think about.
 - **Search & tags** — `Cmd`/`Ctrl+F` searches every note in the vault; write `#tags` anywhere in a note and click one to filter.
 - **Vaults** — collections of notes organized in folders. Create as many as you like.
 - **P2P sync** — share a vault to another device by scanning a QR code; edits then flow both ways automatically. Works over the internet (via relays) or directly on the same Wi-Fi (via mDNS).
@@ -30,14 +30,13 @@ Every note is Markdown on disk, so nothing here changes how a note syncs, export
 
 ```
 ---
-type: todo
+type: journal
 ---
-- [ ] buy milk
+Something worth writing down.
 ```
 
-- **Markdown** (the default) — the editor you already know, with the source/preview toggle.
-- **TODO list** — a checklist. Tick items, drag to reorder, and sweep completed ones away with one button. Stored as ordinary `- [ ]` task lines.
-- **Journal** — a running log that cuts a new dated section the first time you write on a new day, rendered as a full-width rule with the date inline. Sections alternate a faint background so they read as distinct entries.
+- **Markdown** (the default) — the editor you already know, with the source/preview toggle. Task lines (`- [ ]`) render as tickable checkboxes in preview, so an ordinary note makes a perfectly good checklist.
+- **Journal** — one long-running note kept as separately editable chunks. Click a chunk to edit it, press Return to finish and start the next. Each records when it was written, shown on a timeline in the margin — or, on a pane too narrow for a margin, as a rule between days.
 
 Pick a type when naming a new note, or hold the **+** button and slide onto one.
 
