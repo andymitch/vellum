@@ -14,6 +14,7 @@
   import {
     readNote,
     writeNote,
+    createNote,
     renamePath,
     deletePath,
     shareNote,
@@ -22,6 +23,7 @@
     type TreeNode,
   } from "$lib/vault";
   import { isAndroidApp, isMacApp } from "$lib/platform";
+  import { markAppScroll, appScrolling } from "$lib/app-scroll";
   import { session } from "$lib/session.svelte";
   import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
@@ -44,6 +46,7 @@
     NotebookPen,
     Settings,
     Search,
+    X,
   } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
@@ -132,15 +135,9 @@
   // Long enough to cover the fling after the finger lifts.
   const GESTURE_GRACE_MS = 350;
   const userScrolling = () => Date.now() - lastScrollGestureAt < GESTURE_GRACE_MS;
-  // The app also scrolls the note itself: restoring a position, and pinning the
-  // caret under a quick-edit tap while the keyboard opens. Those land as
-  // ordinary scroll events a frame or more later, and the caret pinning arrives
-  // right behind the tap that caused it — inside the window where a gesture
-  // still counts, so the tap would lend it authority it shouldn't have. Every
-  // scroll we make ourselves is marked instead, and never moves the chrome.
-  let appScrollUntil = 0;
-  const markAppScroll = () => (appScrollUntil = Date.now() + 120);
-  const appScrolling = () => Date.now() < appScrollUntil;
+  // Scrolls the app makes itself never move the chrome, however close behind a
+  // real gesture they land — see $lib/app-scroll, which Preview and Editor mark
+  // through as well.
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -709,6 +706,9 @@
         const el = mainEl?.querySelector(sel);
         if (el) {
           done = true;
+          // Smooth, so it emits scroll events for a few hundred ms — claim all
+          // of them, or the tail of our own jump hides the chrome (#250).
+          markAppScroll(700);
           el.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }, d);
@@ -716,6 +716,11 @@
 
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
+    // Reopening is a fresh start: whatever the backend last refused belonged to
+    // the note as it was, and holding on to it would silently block saving that
+    // same text again.
+    rejectedEdit = null;
+    saveBlocked = null;
     resetChrome();
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
@@ -762,6 +767,8 @@
 
   function closeNote() {
     clearTimeout(saveTimer);
+    rejectedEdit = null;
+    saveBlocked = null;
     resetChrome();
     activePath = null;
     content = "";
@@ -832,6 +839,44 @@
     closeNote();
   }
 
+  // The edit a save last failed on, for any reason the backend didn't mark as
+  // worth retrying — the note was deleted elsewhere (#251), but equally a dead
+  // IPC channel or a closed vault. Rolling the base back is what makes the
+  // effect retry, so re-attempting a failure that can't resolve is a 400ms loop
+  // that never ends. Keyed to the text, not just the path: a further edit is
+  // worth one more attempt in case whatever it was has cleared, but the same
+  // rejected text is not. The typed text stays on screen either way — it just
+  // isn't being saved, which is why #253 wants to say so.
+  let rejectedEdit: { path: string; content: string } | null = null;
+  // The same fact, in a form the markup can react to. Kept separate from
+  // `rejectedEdit` on purpose: that one is read inside the autosave effect, and
+  // making it reactive would put a write to it back into that effect's own
+  // dependencies — which is how the retry loop got here in the first place.
+  let saveBlocked = $state<string | null>(null);
+
+  /// Put the text somewhere safe when its own note won't take it. Creates a
+  /// sibling — `createNote` de-duplicates the name — writes the buffer to it,
+  /// and opens it, so the note that is gone stays gone and the words don't.
+  async function saveRejectedCopy() {
+    const v = activeVault;
+    const p = activePath;
+    if (!v || !p) return;
+    const text = content;
+    const slash = p.lastIndexOf("/");
+    const dir = slash === -1 ? "" : p.slice(0, slash);
+    const stem = p.slice(slash + 1).replace(/\.md$/, "");
+    const name = `${stem} (recovered).md`;
+    try {
+      const created = await createNote(v, dir ? `${dir}/${name}` : name);
+      await writeNote(v, created, text, "");
+      saveBlocked = null;
+      rejectedEdit = null;
+      await handleOpen(v, created, true);
+    } catch (e) {
+      console.error("could not save a copy", e);
+    }
+  }
+
   // Autosave: debounce content writes 400ms. The filename never changes from
   // content, so a single content-only save is all we need.
   $effect(() => {
@@ -842,7 +887,10 @@
     // concurrent peer edits so a remote change isn't clobbered (#99).
     const base = lastLoaded;
     if (!v || !p || c === lastLoaded) return;
+    // Cancel any queued save first: returning with one still pending would let
+    // it write text the editor has since moved on from.
     clearTimeout(saveTimer);
+    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return;
     saveTimer = setTimeout(async () => {
       // Advance the base *before* awaiting: if the user types again while this
       // write is in flight, the next save must merge against the text we just
@@ -851,9 +899,26 @@
       lastLoaded = c;
       try {
         await writeNote(v, p, c, base);
+        rejectedEdit = null;
+        saveBlocked = null;
       } catch (e) {
-        // Write failed: restore the prior base so the effect retries this edit.
+        // Restore the prior base so the effect retries this edit — the base
+        // stays truthful, which is the whole point of #251.
         if (lastLoaded === c) lastLoaded = base;
+        // Retrying is the exception, not the rule: only a write that says it is
+        // waiting on a sync will succeed if we just try again. Anything else
+        // fails identically every time, and since restoring the base re-fires
+        // this effect, retrying it is a 400ms loop that never ends. Latching on
+        // "not retryable" rather than listing the failures that aren't keeps a
+        // future error from reintroducing that loop.
+        if (!String(e).includes("still syncing")) {
+          rejectedEdit = { path: p, content: c };
+          // Say so, rather than leaving the note looking saved (#253). The
+          // deleted case is worth naming; anything else is honest but vague.
+          saveBlocked = String(e).includes("no longer exists")
+            ? "This note was deleted on another device, so your changes aren't being saved."
+            : "Your changes aren't being saved.";
+        }
         throw e;
       }
     }, 400);
@@ -933,7 +998,22 @@
 
   // Global hotkeys. Mod = Cmd (macOS) / Ctrl (elsewhere). These complement the
   // editor's own text-formatting shortcuts, which CodeMirror handles internally.
+  // Keys that scroll. A hardware keyboard produces neither touches nor wheel
+  // events, so without this the chrome never moves for someone reading with the
+  // keyboard at a narrow width — `mobile` is a width query, not a pointer one
+  // (#250).
+  const SCROLL_KEYS = new Set([
+    "ArrowUp",
+    "ArrowDown",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End",
+    " ",
+  ]);
+
   function onKeydown(e: KeyboardEvent) {
+    if (SCROLL_KEYS.has(e.key)) lastScrollGestureAt = Date.now();
     // ESC leaves a desktop quick edit (#153), returning to preview. Gated on
     // quickEditActive so it only undoes a double-click-to-edit, not a manual
     // source view (where ESC belongs to CodeMirror — closing autocomplete, etc.).
@@ -1177,6 +1257,36 @@
         />
       </div>
     </aside>
+
+    <!-- A save that isn't happening, said out loud (#253). Fixed rather than in
+         flow so it can't shift the editor's layout, and offset below the header
+         so it clears the floating mobile chrome. -->
+    {#if saveBlocked}
+      <div
+        class="fixed left-1/2 z-40 flex max-w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-2xl border border-border bg-popover px-4 py-2 text-sm shadow-lg"
+        style="top:calc({headerH}px + 0.5rem);"
+        role="status"
+      >
+        <!-- Wraps rather than truncates: the half that matters is the end of
+             the sentence, which is exactly what an ellipsis eats. -->
+        <span class="min-w-0 text-muted-foreground">{saveBlocked}</span>
+        <button
+          type="button"
+          class="shrink-0 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+          onclick={saveRejectedCopy}
+        >
+          Save a copy
+        </button>
+        <button
+          type="button"
+          class="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="Dismiss"
+          onclick={() => (saveBlocked = null)}
+        >
+          <X size={14} />
+        </button>
+      </div>
+    {/if}
 
     <main
       bind:this={mainEl}

@@ -4,6 +4,7 @@
   import type { Mermaid } from "mermaid";
 
   import { slugify } from "$lib/slug";
+  import { markAppScroll } from "$lib/app-scroll";
   import { parseNote } from "$lib/note-type";
   import { noteCard } from "$lib/link-card";
   import { fetchLinkPreview } from "$lib/vault";
@@ -113,10 +114,14 @@
       const path = a.dataset.path;
       const fragment = a.dataset.fragment || undefined;
       if (path) oninternallink?.(path, fragment);
-      else if (fragment)
+      else if (fragment) {
+        // Jumping to a heading is our scroll, not the reader's — claim the
+        // whole smooth animation so it doesn't hide the mobile chrome (#250).
+        markAppScroll(700);
         container
           ?.querySelector(`#${CSS.escape(slugify(fragment))}`)
           ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
       return;
     }
     const href = a.getAttribute("href");
