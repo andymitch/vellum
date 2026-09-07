@@ -58,6 +58,10 @@ use yrs::updates::decoder::Decode;
 use yrs::{Doc, GetString, ReadTxn, StateVector, Text, TextRef, Transact, TransactionMut, Update};
 
 const NAME_KEY: &[u8] = b"\x00meta/name";
+// Where a deletion is remembered after its tombstone is gone (#254). The
+// \x00 prefix is what keeps it out of every listing: they all skip those as
+// reserved meta keys.
+const TOMB_PREFIX: &[u8] = b"\x00tomb/";
 const MARKER: u8 = 0x01;
 // Note bodies are stored as a yrs (CRDT) document state, tagged 0x02, so
 // concurrent edits on different devices merge instead of clobbering — plain
@@ -393,6 +397,78 @@ fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &st
     }
 }
 
+/// When a note was last deleted, in the same microseconds an entry's timestamp
+/// uses — or `None` if no device has ever deleted it. Everything older than this
+/// is what the deletion deleted (#254).
+///
+/// Two sources, because neither is sufficient alone. A tombstone is an empty
+/// value, so it takes `include_empty` to see at all — and it does not survive:
+/// iroh-docs keeps one entry per (key, author), so the deleting device's own
+/// next write at that key replaces its tombstone and erases the fact of the
+/// deletion. Which is exactly the case that matters, since recreating a note at
+/// a freed name is supported (#48). So a delete also records the moment under a
+/// reserved key that note writes never touch. Both are consulted, newest wins.
+async fn newest_tombstone(
+    node: &Node,
+    doc: &iroh_docs::api::Doc,
+    key: &[u8],
+) -> Result<Option<u64>> {
+    let mut newest: Option<u64> = None;
+    let mut consider = |t: u64| {
+        if newest.is_none_or(|n| t > n) {
+            newest = Some(t);
+        }
+    };
+
+    let mut stream = Box::pin(doc.get_many(Query::key_exact(key).include_empty()).await?);
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        if entry.content_len() == 0 {
+            consider(entry.timestamp());
+        }
+    }
+    drop(stream);
+
+    // Every device's record, since each keeps its own entry for the key.
+    let mut stream = Box::pin(doc.get_many(Query::key_exact(tomb_key(key))).await?);
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        // An undownloaded record just isn't known here yet; a tombstone or a
+        // later read covers it.
+        if let Ok(bytes) = node.blobs.blobs().get_bytes(entry.content_hash()).await {
+            if let Ok(t) = decode(&bytes).parse::<u64>() {
+                consider(t);
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// Where a deletion is recorded. `\x00`-prefixed, which every listing already
+/// skips as a reserved meta key, so it stays out of the tree, search, tag counts
+/// and export without touching any of them.
+fn tomb_key(key: &[u8]) -> Vec<u8> {
+    let mut k = TOMB_PREFIX.to_vec();
+    k.extend_from_slice(key);
+    k
+}
+
+/// Note the moment a note was deleted, so the deletion outlives the tombstone.
+/// Best-effort: a failure here costs correctness that a tombstone alone already
+/// half-provides, and must not fail the delete the user asked for.
+async fn record_deletion(node: &Node, doc: &iroh_docs::api::Doc, key: &[u8]) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    if let Err(e) = doc
+        .set_bytes(node.author, tomb_key(key), encode(&now.to_string()))
+        .await
+    {
+        tracing::warn!(error = %e, "could not record a deletion; a recreated note may revive peer text");
+    }
+}
+
 /// Merge every author's stored state for a note key into one yrs doc. iroh-docs
 /// keeps one entry per (key, author); reading only the newest (LWW) would drop a
 /// peer's concurrent edit, so we apply them all — yrs merges them order-free.
@@ -408,11 +484,24 @@ pub async fn merged_note(
     let ydoc = Doc::with_client_id(client_id);
     let mut found = false;
     let mut waiting_on_blob = false;
+    // When the note was last deleted, if it ever was. Deletion has to be part of
+    // the merge, not a separate check on top of it (#254): pruning in iroh-docs
+    // is author-scoped, so one device's tombstone never displaces another's
+    // entry, and merging every author's entry regardless of that tombstone
+    // brought deleted text back the moment anyone wrote at the key again.
+    let deleted_at = newest_tombstone(node, doc, key).await?;
     let mut stream = Box::pin(doc.get_many(Query::key_exact(key)).await?);
     while let Some(entry) = stream.next().await {
         let entry = entry?;
         if entry.content_len() == 0 {
             continue; // tombstone (deleted by some author)
+        }
+        // An entry written before the note was deleted is what the deletion
+        // deleted. One written *after* is an edit that outlived it — a genuine
+        // conflict between "I deleted this" and "I kept writing", and dropping
+        // it would be its own data loss, so it stands and the note lives.
+        if deleted_at.is_some_and(|t| entry.timestamp() < t) {
+            continue;
         }
         // After a sync the entry can exist before its content blob has
         // downloaded; skip it (a ContentReady event re-fires the read).
@@ -546,18 +635,23 @@ pub async fn write_note_merged(
     if state == NoteRead::AwaitingContent {
         return Err(anyhow!("note is still syncing; try again"));
     }
-    // `NoteRead::Nothing` — an entry with content whose bytes don't decode —
-    // deliberately falls through to the merge below, which overwrites it. That
-    // is its own bug (the note reads as empty, so one keystroke destroys it for
-    // every peer) but refusing here proved worse until the paths around it can
-    // cope: the autosave retries a refusal that never resolves, and one such
-    // note aborts a linked folder's whole reconcile pass. Left as it is today
-    // and tracked in #255 — logged, at least, since today it is silent.
+    // An entry with content whose bytes don't decode. Refused rather than
+    // overwritten (#255): "doesn't decode here" is not "will never decode
+    // anywhere" — a value written by a newer version reads fine on its author's
+    // device — and because the note reads as empty, one keystroke would
+    // otherwise replace it for every peer.
+    //
+    // Refusing needed two things that now exist. The editor no longer retries a
+    // refusal it cannot satisfy, and it offers to save the text to a new note,
+    // so the user isn't stuck with an unwritable note and nowhere to put what
+    // they typed. And a linked folder skips just this path instead of
+    // abandoning the whole reconcile pass.
     if state == NoteRead::Nothing {
         tracing::warn!(
             key = %String::from_utf8_lossy(key),
-            "stored note content does not decode; it is about to be overwritten (#255)"
+            "stored note content does not decode; refusing to overwrite it"
         );
+        return Err(anyhow!("this note's saved content can't be read"));
     }
 
     let cur = doc_text(&ydoc);
@@ -1971,6 +2065,7 @@ pub async fn clear_prefix(
     // was just uncovered by the sweep); tombstone it by exact key.
     for key in list_keys(doc).await?.iter().filter(|k| k.starts_with(prefix)) {
         doc.del(node.author, key.clone().into_bytes()).await?;
+        record_deletion(node, doc, key.as_bytes()).await;
     }
     Ok(())
 }
@@ -2043,6 +2138,9 @@ pub async fn delete_key(
         clear_prefix(node, doc, &prefix).await?;
     } else {
         doc.del(node.author, path.as_bytes().to_vec()).await?;
+        // Remember the deletion, because our own next write at this key would
+        // replace the tombstone and lose it (#254).
+        record_deletion(node, doc, path.as_bytes()).await;
     }
     Ok(())
 }
@@ -3086,6 +3184,125 @@ mod tests {
         assert!(!after.contains("<<<<<<<"), "conflict markers written: {after:?}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #255: a note whose stored bytes don't decode must not be overwritten by
+    /// the next keystroke. It reads as empty, so without this one character was
+    /// enough to replace it — and for every peer, including the one whose newer
+    /// version could still read it perfectly well.
+    #[tokio::test]
+    async fn write_refuses_to_overwrite_content_it_cannot_decode() {
+        let dir = std::env::temp_dir().join(format!("notes-undecodable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+
+        // Tagged as a CRDT note, but the payload is not a yrs update — what a
+        // value from an unknown format version looks like from here.
+        let undecodable = vec![TAG_YRS, 0xff, 0xfe, 0x00, 0x42];
+        doc.set_bytes(node.author, b"odd.md".to_vec(), undecodable.clone())
+            .await
+            .expect("seed");
+
+        // It reads as absent, which is what makes the overwrite one keystroke away.
+        assert!(read_note_text(&node, &doc, b"odd.md").await.expect("read").is_none());
+
+        let err = write_note_merged(&node, &doc, b"odd.md", "", "typed over the top\n")
+            .await
+            .expect_err("must refuse to overwrite undecodable content");
+        assert!(err.to_string().contains("can't be read"), "unexpected error: {err}");
+
+        // Still byte-for-byte what it was.
+        let entry = doc
+            .get_one(Query::single_latest_per_key().key_exact(b"odd.md"))
+            .await
+            .expect("get_one")
+            .expect("entry survives");
+        let stored = node.blobs.blobs().get_bytes(entry.content_hash()).await.expect("bytes");
+        assert_eq!(stored.to_vec(), undecodable, "the unreadable note was overwritten");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #254, the configuration a write-side guard cannot reach: the note's
+    /// pre-deletion entry belongs to the OTHER device. Our tombstone never
+    /// displaces it (pruning is author-scoped), so before deletion was part of
+    /// the merge, writing at that key again brought the peer's text back —
+    /// merged into the new note and cemented for every peer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_peers_deleted_text_does_not_come_back() {
+        let base = std::env::temp_dir().join(format!("notes-peer-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let a = init(base.join("a")).await.expect("A");
+        let b = init(base.join("b")).await.expect("B");
+        let key = b"shared.md";
+
+        // B authors the note, so the live entry belongs to B, not to the device
+        // that will do the deleting.
+        let doc_a = a.docs.create().await.expect("create");
+        let ticket = doc_a
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .expect("share");
+        let doc_b = b
+            .docs
+            .import(DocTicket::from_str(&ticket.to_string()).expect("ticket"))
+            .await
+            .expect("import");
+        write_retrying(&b, &doc_b, key, "", "PEER TEXT\n").await;
+
+        // A receives it and deletes it.
+        let mut got = None;
+        for _ in 0..60 {
+            got = read_note_text(&a, &doc_a, key).await.expect("A read");
+            if got.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(got.as_deref(), Some("PEER TEXT\n"), "A never received the note");
+        // Through the app's delete, not a raw `doc.del`: recording the deletion
+        // is part of deleting, and a raw tombstone alone cannot survive A's own
+        // next write at this key.
+        delete_key(&a, &doc_a, "shared.md", false).await.expect("A delete");
+        assert!(
+            read_note_text(&a, &doc_a, key).await.expect("read").is_none(),
+            "still readable on A right after deleting it"
+        );
+
+        // A writes at the freed name again — allowed (#48), and it must carry
+        // only what A wrote. B's entry is still sitting in the replica.
+        write_retrying(&a, &doc_a, key, "", "a brand new note\n").await;
+        let after = read_note_text(&a, &doc_a, key).await.expect("read").unwrap_or_default();
+        assert_eq!(after, "a brand new note\n", "the peer's deleted text came back: {after:?}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The other half of the same rule: an edit that lands *after* a deletion is
+    /// a real conflict between "I deleted this" and "I kept writing", not a
+    /// resurrection. Dropping it would be data loss of its own, so it stands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_edit_after_a_delete_keeps_the_note() {
+        let dir = std::env::temp_dir().join(format!("notes-edit-after-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+
+        write_note_merged(&node, &doc, b"n.md", "", "first\n").await.expect("seed");
+        doc.del(node.author, b"n.md".to_vec()).await.expect("del");
+        assert!(read_note_text(&node, &doc, b"n.md").await.expect("read").is_none());
+
+        // Written after the tombstone, so it survives it.
+        write_note_merged(&node, &doc, b"n.md", "", "written after the delete\n")
+            .await
+            .expect("write after delete");
+        assert_eq!(
+            read_note_text(&node, &doc, b"n.md").await.expect("read").as_deref(),
+            Some("written after the delete\n"),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #120: renaming a vault sets a LOCAL name only. Node A creates + names a

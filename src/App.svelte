@@ -918,7 +918,9 @@
           // deleted case is worth naming; anything else is honest but vague.
           saveBlocked = String(e).includes("no longer exists")
             ? "This note was deleted on another device, so your changes aren't being saved."
-            : "Your changes aren't being saved.";
+            : String(e).includes("can't be read")
+              ? "This note's saved content can't be read, so your changes aren't being saved."
+              : "Your changes aren't being saved.";
         }
         throw e;
       }
