@@ -521,6 +521,12 @@ pub async fn write_note_merged(
                 "note no longer exists; save it under a new name to keep this text"
             ));
         }
+        // Nothing to store and nothing there: the merge path would have
+        // short-circuited on `merged == cur`, so don't start writing empty
+        // entries for keys that had none.
+        if content.is_empty() {
+            return Ok(());
+        }
         // Writing fresh content to a key with nothing current — a new note, or
         // one being recreated at a freed name. Seed from `content` alone rather
         // than merging: `merged_note` reads *every* author's entry and skips
@@ -2211,6 +2217,29 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Poll a key until it appears (content synced + downloaded) or timeout.
+    /// Write, tolerating the refusal a write now makes while the note's current
+    /// state is unreadable (#251) — the same way the editor does, by trying
+    /// again. Between two syncing peers, an edit arrives as an entry moments
+    /// before its content blob, and a write landing inside that window is
+    /// refused; a single attempt makes any two-peer edit test flaky.
+    async fn write_retrying(
+        node: &Node,
+        doc: &iroh_docs::api::Doc,
+        key: &[u8],
+        base: &str,
+        text: &str,
+    ) {
+        for attempt in 0..40 {
+            match write_note_merged(node, doc, key, base, text).await {
+                Ok(()) => return,
+                Err(e) if e.to_string().contains("still syncing") && attempt < 39 => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(e) => panic!("write {text:?} failed: {e}"),
+            }
+        }
+    }
+
     async fn await_key(
         node: &Node,
         doc: &iroh_docs::api::Doc,
@@ -2306,8 +2335,8 @@ mod tests {
         assert_eq!(seeded.as_deref(), Some("L1\n"), "B did not receive the seed note");
 
         // Each appends a distinct line from the same base, concurrently.
-        write_note_merged(&a, &doc_a, key, "L1\n", "L1\nfrom-A\n").await.expect("A edit");
-        write_note_merged(&b, &doc_b, key, "L1\n", "L1\nfrom-B\n").await.expect("B edit");
+        write_retrying(&a, &doc_a, key, "L1\n", "L1\nfrom-A\n").await;
+        write_retrying(&b, &doc_b, key, "L1\n", "L1\nfrom-B\n").await;
 
         // Both edits converge on both peers.
         for (node, doc, who) in [(&a, &doc_a, "A"), (&b, &doc_b, "B")] {
