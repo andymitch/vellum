@@ -284,12 +284,6 @@
 
 <div class="journal-scroll h-full min-h-0 overflow-y-auto px-4 py-4" role="list">
   {#each displayCells as cell, i (i)}
-    {#if dayMarkers[i]}
-      <!-- The narrow-pane form of the timeline: a full-width rule per day with
-           the label justified against it. Which of this and the rail is
-           actually visible is decided in CSS, by the pane's width (#242). -->
-      <div class="day-rule" aria-hidden="true"><span>{dayMarkers[i]}</span></div>
-    {/if}
     <!-- The chunk keeps a uniform column of its own, and — wherever there's
          room — the timeline gets a margin beside it, never a slice of the
          chunk's own width. The whole band is the drop target, so a drag
@@ -302,6 +296,16 @@
       onmouseenter={() => (hoveredIndex = i)}
       onmouseleave={() => (hoveredIndex = null)}
     >
+      {#if dayMarkers[i]}
+        <!-- The narrow-pane form of the timeline: a full-width rule opening the
+             day, with the label justified against it. Which of this and the
+             rail is visible is decided in CSS, by the pane's width (#242).
+             Inside the row that opens the day, rather than between rows: the
+             row is the drop target, and a rule of its own out here would be a
+             strip that silently cancels a drag — as well as breaking the
+             sibling adjacency the rail's labels rely on. -->
+        <div class="day-rule" aria-hidden="true"><span>{dayMarkers[i]}</span></div>
+      {/if}
       <div class="cell-slot">
         {#if dropIndex === i}
           <div class="drop-line" aria-hidden="true"></div>
@@ -581,14 +585,8 @@
     transform: translateX(0);
   }
   /* A two-line timestamp reaches into the row below it, so that row's day
-     label steps aside rather than colliding with it. The second selector is
-     the same row reached across a day rule: a row only *has* a day label when
-     it opens a new day, which is exactly when a rule sits between the two, so
-     without it this would miss every case it was written for. (The rule is
-     still in the sibling chain at these widths — it is hidden by
-     `display: none`, which doesn't take an element out of the DOM.) */
-  .cell-row-wrap:hover + .cell-row-wrap .rail-day,
-  .cell-row-wrap:hover + .day-rule + .cell-row-wrap .rail-day {
+     label steps aside rather than colliding with it. */
+  .cell-row-wrap:hover + .cell-row-wrap .rail-day {
     opacity: 0;
   }
 
@@ -636,6 +634,8 @@
      pane in a wide window with neither. */
   .day-rule {
     display: none;
+    /* Its own full-width row above the chunk, whatever the columns are doing. */
+    grid-column: 1 / -1;
     align-items: center;
     gap: 0.6em;
     margin: 1.2em 0 0.6em;
