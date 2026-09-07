@@ -253,8 +253,20 @@
   let panStart: { x: number; y: number; opening: boolean } | null = null;
   let panLocked = false;
   let drawerPan = $state<number | null>(null);
+  // Where the current touch began, and whether it has travelled far enough to
+  // be a drag rather than a tap — the same SLOP the drawer uses to tell those
+  // apart. Nobody taps perfectly still, so a tap fires touchmove too, and
+  // counting that as scrolling would let the tap arm the gate for the editor's
+  // own scroll a few milliseconds later (#248).
+  let touchOrigin: { x: number; y: number } | null = null;
+  let touchDragging = false;
 
   function onSwipeStart(e: TouchEvent) {
+    const first = e.touches[0];
+    if (first) {
+      touchOrigin = { x: first.clientX, y: first.clientY };
+      touchDragging = false;
+    }
     if (!mobile || settingsOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
@@ -262,9 +274,18 @@
     panLocked = false;
   }
   function onSwipeMove(e: TouchEvent) {
-    // Ahead of the drawer-swipe checks: this is the record of the user moving,
-    // and those checks bail out on exactly the vertical drags that scroll (#248).
-    lastScrollGestureAt = Date.now();
+    // Ahead of the drawer-swipe checks: this is the record of the user
+    // scrolling, and those checks bail out on exactly the vertical drags that
+    // do it (#248). Latched once past SLOP, so a drag that wanders back toward
+    // where it started keeps counting.
+    const moved = e.touches[0];
+    if (moved && touchOrigin) {
+      if (!touchDragging) {
+        const dist = Math.hypot(moved.clientX - touchOrigin.x, moved.clientY - touchOrigin.y);
+        if (dist > SLOP) touchDragging = true;
+      }
+      if (touchDragging) lastScrollGestureAt = Date.now();
+    }
     if (!panStart || e.touches.length !== 1) return;
     const t = e.touches[0];
     const dx = t.clientX - panStart.x;
@@ -286,6 +307,12 @@
     lastScrollGestureAt = Date.now();
   }
   function onSwipeEnd() {
+    // Only bookkeeping for the next touch — the fling that follows this one is
+    // already covered by the timestamp, and a touchend we never see (the
+    // quick-edit path unmounts the tapped node) is corrected by the next
+    // touchstart rather than leaving anything armed.
+    touchOrigin = null;
+    touchDragging = false;
     if (panStart && panLocked && drawerPan !== null)
       setSidebar(panStart.opening ? drawerPan >= COMMIT - DRAWER_W : drawerPan > -COMMIT);
     panStart = null;
