@@ -716,6 +716,10 @@
 
   async function handleOpen(vault: string, path: string, focus = false) {
     clearTimeout(saveTimer);
+    // Reopening is a fresh start: whatever the backend last refused belonged to
+    // the note as it was, and holding on to it would silently block saving that
+    // same text again.
+    rejectedEdit = null;
     resetChrome();
     // Restore the saved scroll only for the note reopened at launch; any other
     // open (or switching notes) starts at the top.
@@ -762,6 +766,7 @@
 
   function closeNote() {
     clearTimeout(saveTimer);
+    rejectedEdit = null;
     resetChrome();
     activePath = null;
     content = "";
@@ -851,8 +856,10 @@
     // concurrent peer edits so a remote change isn't clobbered (#99).
     const base = lastLoaded;
     if (!v || !p || c === lastLoaded) return;
-    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return;
+    // Cancel any queued save first: returning with one still pending would let
+    // it write text the editor has since moved on from.
     clearTimeout(saveTimer);
+    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return;
     saveTimer = setTimeout(async () => {
       // Advance the base *before* awaiting: if the user types again while this
       // write is in flight, the next save must merge against the text we just

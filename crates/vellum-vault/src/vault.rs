@@ -477,13 +477,20 @@ pub async fn read_note_text(
 /// when a remote edit shifted them.
 ///
 /// A note whose current state can't be read is never merged against (#251).
-/// `merged_note` yields empty text both for a deleted note and for one whose
-/// content blob hasn't arrived yet, and merging against empty reads as "the
-/// other side deleted everything" — which then gets written back and synced to
-/// every peer, resurrecting a note a peer deleted or scattering conflict
-/// markers through one it was still downloading. Both cases refuse the write
-/// instead; the caller keeps the text and retries (the editor already restores
-/// its base and re-fires, and `ContentReady` re-fires the read).
+/// `merged_note` yields empty text for a deleted note, for one whose content
+/// blob hasn't arrived, and for bytes that don't decode — and merging against
+/// empty reads as "the other side deleted everything", which then gets written
+/// back and synced to every peer. So the merge only ever runs on text we
+/// actually have: an edit to a note that is gone is refused, and so is one to a
+/// note still downloading or unreadable. The caller keeps its text and retries
+/// (the editor restores its base and re-fires; `ContentReady` re-fires the
+/// read).
+///
+/// This does not make deletion airtight. A pre-deletion entry belonging to
+/// *another* author survives our tombstone — pruning is author-scoped — and
+/// `merged_note` cannot see tombstones at all, so that entry is merged back in
+/// on the next read of any live entry at the key. Nothing decided here can
+/// prevent that; see #254.
 pub async fn write_note_merged(
     node: &Node,
     doc: &iroh_docs::api::Doc,
@@ -513,9 +520,10 @@ pub async fn write_note_merged(
         // Writing fresh content to a key with nothing current — a new note, or
         // one being recreated at a freed name. Seed from `content` alone rather
         // than merging: `merged_note` reads *every* author's entry and skips
-        // only tombstones, so it would happily hand back a stale entry that the
-        // newest one says is deleted, and merging against that text is what
-        // resurrected deleted notes in the first place.
+        // only tombstones, so it would hand back a stale entry that the newest
+        // one says is deleted, and merging against that text is what resurrected
+        // deleted notes. Note this only settles our *own* stale entry, which
+        // this write replaces; a peer's survives regardless (#254).
         doc.set_bytes(node.author, key.to_vec(), fresh_note(content)).await?;
         return Ok(());
     }
@@ -528,12 +536,20 @@ pub async fn write_note_merged(
     if state == NoteRead::AwaitingContent {
         return Err(anyhow!("note is still syncing; try again"));
     }
-    // An entry with content that yields no text at all: its bytes don't decode
-    // and never will. Refusing would leave the note unreadable *and* unwritable
-    // with no way out, so take the write as a repair and start clean.
+    // An entry with content that yields no text at all — bytes that don't
+    // decode. Tempting to treat the write as a repair, but "doesn't decode
+    // here" is not "will never decode anywhere": a format the running build
+    // doesn't understand, or a value from a newer version, decodes fine on the
+    // peer that wrote it. Overwriting would destroy it for everyone, and since
+    // the note reads as empty the user needs only one keystroke to trigger
+    // that. Refuse and say so loudly instead. The cost is that such a note is
+    // unwritable until #253 offers a way to copy the text out.
     if state == NoteRead::Nothing {
-        doc.set_bytes(node.author, key.to_vec(), fresh_note(content)).await?;
-        return Ok(());
+        tracing::warn!(
+            key = %String::from_utf8_lossy(key),
+            "note has content that does not decode; refusing to overwrite it"
+        );
+        return Err(anyhow!("note content can't be read; copy your text elsewhere"));
     }
 
     let cur = doc_text(&ydoc);
