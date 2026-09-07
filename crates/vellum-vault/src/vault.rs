@@ -521,6 +521,12 @@ pub async fn write_note_merged(
                 "note no longer exists; save it under a new name to keep this text"
             ));
         }
+        // Nothing to store and nothing there: the merge path would have
+        // short-circuited on `merged == cur`, so don't start writing empty
+        // entries for keys that had none.
+        if content.is_empty() {
+            return Ok(());
+        }
         // Writing fresh content to a key with nothing current — a new note, or
         // one being recreated at a freed name. Seed from `content` alone rather
         // than merging: `merged_note` reads *every* author's entry and skips
