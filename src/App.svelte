@@ -832,6 +832,15 @@
     closeNote();
   }
 
+  // The edit the backend last rejected as belonging to a note that is gone
+  // (deleted on another device — #251). Rolling the base back is what makes the
+  // effect retry, and that particular failure can never succeed, so retrying
+  // the same text is a 400ms loop that never ends. Keyed to the text, not just
+  // the path: a further edit is worth one more attempt in case the note came
+  // back, but the same rejected text is not. The typed text stays on screen
+  // regardless — it just isn't being saved, which is why #253 wants to say so.
+  let rejectedEdit: { path: string; content: string } | null = null;
+
   // Autosave: debounce content writes 400ms. The filename never changes from
   // content, so a single content-only save is all we need.
   $effect(() => {
@@ -842,6 +851,7 @@
     // concurrent peer edits so a remote change isn't clobbered (#99).
     const base = lastLoaded;
     if (!v || !p || c === lastLoaded) return;
+    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       // Advance the base *before* awaiting: if the user types again while this
@@ -851,9 +861,12 @@
       lastLoaded = c;
       try {
         await writeNote(v, p, c, base);
+        rejectedEdit = null;
       } catch (e) {
-        // Write failed: restore the prior base so the effect retries this edit.
+        // Restore the prior base so the effect retries this edit — the base
+        // stays truthful, which is the whole point of #251.
         if (lastLoaded === c) lastLoaded = base;
+        if (String(e).includes("no longer exists")) rejectedEdit = { path: p, content: c };
         throw e;
       }
     }, 400);
