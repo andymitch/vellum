@@ -67,6 +67,7 @@
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
     if (max > 0) {
+      markAppScroll();
       el.scrollTop = ratio * max;
       // Keep the auto-hide baseline in sync: a programmatic jump (mode toggle /
       // launch restore) must not read as the user scrolling down and hide the
@@ -128,10 +129,18 @@
   // lasts, so there is no finger-down flag that can be left set by a touchend
   // we never saw — the window simply lapses.
   let lastScrollGestureAt = 0;
-  // Long enough to cover the fling after the finger lifts, short enough that
-  // the app's own scrolling never lands inside it.
+  // Long enough to cover the fling after the finger lifts.
   const GESTURE_GRACE_MS = 350;
   const userScrolling = () => Date.now() - lastScrollGestureAt < GESTURE_GRACE_MS;
+  // The app also scrolls the note itself: restoring a position, and pinning the
+  // caret under a quick-edit tap while the keyboard opens. Those land as
+  // ordinary scroll events a frame or more later, and the caret pinning arrives
+  // right behind the tap that caused it — inside the window where a gesture
+  // still counts, so the tap would lend it authority it shouldn't have. Every
+  // scroll we make ourselves is marked instead, and never moves the chrome.
+  let appScrollUntil = 0;
+  const markAppScroll = () => (appScrollUntil = Date.now() + 120);
+  const appScrolling = () => Date.now() < appScrollUntil;
   function resetChrome() {
     chromeHidden = false;
     lastChromeTop = 0;
@@ -173,8 +182,9 @@
         // Back at the top, the chrome comes back whatever moved the scroller.
         if (top < 8) chromeHidden = false;
         // Anything else only moves the chrome if the user was scrolling just
-        // now — which includes the fling after they let go.
-        else if (userScrolling()) {
+        // now — which includes the fling after they let go, but never our own
+        // scrolling, however close behind theirs it lands.
+        else if (userScrolling() && !appScrolling()) {
           if (delta > 6) chromeHidden = true;
           else if (delta < -6) chromeHidden = false;
         }
@@ -374,6 +384,7 @@
     if (!c) return;
     const rect = view.scrollDOM.getBoundingClientRect();
     const targetY = Math.min(tapY, rect.bottom - 24);
+    markAppScroll();
     view.scrollDOM.scrollTop += c.top - targetY;
   }
 
@@ -618,7 +629,10 @@
           if (!v.dom.isConnected) return;
           const c = v.coordsAtPos(p.pos);
           const bottom = v.scrollDOM.getBoundingClientRect().bottom - 24;
-          if (c && c.bottom > bottom) v.scrollDOM.scrollTop += c.top - Math.min(p.tapY, bottom);
+          if (c && c.bottom > bottom) {
+            markAppScroll();
+            v.scrollDOM.scrollTop += c.top - Math.min(p.tapY, bottom);
+          }
           if (++n < 32) requestAnimationFrame(settle);
         };
         requestAnimationFrame(settle);
