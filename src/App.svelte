@@ -1,33 +1,23 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import type { EditorView } from "@codemirror/view";
-  import Editor from "$lib/components/editor/Editor.svelte";
-  import Preview from "$lib/components/editor/Preview.svelte";
-  import JournalView from "$lib/components/editor/JournalView.svelte";
+  import NotePane from "$lib/components/editor/NotePane.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
-  import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
   import { checkForUpdate, checkForUpdateMobile } from "$lib/updater";
   import Fab from "$lib/components/Fab.svelte";
   import {
-    readNote,
-    writeNote,
-    createNote,
     renamePath,
     deletePath,
     shareNote,
-    onVaultChanged,
     onBackgroundSyncChanged,
     type TreeNode,
   } from "$lib/vault";
   import { isAndroidApp, isMacApp } from "$lib/platform";
-  import { markAppScroll, appScrolling } from "$lib/app-scroll";
   import { softKeyboard } from "$lib/soft-keyboard";
   import { session } from "$lib/session.svelte";
-  import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import {
     exportVaultZip,
@@ -36,11 +26,10 @@
     importNoteMd,
     emailNote,
   } from "$lib/transfer";
-  import { editorSettings } from "$lib/editor-settings.svelte";
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
   import { initLinkFolders } from "$lib/link-folders.svelte";
-  import { noteTypeInfo, noteTypeOf } from "$lib/note-type";
+  import { noteTypeInfo, type NoteType } from "$lib/note-type";
   import {
     Code,
     Eye,
@@ -55,75 +44,21 @@
   // The view mode belongs to the active tab (#169), so it lives in the session
   // store rather than here — switching tabs switches mode with it.
   const mode = $derived<Mode>(session.mode);
-  // The scrollable element differs by mode: CodeMirror scrolls inside its own
-  // `.cm-scroller`, while the preview scrolls the <main> element itself.
-  let mainEl = $state<HTMLElement | undefined>(undefined);
-  function scrollerFor(m: Mode): HTMLElement | null {
-    if (!mainEl) return null;
-    return m === "source" ? mainEl.querySelector<HTMLElement>(".cm-scroller") : mainEl;
-  }
-  // Current scroll as a 0..1 ratio of the active view (so it maps across the
-  // differently-sized source/preview views).
-  function scrollRatio(m: Mode): number {
-    const el = scrollerFor(m);
-    const max = el ? el.scrollHeight - el.clientHeight : 0;
-    return el && max > 0 ? el.scrollTop / max : 0;
-  }
-  function setScroll(m: Mode, ratio: number) {
-    const el = scrollerFor(m);
-    if (!el) return;
-    const max = el.scrollHeight - el.clientHeight;
-    if (max > 0) {
-      markAppScroll();
-      el.scrollTop = ratio * max;
-      // Keep the auto-hide baseline in sync: a programmatic jump (mode toggle /
-      // launch restore) must not read as the user scrolling down and hide the
-      // chrome (#85).
-      lastChromeTop = el.scrollTop;
-    }
-  }
-  // Apply a 0..1 ratio to a mode's scroller after it has laid out. Two rAFs:
-  // a freshly-mounted CodeMirror needs a frame to measure a tall document.
-  function applyScroll(m: Mode, ratio: number) {
-    requestAnimationFrame(() => requestAnimationFrame(() => setScroll(m, ratio)));
-  }
-  // Restore variant for cold boot: a freshly-created editor refines a tall
-  // document's height over several frames, so re-apply across a short window
-  // until the layout settles. Used only on launch (not on every toggle, where a
-  // late jump would fight the user).
-  function applyScrollRestore(m: Mode, ratio: number) {
-    if (ratio <= 0) return;
-    for (const d of [0, 80, 200, 400]) setTimeout(() => setScroll(m, ratio), d);
-  }
-  // Toggle source <-> preview, preserving the scroll position. The two views
-  // have different (and recreated) scrollers, so carry the scroll *ratio* across.
-  async function setMode(m: Mode) {
-    if (m === mode) return;
-    // Leaving source ends any quick-edit session, so ESC (desktop) / keyboard
-    // dismiss (mobile) only returns to preview for a source we entered that way.
-    if (m === "preview") quickEditActive = false;
-    const ratio = scrollRatio(mode);
-    resetChrome();
-    session.mode = m;
-    session.scroll = ratio;
-    await tick();
-    // A quick-edit tap positions source's scroll itself (caret pinned to the tap's
-    // on-screen height, see the focus effect); ratio-restore would fight that jump.
-    if (!(m === "source" && quickEditActive)) applyScroll(m, ratio);
-  }
-
   // Auto-hide the editor chrome (top bar + FAB) on scroll-down, reveal on
   // scroll-up, so the reading/writing surface is unobstructed on small screens
-  // while the controls stay one gesture away (#85). Driven off the same scroll
-  // events as the save below — direction is computed synchronously (not
-  // debounced) so the chrome responds immediately.
+  // while the controls stay one gesture away (#85). The decision is the open
+  // pane's — it watches its own scroller — and this is where it is applied.
+  //
+  // The chrome floats over that scroller, which carries a *constant* top
+  // padding of the header height (see markup). Hiding it is a pure
+  // transform+fade that never changes layout, so it can't nudge scrollTop: the
+  // padding just scrolls off the top like any other content, and back into view
+  // (with the header flying back in) on scroll-up (#100).
   let chromeHidden = $state(false);
   // Seed near the real height (min-h-12 + pb-2) so the mobile body's
   // padding-top:headerH doesn't jump on the first frame before offsetHeight
   // binds (#100). The bind corrects it (incl. safe-area) a frame later.
   let headerH = $state(56);
-  let lastChromeTop = 0;
-  let lastScroller: HTMLElement | null = null;
   // When the user last *moved* a finger or a wheel. Only a scroll that follows
   // close behind real input is allowed to move the chrome (#248): CodeMirror
   // scrolls the caret into view when you type onto a new line, and reading that
@@ -138,63 +73,6 @@
   // Long enough to cover the fling after the finger lifts.
   const GESTURE_GRACE_MS = 350;
   const userScrolling = () => Date.now() - lastScrollGestureAt < GESTURE_GRACE_MS;
-  // Scrolls the app makes itself never move the chrome, however close behind a
-  // real gesture they land — see $lib/app-scroll, which Preview and Editor mark
-  // through as well.
-  function resetChrome() {
-    chromeHidden = false;
-    lastChromeTop = 0;
-  }
-  // The chrome floats over the scroller, which carries a *constant* top padding
-  // equal to the header height (see markup). Hiding the chrome is a pure
-  // transform+fade that never changes layout, so it can't nudge scrollTop — no
-  // settling window is needed. The padding just scrolls off the top like any
-  // other content: scrolling down reclaims its space, scrolling back up brings
-  // it (and the chrome) back (#100).
-  //
-  // Persist the open note's scroll (debounced) so launch can restore it. A
-  // capturing listener catches scroll from either scroller (scroll doesn't
-  // bubble, but it is observable in the capture phase).
-  let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  function onAnyScroll() {
-    // Show/hide chrome by scroll direction (small threshold to ignore jitter).
-    const el = scrollerFor(mode);
-    if (el) {
-      const top = el.scrollTop;
-      const scrollable = el.scrollHeight - el.clientHeight;
-      if (el !== lastScroller) {
-        // Scroller swapped (mode toggle / note remount): re-baseline so the
-        // position jump isn't read as a user scroll and hide the chrome.
-        lastScroller = el;
-        lastChromeTop = top;
-      } else if (scrollable < 120) {
-        // Too little scroll room to bother hiding the chrome — keep it shown.
-        // Hiding to reveal a sliver just flickers the bars on a note that barely
-        // overflows (#85).
-        chromeHidden = false;
-        lastChromeTop = top;
-      } else {
-        const delta = top - lastChromeTop;
-        // Re-baseline on every event, including the ones ignored below — a
-        // programmatic jump left in the baseline would be charged to whatever
-        // gesture came next, and hide the chrome on a scroll that never moved.
-        lastChromeTop = top;
-        // Back at the top, the chrome comes back whatever moved the scroller.
-        if (top < 8) chromeHidden = false;
-        // Anything else only moves the chrome if the user was scrolling just
-        // now — which includes the fling after they let go, but never our own
-        // scrolling, however close behind theirs it lands.
-        else if (userScrolling() && !appScrolling()) {
-          if (delta > 6) chromeHidden = true;
-          else if (delta < -6) chromeHidden = false;
-        }
-      }
-    }
-    clearTimeout(scrollSaveTimer);
-    scrollSaveTimer = setTimeout(() => {
-      if (activePath) session.scroll = scrollRatio(mode);
-    }, 150);
-  }
   const mobileInit = window.matchMedia("(max-width: 767px)").matches;
   let mobile = $state(mobileInit);
   // The installed macOS app uses an Overlay titlebar (traffic lights float over our
@@ -338,324 +216,9 @@
   // which note is open (#169).
   const activeVault = $derived(session.vault);
   const activePath = $derived(session.path);
-  // Only the active tab holds a buffer: switching tabs flushes the pending save
-  // and re-reads the note it lands on (see syncActive). `loadedVault`/
-  // `loadedPath` say which note `content` belongs to — which is *not* always
-  // the active one, since the read is async and the flush of the outgoing note
-  // has to know where to send its text.
-  let content = $state("");
-  let lastLoaded = $state("");
-  let loadedVault: string | null = null;
-  let loadedPath: string | null = null;
-
-  // Note types (#104). A typed note renders one way only, so it hides the
-  // source/preview control and shows its own header actions instead.
-  const noteType = $derived(noteTypeOf(content));
-  const typeInfo = $derived(noteTypeInfo(noteType));
-  const singleView = $derived(!!activePath && typeInfo.singleView);
-  // Which view actually renders. A typed note is always the editor: it has
-  // exactly one operational mode, drawn by its own component.
-  const view = $derived(noteType === "journal" ? "journal" : singleView ? "source" : mode);
-
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  // Per-open id for the editor's {#key}, so switching notes remounts the editor
-  // with a fresh document.
-  let openToken = $state(0);
-
-  // Editor handle + focus, for the mobile markdown toolbar.
-  let editorView = $state<EditorView | undefined>(undefined);
-  // Journal handle, so a chunk being edited can be committed before we leave
-  // the note it belongs to (see flushSave).
-  let journalView = $state<JournalView | undefined>(undefined);
-  let editorFocused = $state(false);
   // Whether the soft keyboard is up. The toolbar is anchored to the keyboard, so
   // it must hide when the keyboard is dismissed even if the editor keeps focus.
   let kbOpen = $state(false);
-
-  // ---- Quick edit — mobile tap (opt-in, #33) + desktop double-click (#153) ----
-  // Mobile: tapping a previewed note jumps to source + keyboard, and hiding the
-  // keyboard returns to preview. Desktop: double-clicking the preview jumps to
-  // source at the clicked point, and ESC returns to preview (see onKeydown).
-  // quickEditActive marks a source view we entered this way (so we only auto-
-  // return for those, not manual toggles).
-  let quickEditActive = $state(false);
-  let kbWasOpen = false; // the keyboard has been up since this quick edit began
-  let focusOnMount = false; // focus the editor once it mounts after the tap
-  let quickEditCaret: number | null = null; // source offset for the tapped point
-  let quickEditCaretY: number | null = null; // tap's viewport Y, to keep it in place
-  let quickEditPin: { pos: number; tapY: number } | null = null; // re-pin once kb opens
-  let tapStart: { x: number; y: number; t: number } | null = null;
-
-  // Scroll `view` so the caret's line sits at on-screen height `tapY` (where the
-  // preview tap was), but never below the keyboard/toolbar — clamp to the
-  // scroller's visible bottom. Used on quick-edit entry and again once the soft
-  // keyboard opens, since the keyboard shrinks the editor and would otherwise
-  // leave the tapped line behind it (#122).
-  function pinQuickEditCaret(view: EditorView, pos: number, tapY: number) {
-    const c = view.coordsAtPos(pos);
-    if (!c) return;
-    const rect = view.scrollDOM.getBoundingClientRect();
-    const targetY = Math.min(tapY, rect.bottom - 24);
-    markAppScroll();
-    view.scrollDOM.scrollTop += c.top - targetY;
-  }
-
-  // Caret position under a viewport point, across engines (Chromium/WebKit).
-  function caretFromPoint(x: number, y: number): { node: Node; offset: number } | null {
-    type DocWithCaret = Document & {
-      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-    };
-    const d = document as DocWithCaret;
-    const p = d.caretPositionFromPoint?.(x, y);
-    if (p) return { node: p.offsetNode, offset: p.offset };
-    const r = document.caretRangeFromPoint?.(x, y);
-    return r ? { node: r.startContainer, offset: r.startOffset } : null;
-  }
-
-  // Reduce text to a lowercase alphanumeric stream, mapping every run of other
-  // characters (whitespace, punctuation, and — for the source — markdown markers)
-  // to a single space. Returns the stream plus a map back to source offsets, so a
-  // match in the stream can be translated to a caret position in `content`.
-  function normalizeWithMap(src: string): { norm: string; map: number[] } {
-    const map: number[] = [];
-    let norm = "";
-    let pendingSpace = false;
-    for (let i = 0; i < src.length; i++) {
-      const c = src[i];
-      if (/[a-z0-9]/i.test(c)) {
-        if (pendingSpace && norm.length) {
-          norm += " ";
-          map.push(i);
-        }
-        pendingSpace = false;
-        norm += c.toLowerCase();
-        map.push(i);
-      } else {
-        pendingSpace = true;
-      }
-    }
-    return { norm, map };
-  }
-
-  // Map a tapped point in the preview to a caret offset in the markdown source.
-  // The preview's text has markdown stripped, so we normalize both to a plain
-  // alphanumeric stream and find the tapped block's visible text-up-to-caret in
-  // the source, landing the caret just after the matched run. Returns null when
-  // it can't map (caller then just focuses at the existing position).
-  function sourceOffsetFromPoint(x: number, y: number): number | null {
-    const root = mainEl?.querySelector<HTMLElement>(".md-preview");
-    if (!root) return null;
-    const norm1 = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-    // Resolve the *direct child* block of the preview under the tap, plus the
-    // caret node/offset within it. A tap on real text yields a precise in-block
-    // caret; only trust it when the walk lands on a direct child of the preview.
-    const caret = caretFromPoint(x, y);
-    let block: HTMLElement | null = null;
-    let caretNode: Node | null = null;
-    let caretOffset = 0;
-    if (caret && root.contains(caret.node) && caret.node !== root) {
-      let b: HTMLElement | null =
-        caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : (caret.node as HTMLElement);
-      while (b && b.parentElement && b.parentElement !== root) b = b.parentElement;
-      if (b && b.parentElement === root) {
-        block = b;
-        caretNode = caret.node;
-        caretOffset = caret.offset;
-      }
-    }
-
-    // Tap fell in a gap or below the content — common at the bottom of a note,
-    // where `caretFromPoint` returns the `.md-preview` container itself and the
-    // walk above would climb past the root. Pick the block nearest the tap's Y
-    // and land the caret at its *end*, instead of returning null and dropping the
-    // caret to the top of the document (#122).
-    if (!block) {
-      const blocks = Array.from(root.children) as HTMLElement[];
-      for (const el of blocks) {
-        const rect = el.getBoundingClientRect();
-        if (y >= rect.top && y <= rect.bottom) {
-          block = el;
-          break;
-        }
-        if (y > rect.bottom) block = el; // last block wholly above the tap
-      }
-      block ??= blocks[blocks.length - 1] ?? null;
-      if (!block) return null;
-      caretNode = block;
-      caretOffset = block.childNodes.length; // end of the block
-    }
-
-    const r = document.createRange();
-    r.selectNodeContents(block);
-    r.setEnd(caretNode!, caretOffset);
-    const prefix = norm1(r.toString()); // tapped block's text up to the caret
-    const { norm, map } = normalizeWithMap(content);
-    // Locate the tapped block in the source by its *full* text (much more unique
-    // than the prefix), then offset within it by the prefix — so a phrase that
-    // repeats elsewhere in the note doesn't drag the caret to the wrong place.
-    const blockText = norm1(block.textContent ?? "");
-    const base = blockText ? norm.indexOf(blockText) : -1;
-    const start = base >= 0 ? base : norm.indexOf(prefix);
-    if (start < 0) return null;
-    const caretNorm = start + prefix.length;
-    if (caretNorm <= 0) return null;
-    let offset = map[Math.min(caretNorm, map.length) - 1] + 1;
-    // The normalized prefix ends on the block's last *alphanumeric* char, so a tap
-    // at the end of a line lands `offset` just *before* any trailing punctuation or
-    // markup ("writing|!", "Wi-Fi|."). When the prefix covers the whole block (an
-    // end-of-line tap — middle taps have a shorter prefix), advance to the end of
-    // that source line so the caret sits after those trailing characters (#122).
-    if (prefix === blockText) {
-      while (offset < content.length && content[offset] !== "\n") offset++;
-    }
-    return offset;
-  }
-
-  // Quick edit is a Markdown-note affordance: tap the preview to jump into
-  // source. A typed note (#180/#181) has a single operational mode, so there is
-  // nothing to jump to — and letting these run would swallow taps on the note's
-  // own controls instead.
-  const quickEditable = $derived(mobile && editorSettings.quickEdit && !singleView);
-
-  function onPreviewPointerDown(e: PointerEvent) {
-    if (!(quickEditable && mode === "preview")) return;
-    tapStart = { x: e.clientX, y: e.clientY, t: e.timeStamp };
-  }
-  // A recognized scroll/gesture fires pointercancel (not pointerup); clear the
-  // pending tap so the next genuine tap isn't matched against this stale start.
-  function onPreviewPointerCancel() {
-    tapStart = null;
-  }
-  function onPreviewPointerUp(e: PointerEvent) {
-    const s = tapStart;
-    tapStart = null;
-    if (!s || !(quickEditable && mode === "preview")) return;
-    // A drag (selection/scroll) or long-press isn't a "tap" — leave it in preview.
-    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || e.timeStamp - s.t > 500) return;
-    // Links and task checkboxes have their own tap behavior; don't hijack them.
-    if ((e.target as HTMLElement | null)?.closest("a, input")) return;
-    // Map the tap to a source caret before we leave preview (DOM is still here).
-    quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
-    quickEditCaretY = e.clientY; // so source can keep the tapped line at this height
-    quickEditActive = true;
-    kbWasOpen = false;
-    focusOnMount = true;
-    setMode("source");
-  }
-
-  // Desktop quick edit (#153): double-click the preview to jump into source at
-  // the clicked point. ESC returns to preview (onKeydown). No keyboard on desktop,
-  // so unlike mobile there's no auto-return on keyboard-dismiss — the focus-on-
-  // mount effect places the caret; quickEditActive just marks it for ESC.
-  function onPreviewDblClick(e: MouseEvent) {
-    if (mobile || singleView || mode !== "preview" || !activePath) return;
-    // Links and task checkboxes have their own behavior; don't hijack them.
-    if ((e.target as HTMLElement | null)?.closest("a, input")) return;
-    quickEditCaret = sourceOffsetFromPoint(e.clientX, e.clientY);
-    quickEditCaretY = null; // desktop: no keyboard to pin the line above
-    quickEditActive = true;
-    focusOnMount = true;
-    setMode("source");
-  }
-
-  // Focus the editor once it has mounted from the quick-edit tap, which raises
-  // the soft keyboard. (The Editor only exists in source mode, so this can't run
-  // inside the tap handler.)
-  $effect(() => {
-    // Read all three reactive deps up-front and unconditionally. As a single
-    // `focusOnMount && mode === "source" && editorView` guard, `&&` short-circuits:
-    // on the runs while focusOnMount/mode are still settling during the
-    // preview→source swap, `editorView` is never read, so Svelte doesn't track it
-    // — and the effect then won't re-run when the freshly-mounted editor *binds*,
-    // silently skipping the quick-edit caret placement (the caret then falls to
-    // wherever the tap's synthetic click lands in the top-scrolled editor). Read
-    // them into locals so all three are always tracked (#122).
-    const armed = focusOnMount;
-    const inSource = mode === "source";
-    const v = editorView;
-    if (!(armed && inSource && v)) return;
-    focusOnMount = false;
-    const caret = quickEditCaret;
-    const tapY = quickEditCaretY;
-    quickEditCaret = null;
-    quickEditCaretY = null;
-    v.focus();
-    // Place the caret where the user tapped in the preview (#41). Falls back to
-    // the editor's existing position when the tap couldn't be mapped.
-    if (caret == null) return;
-    const pos = Math.max(0, Math.min(caret, v.state.doc.length));
-    // Place the caret, then scroll so its line sits at the same on-screen height
-    // the tap had in the preview — a continuous transition instead of a jump to
-    // the viewport edge (what plain scrollIntoView does). scrollIntoView in place()
-    // first renders/reveals the line so coordsAtPos is measurable; pin() then
-    // shifts scrollTop to the tap's Y. The keyboard isn't up yet here, so pin()
-    // again once it opens (see below) — that reflow shrinks the editor (#122).
-    const place = () => v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
-    const pin = () => tapY != null && pinQuickEditCaret(v, pos, tapY);
-    place();
-    pin();
-    if (tapY != null) quickEditPin = { pos, tapY };
-    // The tap's synthetic click must be allowed through — it's what focuses the
-    // editor and raises the soft keyboard on Android (programmatic focus alone
-    // doesn't). But that click *natively* moves the caret to the tapped pixel,
-    // which in the freshly-mounted, top-scrolled editor is the wrong offset, and
-    // CodeMirror mirrors that DOM change back into its state a few frames later.
-    // Re-assert across a short window: each frame, if CM has drifted off our
-    // target, put it back and re-pin the scroll; once the synthetic sequence
-    // settles this is a no-op. Bails out if we leave the editor (#122).
-    let frames = 0;
-    const enforce = () => {
-      if (!v.dom.isConnected) return;
-      if (v.state.selection.main.head !== pos) {
-        place();
-        pin();
-      }
-      if (++frames < 20) requestAnimationFrame(enforce);
-    };
-    requestAnimationFrame(enforce);
-  });
-
-  // While a quick edit is active, returning the keyboard to hidden returns to
-  // preview — but only after it was actually raised, so we don't bounce back
-  // before it appears.
-  $effect(() => {
-    if (!quickEditActive) return;
-    if (kbOpen) {
-      kbWasOpen = true;
-      // The keyboard opening shrinks the editor (--editor-kb-inset = keyboard +
-      // toolbar), which reflows the tapped line — potentially behind the keyboard
-      // or the markdown toolbar. Both land over several frames: the keyboard
-      // animates open and the toolbar only mounts/measures its height once kbOpen
-      // flips. So watch across a longer window and, *only while the caret is
-      // occluded* below the scroller's visible bottom, pull it back up to the
-      // tap's height clamped above that bottom. Conditional so it catches the late
-      // toolbar inset without fighting the user once the caret is already visible
-      // (#122, #147).
-      const p = quickEditPin;
-      const v = editorView;
-      if (p && v) {
-        quickEditPin = null;
-        let n = 0;
-        const settle = () => {
-          if (!v.dom.isConnected) return;
-          const c = v.coordsAtPos(p.pos);
-          const bottom = v.scrollDOM.getBoundingClientRect().bottom - 24;
-          if (c && c.bottom > bottom) {
-            markAppScroll();
-            v.scrollDOM.scrollTop += c.top - Math.min(p.tapY, bottom);
-          }
-          if (++n < 32) requestAnimationFrame(settle);
-        };
-        requestAnimationFrame(settle);
-      }
-    } else if (kbWasOpen) {
-      quickEditActive = false;
-      kbWasOpen = false;
-      quickEditPin = null;
-      if (mode === "source") setMode("preview");
-    }
-  });
 
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
@@ -680,8 +243,18 @@
   const notePaths = $derived([...walk(tree)].filter((n) => !n.is_dir).map((n) => n.path));
 
   // Set true when opening a brand-new note: force source mode and focus the
-  // editor once it mounts (#50). $state so the `focusOnMount` prop binding tracks it.
+  // editor once it mounts (#50). The pane clears it once it has.
   let focusNewNote = $state(false);
+  // The open note's pane (#169). It owns the buffer, the saving and the scroll
+  // for the note it shows; App owns which note that is. `flush` parks it before
+  // the note changes, which is the one ordering rule between the two.
+  let pane = $state<NotePane | undefined>(undefined);
+  // The open note's type, for the header's source/preview control.
+  let paneNoteType = $state<NoteType>("markdown");
+  const singleView = $derived(!!activePath && noteTypeInfo(paneNoteType).singleView);
+  /// Park the open note, if there is one. False when its save was refused, in
+  /// which case the caller leaves the note where it is (#253).
+  const flushSave = async () => (pane ? await pane.flush() : true);
 
   // A `[[note#heading]]` link: open the note (unless already open) and scroll
   // the preview to the heading. Headings get their slug ids after Preview
@@ -705,108 +278,16 @@
   function openInternalLink(path: string, fragment: string | undefined) {
     if (!activeVault) return;
     if (path !== activePath) openNote(activeVault, path);
-    if (!fragment) return;
-    const sel = `#${CSS.escape(slugify(fragment))}`;
-    let done = false;
-    for (const d of [0, 60, 150, 300])
-      setTimeout(() => {
-        if (done) return;
-        const el = mainEl?.querySelector(sel);
-        if (el) {
-          done = true;
-          // Smooth, so it emits scroll events for a few hundred ms — claim all
-          // of them, or the tail of our own jump hides the chrome (#250).
-          markAppScroll(700);
-          el.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-      }, d);
+    if (fragment) pane?.scrollToAnchor(fragment);
   }
 
   // ---- Tabs (#169) ----
   //
-  // The tab list is the session store's; this side owns the buffer for the
-  // *active* tab only. Everything that changes which tab is active ends in
-  // syncActive(), which is the one place the buffer is swapped.
-
-  /**
-   * Bring the buffer in line with the active tab: drop the outgoing text and
-   * read the note we've landed on. Callers park the outgoing tab (flushSave)
-   * *before* they change which tab is active, since that is the last moment its
-   * pending edit and scroll position can be written to the right note.
-   *
-   * Every state change up to the first await is synchronous on purpose. The
-   * autosave effect keys off (activePath, content), and if it ever observed the
-   * outgoing note's text against the incoming note's path it would write one
-   * over the other.
-   */
-  async function syncActive() {
-    const v = session.vault;
-    const p = session.path;
-    if (v === loadedVault && p === loadedPath) return;
-    clearTimeout(saveTimer);
-    loadedVault = v;
-    loadedPath = p;
-    // Clear before the (async) read so the new note never briefly shows the old
-    // content (#44). lastLoaded too, so the autosave effect sees no edit.
-    content = "";
-    lastLoaded = "";
-    // Whatever the backend last refused belonged to the note we just left, and
-    // holding on to it would block saving that same text there again.
-    rejectedEdit = null;
-    saveBlocked = null;
-    // A quick edit belongs to the note it started in.
-    quickEditActive = false;
-    resetChrome();
-    if (!v || !p) return;
-    const text = await readNote(v, p);
-    // We may have moved on again while the read was in flight — e.g. creating a
-    // note fires vault-changed, and opening it swaps tabs mid-read (#123).
-    if (v !== loadedVault || p !== loadedPath) return;
-    content = text;
-    lastLoaded = text;
-    openToken++;
-    await tick();
-    // The remounted Editor read focusNewNote via its focusOnMount prop and
-    // focused itself; clear the flag so the next (non-new) open doesn't.
-    focusNewNote = false;
-    // Each tab remembers where it was left, so this restores on every switch,
-    // not just at launch.
-    applyScrollRestore(mode, session.scroll);
-  }
-
-  /**
-   * Park the active tab before its buffer is dropped: write where it was left,
-   * and land any edit the 400ms debounce hasn't sent yet. Returns false if that
-   * write failed — the caller then leaves the note open rather than throwing
-   * the text away, and the #253 banner says why (its "Save a copy" is the way
-   * out).
-   *
-   * Runs while the tab is still the active one, which is what makes the two
-   * session writes land on it rather than on the tab we're moving to.
-   */
-  async function flushSave(): Promise<boolean> {
-    clearTimeout(saveTimer);
-    // A journal chunk mid-edit lives in the view's own state until something
-    // finishes it — normally the blur from clicking elsewhere. A hotkey moves
-    // no focus, so ask for it explicitly, while this is still the open note.
-    journalView?.commitPending();
-    // The debounced scroll-save may not have fired yet, and afterwards it would
-    // credit this tab's position to the next one.
-    clearTimeout(scrollSaveTimer);
-    if (loadedPath) session.scroll = scrollRatio(mode);
-    const v = loadedVault;
-    const p = loadedPath;
-    const c = content;
-    const base = lastLoaded;
-    if (!v || !p || c === base) return true;
-    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return false;
-    lastLoaded = c;
-    if (await saveNote(v, p, c, base)) return true;
-    // Restore the base so the debounced save retries this edit, exactly as it
-    // does when a debounced write fails.
-    if (lastLoaded === c) lastLoaded = base;
-    return false;
-  }
+  // The tab list is the session store's, and the note it points at is handed to
+  // the pane as props — so switching tabs is a session write, and the pane
+  // reloads itself. What App must do first is park the outgoing note: flushing
+  // *before* the session changes is the last moment a pending edit and scroll
+  // position can be written to the note they belong to.
 
   async function openNote(
     vault: string,
@@ -815,8 +296,9 @@
   ) {
     // A path that has left the tabs was just renamed or deleted (those callers
     // flush before they touch the vault), so there is nothing left to send.
-    const stale = !!loadedPath && !session.tabs.some((t) => t.path === loadedPath);
-    if (!stale && path !== loadedPath && !(await flushSave())) return;
+    const open = session.path;
+    const stale = !!open && !session.tabs.some((t) => t.path === open);
+    if (!stale && path !== open && !(await flushSave())) return;
     // Opening a note is what dismisses the drawer, whether or not it was
     // already the open one.
     if (mobile) setSidebar(false);
@@ -831,14 +313,12 @@
     // A new note always opens in source mode so the user can type right away.
     if (opts.focus) session.mode = "source";
     focusNewNote = !!opts.focus;
-    await syncActive();
   }
 
   async function selectTab(i: number) {
     if (i === session.active) return;
     if (!(await flushSave())) return;
     session.activate(i);
-    await syncActive();
   }
 
   /**
@@ -862,35 +342,29 @@
     // edit that hasn't landed yet.
     if (i === session.active && !(await flushSave())) return;
     session.close(i);
-    await syncActive();
   }
 
   // A note (or a folder of them) renamed anywhere — the sidebar's rename, a
   // drag in the tree, or Move in the settings sheet. Tabs follow it, including
   // background ones, so none is left pointing at a path that no longer exists.
   async function notesRenamed(from: string, to: string, isDir: boolean) {
-    if (loadedPath === from) loadedPath = to;
-    else if (isDir && loadedPath?.startsWith(from + "/"))
-      loadedPath = to + loadedPath.slice(from.length);
+    pane?.renamed(from, to, isDir);
     session.renamed(from, to, isDir);
-    await syncActive();
   }
 
   // Deleted, likewise: its tabs go. Nothing is flushed — the note is gone.
   async function notesRemoved(path: string, isDir: boolean) {
     session.removed(path, isDir);
-    await syncActive();
   }
 
   async function handleVaultChange(vault: string | null) {
     // Only worth flushing when we're leaving a vault we had open; the launch
     // sequence reports the restored vault as a "change" with nothing loaded.
-    if (loadedPath) await flushSave();
+    if (session.path) await flushSave();
     // Setting the vault closes the tabs when it differs from the one they were
     // opened in — and keeps them when it doesn't, which is the launch restore.
     session.vault = vault;
     needsPrune = true;
-    await syncActive();
   }
 
   // Restored tabs are pruned against the first tree we see for the vault: a
@@ -904,7 +378,6 @@
     needsPrune = false;
     const files = new Set([...walk(t)].filter((n) => !n.is_dir).map((n) => n.path));
     session.prune((p) => files.has(p));
-    await syncActive();
   }
 
   // FAB / Cmd+N: one tap creates and opens an "Untitled" note in the current
@@ -959,137 +432,19 @@
       reportTransferError(e);
     }
   }
-  async function copyContents() {
-    try {
-      await navigator.clipboard.writeText(content);
-    } catch {
-      /* clipboard may be unavailable */
-    }
-  }
   async function deleteNote() {
     if (!activeVault || !activePath) return;
-    clearTimeout(saveTimer);
     const path = activePath;
     await deletePath(activeVault, path, false);
     await notesRemoved(path, false);
   }
 
-  // The edit a save last failed on, for any reason the backend didn't mark as
-  // worth retrying — the note was deleted elsewhere (#251), but equally a dead
-  // IPC channel or a closed vault. Rolling the base back is what makes the
-  // effect retry, so re-attempting a failure that can't resolve is a 400ms loop
-  // that never ends. Keyed to the text, not just the path: a further edit is
-  // worth one more attempt in case whatever it was has cleared, but the same
-  // rejected text is not. The typed text stays on screen either way — it just
-  // isn't being saved, which is why #253 wants to say so.
-  let rejectedEdit: { path: string; content: string } | null = null;
-  // The same fact, in a form the markup can react to. Kept separate from
-  // `rejectedEdit` on purpose: that one is read inside the autosave effect, and
-  // making it reactive would put a write to it back into that effect's own
-  // dependencies — which is how the retry loop got here in the first place.
-  let saveBlocked = $state<string | null>(null);
-
-  /// Put the text somewhere safe when its own note won't take it. Creates a
-  /// sibling — `createNote` de-duplicates the name — writes the buffer to it,
-  /// and opens it, so the note that is gone stays gone and the words don't.
-  async function saveRejectedCopy() {
-    const v = activeVault;
-    const p = activePath;
-    if (!v || !p) return;
-    const text = content;
-    const slash = p.lastIndexOf("/");
-    const dir = slash === -1 ? "" : p.slice(0, slash);
-    const stem = p.slice(slash + 1).replace(/\.md$/, "");
-    const name = `${stem} (recovered).md`;
-    try {
-      const created = await createNote(v, dir ? `${dir}/${name}` : name);
-      await writeNote(v, created, text, "");
-      saveBlocked = null;
-      rejectedEdit = null;
-      // The words are safe in the copy now, so the buffer has nothing pending —
-      // say so, or opening the copy would try (and fail) to flush it back to
-      // the note that wouldn't take it, and refuse to switch.
-      lastLoaded = content;
-      await openNote(v, created, { focus: true });
-    } catch (e) {
-      console.error("could not save a copy", e);
-    }
-  }
-
-  /**
-   * Write one note, and own what the failure means (#251/#253). Returns whether
-   * it landed; the caller decides what to do with the buffer, since the
-   * debounced save and the flush-on-tab-switch answer that differently.
-   */
-  async function saveNote(v: string, p: string, c: string, base: string): Promise<boolean> {
-    try {
-      await writeNote(v, p, c, base);
-      rejectedEdit = null;
-      saveBlocked = null;
-      return true;
-    } catch (e) {
-      // Retrying is the exception, not the rule: only a write that says it is
-      // waiting on a sync will succeed if we just try again. Anything else
-      // fails identically every time, and since the caller rolls the base back
-      // to retry, that would be a 400ms loop with no end. Latching on "not
-      // retryable" rather than listing the failures that aren't keeps a future
-      // error from reintroducing that loop.
-      if (!String(e).includes("still syncing")) {
-        rejectedEdit = { path: p, content: c };
-        // Say so, rather than leaving the note looking saved (#253). The
-        // deleted case is worth naming; anything else is honest but vague.
-        saveBlocked = String(e).includes("no longer exists")
-          ? "This note was deleted on another device, so your changes aren't being saved."
-          : String(e).includes("can't be read")
-            ? "This note's saved content can't be read, so your changes aren't being saved."
-            : "Your changes aren't being saved.";
-      }
-      console.error("save failed", e);
-      return false;
-    }
-  }
-
-  // Autosave: debounce content writes 400ms. The filename never changes from
-  // content, so a single content-only save is all we need.
-  $effect(() => {
-    const c = content;
-    const v = activeVault;
-    const p = activePath;
-    // `base` = the text last synced to the backend; it merges base→c against
-    // concurrent peer edits so a remote change isn't clobbered (#99).
-    const base = lastLoaded;
-    if (!v || !p || c === base) return;
-    // Editing a preview tab pins it — the note is yours now, so the next click
-    // in the sidebar opens beside it instead of replacing it (#169). Idempotent
-    // once pinned, which is what keeps this out of its own dependencies.
-    session.pinActive();
-    // Cancel any queued save first: returning with one still pending would let
-    // it write text the editor has since moved on from.
-    clearTimeout(saveTimer);
-    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return;
-    saveTimer = setTimeout(async () => {
-      // Advance the base *before* awaiting: if the user types again while this
-      // write is in flight, the next save must merge against the text we just
-      // sent — not this same stale `base` — or the 3-way merge sees both sides
-      // diverging from an old ancestor and injects spurious conflict markers.
-      lastLoaded = c;
-      // Restore the prior base so the effect retries this edit — the base stays
-      // truthful, which is the whole point of #251.
-      if (!(await saveNote(v, p, c, base)) && lastLoaded === c) lastLoaded = base;
-    }, 400);
-  });
-
-  // Pull remote edits into the open note. A peer's write (or the blob finishing
-  // download) emits vault-changed; re-read the active note. Skip if we have
-  // unsaved local edits (content !== lastLoaded) so we don't clobber typing.
   onMount(() => {
-    let unlisten: (() => void) | undefined;
     // Reactive mobile flag — gates the FAB + markdown toolbar on resize/rotate.
     const mq = window.matchMedia("(max-width: 767px)");
     const onMq = (e: MediaQueryListEvent) => (mobile = e.matches);
     mq.addEventListener("change", onMq);
     window.addEventListener("keydown", onKeydown);
-    window.addEventListener("scroll", onAnyScroll, true);
     window.addEventListener("touchstart", onSwipeStart, { capture: true, passive: true });
     window.addEventListener("touchmove", onSwipeMove, { capture: true, passive: false });
     window.addEventListener("touchend", onSwipeEnd, { capture: true });
@@ -1121,31 +476,9 @@
     window.addEventListener("resize", onVv);
     window.addEventListener("orientationchange", onVv);
 
-    onVaultChanged(async (vaultId) => {
-      const vault = activeVault;
-      const path = activePath;
-      if (vaultId !== vault || !path || content !== lastLoaded) return;
-      const fresh = await readNote(vault, path);
-      // The open note may have changed while readNote was in flight — e.g.
-      // creating a note fires vault-changed, and opening it swaps activePath
-      // mid-read. Without this guard the in-flight read of the *previous* note
-      // lands in the new note's editor, so a just-created note briefly shows the
-      // old note's text until you navigate away and back (#123, desktop timing).
-      if (vault !== activeVault || path !== activePath) return;
-      if (fresh === lastLoaded) return;
-      // A remote key update can arrive before its content blob finishes
-      // downloading; read_note then returns empty (unwrap_or_default). Don't
-      // wipe a non-empty note on that transient — the blob-complete event fires
-      // next with the real content. Without this, the open editor is cleared and
-      // refilled, collapsing the caret/scroll to the top (issue #25).
-      if (fresh === "" && lastLoaded !== "") return;
-      content = fresh;
-      lastLoaded = fresh;
-    }).then((u) => (unlisten = u));
     return () => {
       mq.removeEventListener("change", onMq);
       window.removeEventListener("keydown", onKeydown);
-      window.removeEventListener("scroll", onAnyScroll, true);
       window.removeEventListener("touchstart", onSwipeStart, { capture: true });
       window.removeEventListener("touchmove", onSwipeMove, { capture: true });
       window.removeEventListener("touchend", onSwipeEnd, { capture: true });
@@ -1155,7 +488,6 @@
       vv?.removeEventListener("scroll", onVv);
       window.removeEventListener("resize", onVv);
       window.removeEventListener("orientationchange", onVv);
-      unlisten?.();
     };
   });
 
@@ -1181,11 +513,9 @@
     // quickEditActive so it only undoes a double-click-to-edit, not a manual
     // source view (where ESC belongs to CodeMirror — closing autocomplete, etc.).
     if (e.key === "Escape") {
-      if (!mobile && mode === "source" && quickEditActive && activePath) {
-        e.preventDefault();
-        editorView?.contentDOM.blur();
-        setMode("preview");
-      }
+      // Only when it had a desktop quick edit to leave; otherwise ESC belongs to
+      // CodeMirror (closing autocomplete, etc.).
+      if (pane?.escapeQuickEdit()) e.preventDefault();
       return;
     }
     const mod = e.metaKey || e.ctrlKey;
@@ -1218,7 +548,7 @@
       // for Markdown notes — typed notes have a single view).
       if (activePath && !singleView) {
         e.preventDefault();
-        setMode(mode === "source" ? "preview" : "source");
+        pane?.toggleMode();
       }
     } else if (key === "w") {
       // Close the active tab. Cmd+W reaches us because the macOS menu's Close
@@ -1340,7 +670,7 @@
         class="inline-flex items-center gap-0.5 rounded-full border border-border bg-background p-0.5"
         aria-label="Toggle view mode"
         title={mode === "source" ? "Switch to preview" : "Switch to source"}
-        onclick={() => setMode(mode === "source" ? "preview" : "source")}
+        onclick={() => pane?.toggleMode()}
       >
         <span
           class="flex items-center justify-center rounded-full transition-colors {isMacApp
@@ -1451,75 +781,37 @@
       </div>
     </aside>
 
-    <!-- A save that isn't happening, said out loud (#253). Fixed rather than in
-         flow so it can't shift the editor's layout, and offset below the header
-         so it clears the floating mobile chrome. -->
-    {#if saveBlocked}
-      <div
-        class="fixed left-1/2 z-40 flex max-w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-2xl border border-border bg-popover px-4 py-2 text-sm shadow-lg"
-        style="top:calc({headerH}px + 0.5rem);"
-        role="status"
-      >
-        <!-- Wraps rather than truncates: the half that matters is the end of
-             the sentence, which is exactly what an ellipsis eats. -->
-        <span class="min-w-0 text-muted-foreground">{saveBlocked}</span>
-        <button
-          type="button"
-          class="shrink-0 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
-          onclick={saveRejectedCopy}
-        >
-          Save a copy
-        </button>
-        <button
-          type="button"
-          class="shrink-0 rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label="Dismiss"
-          onclick={() => (saveBlocked = null)}
-        >
-          <X size={14} />
-        </button>
+    <!-- The open note. One pane today; a joined tab renders two side by side
+         (#169). The pane owns the note's buffer, saving and scroll — App only
+         says which note, and parks it (flush) before that changes. -->
+    {#if activeVault && activePath}
+      <NotePane
+        bind:this={pane}
+        bind:noteType={paneNoteType}
+        bind:focusNew={focusNewNote}
+        vault={activeVault}
+        path={activePath}
+        {mode}
+        scroll={session.scroll}
+        {mobile}
+        {kbOpen}
+        {headerH}
+        {notePaths}
+        {userScrolling}
+        onmode={(m) => (session.mode = m)}
+        onscrollratio={(r) => (session.scroll = r)}
+        onchrome={(hidden) => (chromeHidden = hidden)}
+        onedit={() => session.pinActive()}
+        onopen={(path, opts) => activeVault && openNote(activeVault, path, opts)}
+        ontag={openTagSearch}
+        oninternallink={openInternalLink}
+      />
+    {:else}
+      <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+        <NotebookPen size={40} class="opacity-30" />
+        <p class="text-sm">Select or create a note.</p>
       </div>
     {/if}
-
-    <main
-      bind:this={mainEl}
-      class="min-w-0 flex-1 {view === 'journal' ? 'flex flex-col overflow-hidden' : 'overflow-auto'}"
-      style={mobile
-        ? `padding-top:${view === "preview" || view === "journal" ? headerH : 0}px;`
-        : ""}
-      onpointerdown={onPreviewPointerDown}
-      onpointerup={onPreviewPointerUp}
-      onpointercancel={onPreviewPointerCancel}
-      ondblclick={onPreviewDblClick}
-    >
-      {#if !activePath}
-        <div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
-          <NotebookPen size={40} class="opacity-30" />
-          <p class="text-sm">Select or create a note.</p>
-        </div>
-      {:else if view === "journal"}
-        <JournalView bind:this={journalView} bind:value={content} {mobile} {kbOpen} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
-      {:else if view === "preview"}
-        <Preview
-          bind:value={content}
-          {notePaths}
-          oninternallink={openInternalLink}
-          ontag={openTagSearch}
-          loadNote={(path) => readNote(activeVault!, path)}
-        />
-      {:else}
-        {#key openToken}
-          <Editor
-            bind:value={content}
-            bind:view={editorView}
-            bind:focused={editorFocused}
-            {notePaths}
-            focusOnMount={focusNewNote}
-            ontag={openTagSearch}
-          />
-        {/key}
-      {/if}
-    </main>
   </div>
 </div>
 
@@ -1531,11 +823,6 @@
     ontype={(type) => sidebar?.newTypedNote(currentDir, type)}
     hidden={chromeHidden}
   />
-{/if}
-
-<!-- Mobile: markdown toolbar anchored above the soft keyboard while editing -->
-{#if mobile && mode === "source" && activePath && editorFocused && editorView && kbOpen}
-  <MarkdownToolbar view={editorView} />
 {/if}
 
 <SearchPalette
@@ -1552,7 +839,7 @@
   {currentDir}
   onmove={moveNote}
   onduplicate={duplicateNote}
-  oncopy={copyContents}
+  oncopy={() => pane?.copyContents()}
   ondelete={deleteNote}
   onrename={() => sidebar?.renameActive()}
   onexportnote={() =>
