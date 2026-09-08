@@ -14,7 +14,8 @@
   // Finishing a chunk is Return, and Shift+Return inserts a line break;
   // editorSettings.journalReturnNewline swaps the two. Neither applies on
   // mobile, where Enter is always a line break and finishing means dismissing
-  // the keyboard (which blurs the field).
+  // the keyboard — watched through `kbOpen`, since a dismissed keyboard does
+  // not blur the field it was typing into (#258).
   //
   // Chunks can be dragged to reorder (desktop only). Each tracks a created
   // time and, once actually edited, an updated time. On a wide-enough pane
@@ -35,17 +36,21 @@
   } from "$lib/note-type";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { renderMarkdown, resolveWikiLink } from "$lib/render-markdown";
+  import { keyboardDismissal } from "$lib/soft-keyboard";
 
   let {
     value = $bindable(""),
     notePaths = [],
     mobile = false,
+    kbOpen = false,
     oninternallink,
     ontag,
   }: {
     value?: string;
     notePaths?: string[];
     mobile?: boolean;
+    /// Whether the soft keyboard is up, from App's visual-viewport watch.
+    kbOpen?: boolean;
     oninternallink?: (path: string, fragment?: string) => void;
     ontag?: (tag: string) => void;
   } = $props();
@@ -152,7 +157,11 @@
   // fire its own blur handler — and a second commit over the state we just
   // wrote would undo it (deleting, for instance, the empty chunk a split had
   // only just created). Set while that handoff is in flight.
-  let reconciling = false;
+  //
+  // Reactive so the keyboard watch below re-runs when the handoff finishes: a
+  // dismissal that lands mid-handoff has to be acted on once it settles, not
+  // dropped because the chunk it arrived for was already on its way out.
+  let reconciling = $state(false);
 
   async function focusEditor(cursor: "start" | "end") {
     await tick();
@@ -211,6 +220,44 @@
     if (i > 0) startEdit(i - 1, "end");
     else void focusEditor("end");
   }
+
+  // Dismissing the keyboard finishes the chunk (#258) — see soft-keyboard.ts
+  // for why that can't just be the field's own blur.
+  //
+  // Mobile only. `kbOpen` is derived from the visual viewport, which a desktop
+  // window shrinks too: without this gate, dragging a window shorter and back
+  // while a chunk is open would read as a keyboard and close it.
+  const kb = keyboardDismissal();
+  let armedFor: number | null = null;
+  $effect(() => {
+    // Mid-handoff the chunk being edited is about to change; neither arm nor
+    // fire against the one on its way out. Settling re-runs this.
+    if (reconciling) return;
+    if (editingIndex === null || !mobile) {
+      kb.reset();
+      armedFor = null;
+      return;
+    }
+    // Armed per chunk, not per edit session: tapping straight from one chunk
+    // to another never passes through "nothing being edited" — the blur that
+    // commits and the `startEdit` that follows land in the same tick, and this
+    // runs after both. The keyboard having been up for the previous chunk must
+    // not count as having been up for this one, or a momentarily-lowered
+    // keyboard during the handoff closes the chunk just tapped into.
+    if (editingIndex !== armedFor) {
+      kb.reset();
+      armedFor = editingIndex;
+    }
+    if (kb.dismissed(kbOpen)) {
+      // Blurring is what commits, which keeps this on one path with Escape and
+      // Return rather than adding a second way to finish a chunk.
+      editEl?.blur();
+      // Unless the field wasn't focused after all, in which case there was no
+      // blur to do the commit and the chunk would stay open with the keyboard
+      // already gone.
+      if (editingIndex !== null) commitEdit();
+    }
+  });
 
   function onEditKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {

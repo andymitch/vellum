@@ -24,6 +24,7 @@
   } from "$lib/vault";
   import { isAndroidApp, isMacApp } from "$lib/platform";
   import { markAppScroll, appScrolling } from "$lib/app-scroll";
+  import { softKeyboard } from "$lib/soft-keyboard";
   import { session } from "$lib/session.svelte";
   import { slugify } from "$lib/slug";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
@@ -944,21 +945,27 @@
     // at all, and the chrome would never hide for them (#248).
     window.addEventListener("wheel", onWheelGesture, { capture: true, passive: true });
 
-    // Detect the soft keyboard from the visual viewport. It shrinks (relative to
-    // the tallest height we've seen with no keyboard) whenever the keyboard is
-    // up, in both adjustResize and adjustPan modes — so this is layout-agnostic.
+    // Detect the soft keyboard from the visual viewport — see $lib/soft-keyboard
+    // for the rule, which has to account for rotation as well as the keyboard.
     const vv = window.visualViewport;
-    let maxVvH = vv ? vv.height : window.innerHeight;
+    const keyboard = softKeyboard();
     const onVv = () => {
       if (!vv) return;
-      maxVvH = Math.max(maxVvH, vv.height);
-      kbOpen = vv.height < maxVvH - 150;
+      kbOpen = keyboard.sample(
+        window.innerWidth,
+        vv.height,
+        document.documentElement.clientHeight,
+      );
     };
     if (vv) {
       onVv();
       vv.addEventListener("resize", onVv);
       vv.addEventListener("scroll", onVv);
     }
+    // Rotation changes the layout viewport without necessarily touching the
+    // visual one, and the baseline is per layout — so it needs re-sampling.
+    window.addEventListener("resize", onVv);
+    window.addEventListener("orientationchange", onVv);
 
     onVaultChanged(async (vaultId) => {
       const vault = activeVault;
@@ -992,6 +999,8 @@
       window.removeEventListener("wheel", onWheelGesture, { capture: true });
       vv?.removeEventListener("resize", onVv);
       vv?.removeEventListener("scroll", onVv);
+      window.removeEventListener("resize", onVv);
+      window.removeEventListener("orientationchange", onVv);
       unlisten?.();
     };
   });
@@ -1305,7 +1314,7 @@
           <p class="text-sm">Select or create a note.</p>
         </div>
       {:else if view === "journal"}
-        <JournalView bind:value={content} {mobile} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
+        <JournalView bind:value={content} {mobile} {kbOpen} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
       {:else if view === "preview"}
         <Preview
           bind:value={content}
