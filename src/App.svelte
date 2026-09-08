@@ -1318,9 +1318,8 @@
         </span>
       {:else}
         <!-- Desktop: the open notes as tabs, where the breadcrumb sits on mobile
-             (#169). A tab shows the filename with the full path as its tooltip.
-             No drag region on the strip — the window drags by the header
-             around it. -->
+             (#169). A tab shows the filename with the full path as its tooltip,
+             and the strip keeps the header's drag region (see TabStrip). -->
         <TabStrip
           tabs={session.tabs}
           active={session.active}

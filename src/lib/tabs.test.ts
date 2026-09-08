@@ -14,6 +14,7 @@ import {
   pruneTabs,
   removePaths,
   renamePaths,
+  tabLabels,
   updateActive,
   type TabList,
 } from "./tabs";
@@ -199,6 +200,50 @@ describe("pruneTabs", () => {
   test("nothing missing is a no-op", () => {
     const l = opened("a.md");
     expect(pruneTabs(l, () => true)).toBe(l);
+  });
+});
+
+describe("tabLabels", () => {
+  const labels = (...paths: string[]) =>
+    tabLabels(opened(...paths).tabs).map((l) => (l.qualifier ? `${l.name} · ${l.qualifier}` : l.name));
+
+  test("distinct names are shown bare", () => {
+    expect(labels("a.md", "d/b.md")).toEqual(["a", "b"]);
+  });
+
+  test("colliding names are qualified by their folder", () => {
+    expect(labels("journal/Notes.md", "projects/Notes.md")).toEqual([
+      "Notes · journal",
+      "Notes · projects",
+    ]);
+  });
+
+  test("a root note's qualifier is the root itself", () => {
+    expect(labels("Notes.md", "journal/Notes.md")).toEqual(["Notes · /", "Notes · journal"]);
+  });
+
+  test("the qualifier grows only as deep as it must to separate them", () => {
+    expect(labels("work/q3/Notes.md", "home/q3/Notes.md")).toEqual([
+      "Notes · work/q3",
+      "Notes · home/q3",
+    ]);
+    // One level is enough here, so the deeper folders stay out of it.
+    expect(labels("work/q3/Notes.md", "work/q4/Notes.md")).toEqual([
+      "Notes · q3",
+      "Notes · q4",
+    ]);
+  });
+
+  test("a collision between three notes qualifies all of them", () => {
+    expect(labels("a/N.md", "b/N.md", "c/N.md")).toEqual(["N · a", "N · b", "N · c"]);
+  });
+
+  test("only the colliding names are qualified", () => {
+    expect(labels("a/N.md", "b/N.md", "other.md")).toEqual(["N · a", "N · b", "other"]);
+  });
+
+  test("no tabs, no labels", () => {
+    expect(tabLabels([])).toEqual([]);
   });
 });
 

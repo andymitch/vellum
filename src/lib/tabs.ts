@@ -175,6 +175,48 @@ export function pruneTabs(l: TabList, exists: (path: string) => boolean): TabLis
   return { tabs, active: want === -1 ? Math.min(l.active, tabs.length - 1) : want };
 }
 
+/** What a tab shows: the note's name, plus enough folder to tell it apart. */
+export interface TabLabel {
+  name: string;
+  /** Empty unless another open tab has the same name. */
+  qualifier: string;
+}
+
+const stem = (path: string) => path.split("/").pop()!.replace(/\.md$/, "");
+
+/**
+ * Label every tab, qualifying the ones whose names collide with the *shortest*
+ * trailing folder path that tells them apart — `journal/Notes` and
+ * `projects/Notes` become "Notes · journal" and "Notes · projects", and a
+ * deeper clash (`work/q3/Notes`, `home/q3/Notes`) grows to "work/q3" rather
+ * than stopping at an ambiguous "q3". A note at the vault root is qualified
+ * with "/", since it has no folder to name.
+ *
+ * Only collisions are qualified: the common case of distinct names stays a
+ * bare filename, which is what a tab has room for.
+ */
+export function tabLabels(tabs: Tab[]): TabLabel[] {
+  const labels = tabs.map((t) => ({ name: stem(t.path), qualifier: "" }));
+  const byName = new Map<string, number[]>();
+  labels.forEach((l, i) => byName.set(l.name, [...(byName.get(l.name) ?? []), i]));
+  for (const group of byName.values()) {
+    if (group.length < 2) continue;
+    // Folder segments above the filename, nearest first.
+    const dirs = group.map((i) => tabs[i].path.split("/").slice(0, -1));
+    const deepest = Math.max(...dirs.map((d) => d.length));
+    for (let depth = 1; depth <= Math.max(deepest, 1); depth++) {
+      const qualifiers = dirs.map((d) => d.slice(Math.max(0, d.length - depth)).join("/") || "/");
+      group.forEach((i, n) => (labels[i].qualifier = qualifiers[n]));
+      // Done as soon as this depth separates them; a deeper path would only be
+      // noise. Two notes with the same name can't share a folder, so a depth
+      // exists that works — unless one of them *is* at the root, which "/"
+      // already distinguishes.
+      if (new Set(qualifiers).size === qualifiers.length) break;
+    }
+  }
+  return labels;
+}
+
 /**
  * Validate a persisted list. Anything malformed is dropped rather than trusted:
  * this is user-editable localStorage, and a bad `active` index or a duplicated
