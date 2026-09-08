@@ -402,32 +402,33 @@ fn apply_text_diff(text: &TextRef, txn: &mut TransactionMut, old: &str, new: &st
 /// covered from an edit that outlived it.
 struct Deletion {
     /// When the newest deletion of this key happened, in the microseconds an
-    /// entry timestamp uses. Only used for authors the deleting device had not
-    /// synced with, whose entries it therefore could not name.
+    /// entry timestamp uses.
     at: u64,
-    /// Per author, the entry timestamp the deletion covered. Comparing an
-    /// author's entry against a timestamp that same author stamped keeps
-    /// deletion out of the business of comparing two devices' wall clocks:
-    /// iroh-docs timestamps entries with `SystemTime::now` and validates only
-    /// that they are not more than ten minutes in the *future*, so a phone
-    /// running minutes behind would otherwise have its edits silently dropped.
+    /// Per author, the newest entry timestamp the deletion covered.
     covered: std::collections::HashMap<AuthorId, u64>,
 }
 
 impl Deletion {
     /// Whether this deletion deleted the given entry — i.e. whether the entry
-    /// is part of what the user threw away, rather than an edit made after.
+    /// is part of what the user threw away, rather than an edit that outlived
+    /// it. An edit made after a deletion keeps the note: that is a real "I
+    /// deleted this" / "I kept writing" conflict, and dropping it would be data
+    /// loss of its own.
+    ///
+    /// "After" is the moment of the deletion, which makes this the one decision
+    /// in the vault that compares two devices' clocks. It has to be: the same
+    /// question is asked by `list_entries` and `key_exists`, which have only
+    /// entry timestamps to go on, and a note that reads live while the tree
+    /// says deleted is worse than either answer on its own.
+    ///
+    /// The per-author set is what a timestamp alone can't do. iroh-docs stamps
+    /// entries from the local clock and rejects only those more than ten
+    /// minutes in the *future*, so a device running ahead can write an entry
+    /// timestamped after a deletion that in fact preceded it. Naming the entry
+    /// the deletion actually covered — by that author's own clock — deletes it
+    /// anyway.
     fn covers(&self, author: AuthorId, timestamp: u64) -> bool {
-        match self.covered.get(&author) {
-            // The deleting device saw this author's entry and deleted it. Newer
-            // than what it saw is a genuine "I deleted this" / "I kept writing"
-            // conflict, and the note lives.
-            Some(&seen) => timestamp <= seen,
-            // An author whose entry had not arrived when the delete happened.
-            // Nothing to compare against but the moment of the deletion, so
-            // this is the one case where two clocks meet.
-            None => timestamp < self.at,
-        }
+        timestamp < self.at || self.covered.get(&author).is_some_and(|&seen| timestamp <= seen)
     }
 }
 
@@ -445,16 +446,17 @@ struct TombRecord {
     covered: BTreeMap<String, u64>,
 }
 
-/// What deletions this device knows about for a note key, or `None` if nobody
-/// ever deleted it.
+/// The deletions recorded for a note key, folded together with the tombstone
+/// moments the caller has already seen at the key itself (`tombstoned`), or
+/// `None` if nobody ever deleted it.
 ///
-/// Two sources, because neither is sufficient alone. A tombstone is an empty
-/// value, so it takes `include_empty` to see at all — and it does not survive:
-/// iroh-docs keeps one entry per (key, author), so the deleting device's own
-/// next write at that key replaces its tombstone and erases the fact of the
-/// deletion. Which is exactly the case that matters, since recreating a note at
-/// a freed name is supported (#48). So a delete also records what it deleted
-/// under a reserved key that note writes never touch.
+/// Both sources are needed, because neither is sufficient alone. A tombstone is
+/// an empty value, so it takes `include_empty` to see at all — and it does not
+/// survive: iroh-docs keeps one entry per (key, author), so the deleting
+/// device's own next write at that key replaces its tombstone and erases the
+/// fact of the deletion. Which is exactly the case that matters, since
+/// recreating a note at a freed name is supported (#48). So a delete also
+/// records what it deleted under a reserved key that note writes never touch.
 ///
 /// A record that hasn't downloaded still counts, at its own entry timestamp:
 /// otherwise a device returning from a long spell offline would revive its own
@@ -465,23 +467,15 @@ async fn deletion_of(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     key: &[u8],
+    tombstoned: Option<u64>,
 ) -> Result<Option<Deletion>> {
-    let mut at: Option<u64> = None;
+    let mut at: Option<u64> = tombstoned;
     let mut covered: std::collections::HashMap<AuthorId, u64> = Default::default();
     let consider = |t: u64, at: &mut Option<u64>| {
         if at.is_none_or(|n| t > n) {
             *at = Some(t);
         }
     };
-
-    let mut stream = Box::pin(doc.get_many(Query::key_exact(key).include_empty()).await?);
-    while let Some(entry) = stream.next().await {
-        let entry = entry?;
-        if entry.content_len() == 0 {
-            consider(entry.timestamp(), &mut at);
-        }
-    }
-    drop(stream);
 
     // Every device's record, since each keeps its own entry for the key.
     let mut stream = Box::pin(doc.get_many(Query::key_exact(tomb_key(key))).await?);
@@ -570,23 +564,41 @@ pub async fn merged_note(
     let mut found = false;
     let mut waiting_on_blob = false;
     let mut undecodable = false;
+
+    // One pass over the key, tombstones included: there is one entry per author,
+    // so this is a handful of rows, and taking them together means the deletion
+    // and the entries it judges come from a single query rather than two.
+    let mut live = Vec::new();
+    let mut tombstoned: Option<u64> = None;
+    let mut stream = Box::pin(doc.get_many(Query::key_exact(key).include_empty()).await?);
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        if entry.content_len() == 0 {
+            if tombstoned.is_none_or(|t| entry.timestamp() > t) {
+                tombstoned = Some(entry.timestamp());
+            }
+            continue;
+        }
+        live.push(entry);
+    }
+    drop(stream);
+
     // What the note's deletion deleted, if anyone ever deleted it. Deletion has
     // to be part of the merge, not a separate check on top of it (#254):
     // pruning in iroh-docs is author-scoped, so one device's tombstone never
     // displaces another's entry, and merging every author's entry regardless of
     // that tombstone brought deleted text back the moment anyone wrote at the
     // key again.
-    let deletion = deletion_of(node, doc, key).await?;
-    let mut stream = Box::pin(doc.get_many(Query::key_exact(key)).await?);
-    while let Some(entry) = stream.next().await {
-        let entry = entry?;
-        if entry.content_len() == 0 {
-            continue; // tombstone (deleted by some author)
-        }
-        // An entry the deletion covered is what the user threw away. One made
-        // *after* is an edit that outlived it — a genuine conflict between "I
-        // deleted this" and "I kept writing", and dropping it would be its own
-        // data loss, so it stands and the note lives.
+    let deletion = if live.is_empty() && tombstoned.is_none() {
+        // Nothing at the key at all — the overwhelmingly common shape for a
+        // path that was never written. No deletion to look up.
+        None
+    } else {
+        deletion_of(node, doc, key, tombstoned).await?
+    };
+
+    for entry in live {
+        // An entry the deletion covered is what the user threw away.
         if deletion
             .as_ref()
             .is_some_and(|d| d.covers(entry.author(), entry.timestamp()))
@@ -618,7 +630,7 @@ pub async fn merged_note(
         // is at the key that we must not write over. Everything else that comes
         // back empty — no entry, only tombstones, only entries the deletion
         // covered — is a key with nothing at it.
-        (false, false, true) => NoteRead::Nothing,
+        (false, false, true) => NoteRead::Unreadable,
         (false, false, false) => NoteRead::Deleted,
     };
     Ok((ydoc, state))
@@ -642,7 +654,7 @@ pub enum NoteRead {
     /// Nothing at the key: no entry at all, or every one of them deleted.
     Deleted,
     /// An entry whose content is here and doesn't decode.
-    Nothing,
+    Unreadable,
 }
 
 /// Why a write declined to touch a note. Each is a fact about the note's
@@ -687,7 +699,7 @@ impl WriteRefused {
             NoteRead::Text => None,
             NoteRead::AwaitingContent => Some(Self::Syncing),
             NoteRead::Deleted => Some(Self::Deleted),
-            NoteRead::Nothing => Some(Self::Unreadable),
+            NoteRead::Unreadable => Some(Self::Unreadable),
         }
     }
 }
@@ -768,7 +780,7 @@ pub async fn write_note_merged(
         // a new note, so the user isn't stuck with an unwritable note and
         // nowhere to put what they typed. And a linked folder skips just this
         // path instead of abandoning the whole reconcile pass.
-        NoteRead::Nothing => {
+        NoteRead::Unreadable => {
             tracing::warn!(
                 key = %String::from_utf8_lossy(key),
                 "stored note content does not decode; refusing to overwrite it"
@@ -2254,6 +2266,12 @@ pub async fn rename_key(
     to: &str,
     is_dir: bool,
 ) -> Result<()> {
+    // A move onto itself would copy the note to the key it is already at and
+    // then delete that key — destroying the note and recording it deleted. The
+    // callers all refuse it before getting here; this is the backstop.
+    if from.trim_end_matches('/') == to.trim_end_matches('/') {
+        return Ok(());
+    }
     if is_dir {
         let from_prefix = format!("{}/", from.trim_end_matches('/'));
         let to_prefix = format!("{}/", to.trim_end_matches('/'));
@@ -3531,18 +3549,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A deletion decides which entries it covered by naming each author's own
-    /// entry, so the decision never compares two devices' clocks. iroh-docs
-    /// stamps entries with local wall-clock time and only validates that they
-    /// are not far in the *future*, so a device running behind would otherwise
-    /// have edits made after a delete silently dropped.
+    /// A deletion names the entry it covered for each author, not just the
+    /// moment it happened — so an entry stamped *after* the deletion is still
+    /// deleted if that is the entry the user threw away. iroh-docs stamps
+    /// entries from the local clock and accepts anything up to ten minutes in
+    /// the future, so a device running ahead produces exactly that.
     ///
-    /// Simulated by hand-writing the record so that the entry it names for the
-    /// peer is older than the peer's current one, while the deletion itself is
-    /// stamped later than both — which is exactly how an edit from a device
-    /// running behind arrives at the device that deleted the note.
+    /// Simulated by hand-writing the record with a deletion moment earlier than
+    /// the peer's entry — which is how a note deleted on a device whose clock
+    /// lags behind the peer's looks from here.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_deletion_does_not_drop_an_edit_it_never_saw() {
+    async fn a_deletion_covers_a_peer_entry_stamped_after_it() {
         let base = std::env::temp_dir().join(format!("notes-skew-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let a = init(base.join("a")).await.expect("A");
@@ -3581,26 +3598,88 @@ mod tests {
         delete_key(&a, &doc_a, "shared.md", false).await.expect("delete");
         assert!(read_note_text(&a, &doc_a, key).await.expect("read").is_none());
 
-        // Now the skew. A's record is rewritten to name an *older* entry for B
-        // than the one B holds — so B's entry was written after the delete,
-        // however the two clocks compare — while the deletion is stamped a
-        // minute past everything. B's edit must stand: this is the "I deleted
-        // this" / "I kept writing" conflict, and the note lives.
+        // A writes at the freed name, which replaces A's own tombstone — so the
+        // record is now the only thing standing between the new note and B's
+        // entry, and the timestamps it holds are all that decides.
+        write_retrying(&a, &doc_a, key, "", "a brand new note\n").await;
+
+        // The skew: A's record is rewritten as if A's clock had been a minute
+        // behind B's, so the deletion is stamped *before* the entry it deleted.
+        // Naming that entry is what still deletes it.
         let record = serde_json::json!({
-            "at": b_entry + 60_000_000,
-            "covered": { b.author.to_string(): b_entry - 1 },
+            "at": b_entry - 60_000_000,
+            "covered": { b.author.to_string(): b_entry },
         });
         doc_a
             .set_bytes(a.author, tomb_key(key), encode(&record.to_string()))
             .await
             .expect("rewrite record");
+        let after = read_note_text(&a, &doc_a, key).await.expect("read").unwrap_or_default();
         assert_eq!(
-            read_note_text(&a, &doc_a, key).await.expect("read").as_deref(),
-            Some("first\n"),
-            "a deletion stamped past a peer's edit swallowed it"
+            after, "a brand new note\n",
+            "a peer entry the deletion named came back: {after:?}"
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Every view of "does this note exist" has to give the same answer.
+    /// `list_entries` and `key_exists` decide it from entry timestamps, which
+    /// is all they have; reads and writes decide it from the merge. If those
+    /// disagree the note is invisible in the tree while still live, `free_key`
+    /// hands its name straight back, and the next note created there opens
+    /// full of conflict markers holding the ghost's text.
+    ///
+    /// The state that pulls them apart is ordinary, no clock skew needed: a
+    /// peer edits, we delete before that edit reaches us, and the edit lands
+    /// afterwards — stamped before our tombstone but after the entry our
+    /// deletion named. Built here by hand, since it depends on the order two
+    /// devices learn things.
+    #[tokio::test]
+    async fn a_listing_and_a_read_agree_about_a_deleted_note() {
+        let dir = std::env::temp_dir().join(format!("notes-agree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+        let peer = node.docs.author_create().await.expect("second author");
+
+        // The peer's entry, which our deletion is about to be told it covered
+        // — but one microsecond earlier than the entry actually here.
+        doc.set_bytes(peer, b"n.md".to_vec(), fresh_note("PEER EDIT\n")).await.expect("peer");
+        let peer_ts = doc
+            .get_one(Query::key_exact(b"n.md").author(peer))
+            .await
+            .expect("get_one")
+            .expect("peer entry")
+            .timestamp();
+
+        // Our delete, and a record built from what we knew before the peer's
+        // edit arrived.
+        doc.del(node.author, b"n.md".to_vec()).await.expect("del");
+        let record = serde_json::json!({
+            "at": peer_ts + 1,
+            "covered": { peer.to_string(): peer_ts - 1 },
+        });
+        doc.set_bytes(node.author, tomb_key(b"n.md"), encode(&record.to_string()))
+            .await
+            .expect("record");
+
+        // All four answers must match. Deleted, on every path.
+        assert!(read_note_text(&node, &doc, b"n.md").await.expect("read").is_none(), "reads live");
+        let keys = list_keys(&doc).await.expect("list");
+        assert!(!keys.contains(&"n.md".to_string()), "listed: {keys:?}");
+        assert!(!key_exists(&doc, "n.md").await.expect("exists"), "key_exists says live");
+        assert_eq!(free_key(&doc, "n.md").await.expect("free"), "n.md");
+
+        // And a new note at the freed name carries only what was typed.
+        write_note_merged(&node, &doc, b"n.md", "", "# New note\n").await.expect("recreate");
+        let after = read_note_text(&node, &doc, b"n.md").await.expect("read").unwrap_or_default();
+        assert_eq!(after, "# New note\n", "the ghost's text leaked into the new note: {after:?}");
+        assert!(!after.contains("<<<<<<<"), "conflict markers written: {after:?}");
+        let keys = list_keys(&doc).await.expect("list");
+        assert!(keys.contains(&"n.md".to_string()), "the new note isn't listed: {keys:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Moving a folder into itself would have the sweep of the old prefix
