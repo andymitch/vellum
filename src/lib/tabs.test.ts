@@ -244,6 +244,22 @@ describe("splitApart", () => {
     const l = opened("a.md");
     expect(splitApart(l, 0)).toBe(l);
   });
+
+  test("splitting a tab you aren't in doesn't navigate away from the one you are", () => {
+    // The button is hover-revealed on any joined tab, so this is reachable.
+    let l = joinTabs(opened("a.md", "b.md", "c.md"), 1, 0); // a|>b, c — active is a|b
+    l = activate(l, 1); // now in c.md
+    const after = splitApart(l, 0);
+    expect(show(after)).toBe("a.md b.md *c.md");
+    expect(activePane(after)?.path).toBe("c.md");
+  });
+
+  test("a tab left of the split keeps its place", () => {
+    let l = opened("a.md", "b.md", "c.md");
+    l = joinTabs(l, 2, 1); // a, b|>c
+    l = activate(l, 0); // in a.md
+    expect(show(splitApart(l, 1))).toBe("*a.md b.md c.md");
+  });
 });
 
 describe("setRatio", () => {
@@ -360,6 +376,23 @@ describe("renamePaths", () => {
   test("a rename that touches nothing returns the same list", () => {
     const l = opened("a.md");
     expect(renamePaths(l, "other.md", "z.md", false)).toBe(l);
+  });
+
+  test("the active note stays active through a rename that collapses a duplicate", () => {
+    let l = opened("d/a.md", "e/a.md", "d/b.md", "z.md");
+    l = activate(l, 2); // d/b.md
+    // Folder d → e: d/a.md collapses into the existing e/a.md, and the active
+    // note becomes e/b.md — which is where the star must follow it.
+    const after = renamePaths(l, "d", "e", true);
+    expect(show(after)).toBe("e/a.md *e/b.md z.md");
+    expect(activePane(after)?.path).toBe("e/b.md");
+  });
+
+  test("a rename doesn't move the keyboard to the other side of a split", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    const after = renamePaths(l, "b.md", "z.md", false);
+    expect(show(after)).toBe("*a.md|>z.md");
+    expect(activePane(after)?.path).toBe("z.md");
   });
 });
 

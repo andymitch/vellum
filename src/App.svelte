@@ -318,12 +318,9 @@
     path: string,
     opts: { focus?: boolean; pin?: boolean; newTab?: boolean } = {},
   ) {
-    // A path that has left the tabs was just renamed or deleted (those callers
-    // flush before they touch the vault), so there is nothing left to send.
-    const open = session.path;
-    const stale =
-      !!open && !session.tabs.some((t) => t.panes.some((pane) => pane.path === open));
-    if (!stale && path !== open && !(await flushSave())) return;
+    // Park what's open before the notes change. A refused save leaves them
+    // where they are, with the #253 banner saying why.
+    if (path !== session.path && !(await flushSave())) return;
     // Opening a note is what dismisses the drawer, whether or not it was
     // already the open one.
     if (mobile) setSidebar(false);
@@ -851,8 +848,13 @@
           ? `grid-template-columns:${tab.ratio}fr auto ${1 - tab.ratio}fr;`
           : "grid-template-columns:1fr;"}
       >
-        {#each shownPanes as { p, i } (p.path)}
-          {#if i > 0}
+        <!-- Deliberately unkeyed: a pane is a *slot*, and handing it a
+             different note is a prop change, not a new component. Keying by
+             path would remount on every note change — throwing away the
+             editor, its undo history, the in-flight-read guards (#123) and the
+             rename-follow that exist precisely to avoid that. -->
+        {#each shownPanes as { p, i }, at}
+          {#if at > 0}
             <Splitter
               label="Resize panes"
               value={tab.ratio * 100}

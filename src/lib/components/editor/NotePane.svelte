@@ -8,7 +8,7 @@
   // it can know back up: the view mode it was toggled into, where it was
   // scrolled, whether the chrome should hide, and that the note has been
   // edited. The host owns the tab list and decides what to do with all of that.
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
@@ -116,6 +116,17 @@
     onchrome?.(false);
     lastChromeTop = 0;
   }
+
+  // Nothing pending outlives this pane. The debounced scroll-save would
+  // otherwise fire from a destroyed pane and report a *detached* scroller's
+  // ratio — 0 — which the host would write into whichever note occupies this
+  // slot next, silently forgetting where that one was left. (Closing a tab
+  // whose note was deleted gets here without a flush, which is the case that
+  // clears these two timers otherwise.)
+  onDestroy(() => {
+    clearTimeout(saveTimer);
+    clearTimeout(scrollSaveTimer);
+  });
 
   /// The scroller the host's chrome logic should watch — whichever view is up.
   export function scroller(): HTMLElement | null {

@@ -230,7 +230,17 @@ export function splitApart(l: TabList, i: number): TabList {
     preview: false,
   }));
   const tabs = [...l.tabs.slice(0, i), ...singles, ...l.tabs.slice(i + 1)];
-  return { tabs, active: i + (t.focused === 1 ? 1 : 0) };
+  // Splitting the tab you're in keeps you in the note you had the keyboard in.
+  // Splitting some *other* tab — its button is reachable on hover — must not
+  // navigate: stay where you were, one index further along for the tab the
+  // split just inserted.
+  const active =
+    l.active === i
+      ? i + (t.focused === 1 ? 1 : 0)
+      : l.active > i
+        ? l.active + 1
+        : l.active;
+  return { tabs, active };
 }
 
 /** Drag the divider between a joined tab's panes. */
@@ -298,9 +308,13 @@ export function renamePaths(l: TabList, from: string, to: string, isDir: boolean
       seen.add(path);
       panes.push(path === p.path ? p : { ...p, path });
     }
-    if (panes.length) tabs.push(withPanes(t, panes));
+    if (panes.length) tabs.push(withPanes(t, panes, moved(t.panes[t.focused]?.path ?? "")));
   }
-  return { tabs, active: relocate(tabs, activePath, l.active) };
+  // The active note is wherever the rename put it, not where it was.
+  return {
+    tabs,
+    active: relocate(tabs, activePath === undefined ? undefined : moved(activePath), l.active),
+  };
 }
 
 /** Drop panes whose note was deleted (or that sat inside a deleted folder). */
@@ -326,10 +340,13 @@ export function pruneTabs(l: TabList, exists: (path: string) => boolean): TabLis
   return { tabs, active: relocate(tabs, activePath, l.active) };
 }
 
-/** Rebuild a tab around a shorter pane list, keeping the focus on a survivor. */
-function withPanes(t: Tab, panes: Pane[]): Tab {
+/**
+ * Rebuild a tab around a new pane list, keeping the keyboard in the note that
+ * had it. `focusedPath` is that note's path *in the new list*, which a rename
+ * has to supply — the tab's own copy still says where it used to be.
+ */
+function withPanes(t: Tab, panes: Pane[], focusedPath = t.panes[t.focused]?.path): Tab {
   if (panes.length === t.panes.length && panes.every((p, i) => p === t.panes[i])) return t;
-  const focusedPath = t.panes[t.focused]?.path;
   const focused = panes.findIndex((p) => p.path === focusedPath);
   return { ...t, panes, focused: focused === -1 ? 0 : focused };
 }
