@@ -14,7 +14,8 @@
   // Finishing a chunk is Return, and Shift+Return inserts a line break;
   // editorSettings.journalReturnNewline swaps the two. Neither applies on
   // mobile, where Enter is always a line break and finishing means dismissing
-  // the keyboard (which blurs the field).
+  // the keyboard — watched through `kbOpen`, since a dismissed keyboard does
+  // not blur the field it was typing into (#258).
   //
   // Chunks can be dragged to reorder (desktop only). Each tracks a created
   // time and, once actually edited, an updated time. On a wide-enough pane
@@ -35,17 +36,21 @@
   } from "$lib/note-type";
   import { editorSettings } from "$lib/editor-settings.svelte";
   import { renderMarkdown, resolveWikiLink } from "$lib/render-markdown";
+  import { keyboardDismissal } from "$lib/soft-keyboard";
 
   let {
     value = $bindable(""),
     notePaths = [],
     mobile = false,
+    kbOpen = false,
     oninternallink,
     ontag,
   }: {
     value?: string;
     notePaths?: string[];
     mobile?: boolean;
+    /// Whether the soft keyboard is up, from App's visual-viewport watch.
+    kbOpen?: boolean;
     oninternallink?: (path: string, fragment?: string) => void;
     ontag?: (tag: string) => void;
   } = $props();
@@ -211,6 +216,25 @@
     if (i > 0) startEdit(i - 1, "end");
     else void focusEditor("end");
   }
+
+  // Dismissing the keyboard finishes the chunk (#258) — see soft-keyboard.ts
+  // for why that can't just be the field's own blur.
+  const kb = keyboardDismissal();
+  $effect(() => {
+    if (editingIndex === null) {
+      kb.reset();
+      return;
+    }
+    if (kb.dismissed(kbOpen)) {
+      // Blurring is what commits, which keeps this on one path with Escape and
+      // Return rather than adding a second way to finish a chunk.
+      editEl?.blur();
+      // Unless the field wasn't focused after all, in which case there was no
+      // blur to do the commit and the chunk would stay open with the keyboard
+      // already gone.
+      if (editingIndex !== null) commitEdit();
+    }
+  });
 
   function onEditKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {

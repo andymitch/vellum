@@ -1305,7 +1305,7 @@
           <p class="text-sm">Select or create a note.</p>
         </div>
       {:else if view === "journal"}
-        <JournalView bind:value={content} {mobile} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
+        <JournalView bind:value={content} {mobile} {kbOpen} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
       {:else if view === "preview"}
         <Preview
           bind:value={content}
