@@ -1326,6 +1326,7 @@
           onselect={selectTab}
           onclose={closeTab}
           ondblclick={tabDblClick}
+          onreorder={(from, to) => session.move(from, to)}
         />
       {/if}
     </div>

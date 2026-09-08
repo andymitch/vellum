@@ -121,6 +121,23 @@ export function closeTab(l: TabList, i: number): TabList {
   return { tabs, active };
 }
 
+/**
+ * Move the tab at `from` to index `to`, dragged along the strip. `to` is the
+ * index it ends up at in the new list, and the *note* that was active stays
+ * active wherever it lands — a drag rearranges the strip, it doesn't navigate.
+ */
+export function moveTab(l: TabList, from: number, to: number): TabList {
+  if (from < 0 || from >= l.tabs.length) return l;
+  const at = Math.max(0, Math.min(to, l.tabs.length - 1));
+  if (at === from) return l;
+  const activePath = activeTab(l)?.path;
+  const tabs = [...l.tabs];
+  const [moved] = tabs.splice(from, 1);
+  tabs.splice(at, 0, moved);
+  const active = tabs.findIndex((t) => t.path === activePath);
+  return { tabs, active: active === -1 ? l.active : active };
+}
+
 /** Patch the active tab — its view mode, or its scroll position. */
 export function updateActive(l: TabList, patch: Partial<Omit<Tab, "path">>): TabList {
   const t = activeTab(l);
