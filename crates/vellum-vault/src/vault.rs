@@ -473,9 +473,9 @@ async fn deletion_of(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     key: &[u8],
-    tombstoned: Option<u64>,
+    tombstoned: &std::collections::HashMap<AuthorId, u64>,
 ) -> Result<Option<Deletion>> {
-    let mut at: Option<u64> = tombstoned;
+    let mut at: Option<u64> = tombstoned.values().copied().max();
     let mut covered: std::collections::HashMap<AuthorId, u64> = Default::default();
     let consider = |t: u64, at: &mut Option<u64>| {
         if at.is_none_or(|n| t > n) {
@@ -502,13 +502,18 @@ async fn deletion_of(
             }
             // No blob, or a record written by a version we don't understand.
             // All we know is that a deletion happened at about this moment —
-            // and "about" is a shade *later* than the tombstone it was written
-            // beside, which would make the merge call an entry in between
-            // deleted while every listing still calls it live. So it only
-            // speaks when no tombstone is here to speak for it, which is the
-            // case it exists for: a device whose own later write replaced its
-            // tombstone, returning from a spell offline.
-            None if tombstoned.is_none() => consider(entry.timestamp(), &mut at),
+            // and "about" is a shade *later* than the tombstone written beside
+            // it, which would make the merge call an entry in between deleted
+            // while every listing still calls it live. So it only speaks when
+            // its own author left no tombstone here to speak for it, which is
+            // the case it exists for: a device whose own later write replaced
+            // its own tombstone, returning from a spell offline. Another
+            // author's tombstone says nothing about this record — it can be
+            // older than this deletion, and silencing the record on account of
+            // it would lose the deletion entirely.
+            None if !tombstoned.contains_key(&entry.author()) => {
+                consider(entry.timestamp(), &mut at)
+            }
             None => {}
         }
     }
@@ -582,14 +587,17 @@ pub async fn merged_note(
     // so this is a handful of rows, and taking them together means the deletion
     // and the entries it judges come from a single query rather than two.
     let mut live = Vec::new();
-    let mut tombstoned: Option<u64> = None;
+    // Per author, because a record's fallback timestamp is only displaced by a
+    // tombstone from the same author — see `deletion_of`.
+    let mut tombstoned: std::collections::HashMap<AuthorId, u64> = Default::default();
     let mut stream = Box::pin(doc.get_many(Query::key_exact(key).include_empty()).await?);
     while let Some(entry) = stream.next().await {
         let entry = entry?;
         if entry.content_len() == 0 {
-            if tombstoned.is_none_or(|t| entry.timestamp() > t) {
-                tombstoned = Some(entry.timestamp());
-            }
+            tombstoned
+                .entry(entry.author())
+                .and_modify(|t| *t = (*t).max(entry.timestamp()))
+                .or_insert(entry.timestamp());
             continue;
         }
         live.push(entry);
@@ -602,12 +610,12 @@ pub async fn merged_note(
     // displaces another's entry, and merging every author's entry regardless of
     // that tombstone brought deleted text back the moment anyone wrote at the
     // key again.
-    let deletion = if live.is_empty() && tombstoned.is_none() {
+    let deletion = if live.is_empty() && tombstoned.is_empty() {
         // Nothing at the key at all — the overwhelmingly common shape for a
         // path that was never written. No deletion to look up.
         None
     } else {
-        deletion_of(node, doc, key, tombstoned).await?
+        deletion_of(node, doc, key, &tombstoned).await?
     };
 
     for entry in live {
@@ -2240,20 +2248,44 @@ pub async fn clear_prefix(
     doc: &iroh_docs::api::Doc,
     prefix: &str,
 ) -> Result<()> {
-    let under = |keys: Vec<String>| -> Vec<String> {
-        keys.into_iter().filter(|k| k.starts_with(prefix)).collect()
-    };
-    let mut keys: BTreeSet<String> = under(list_keys(doc).await?).into_iter().collect();
+    let mut keys = keys_used_under(doc, prefix).await?;
     // Clears our own entries under the folder, plus the folder marker key
     // itself (an empty folder whose only entry is "work/"). `del` takes a
     // prefix, so there is no way to drop the marker without this side effect.
     doc.del(node.author, prefix.as_bytes().to_vec()).await?;
-    keys.extend(under(list_keys(doc).await?));
+    keys.extend(keys_used_under(doc, prefix).await?);
     for key in keys {
         doc.del(node.author, key.clone().into_bytes()).await?;
         record_deletion(node, doc, key.as_bytes()).await;
     }
     Ok(())
+}
+
+/// Every key ever used under a prefix, tombstoned ones included.
+///
+/// `list_keys` cannot answer this and shouldn't: it lists notes, and a
+/// tombstoned key is not a note. But clearing a folder is about keys, not
+/// notes, and the difference is a third class of key the listings hide — one
+/// whose newest entry is our own tombstone, from a note deleted or moved out
+/// before the folder itself went. The prefix `del` destroys that tombstone and
+/// leaves nothing at the key at all, so a peer's pre-deletion entry arriving
+/// later becomes the newest thing there: listed as a live note, read as
+/// deleted, with the deleted folder back in the tree around it.
+async fn keys_used_under(doc: &iroh_docs::api::Doc, prefix: &str) -> Result<BTreeSet<String>> {
+    let mut out = BTreeSet::new();
+    let query = Query::key_prefix(prefix.as_bytes()).include_empty();
+    let mut stream = Box::pin(doc.get_many(query).await?);
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
+        let key = entry.key();
+        if key.first() == Some(&0x00) {
+            continue; // reserved meta, never a note key
+        }
+        if let Ok(s) = std::str::from_utf8(key) {
+            out.insert(s.to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// Soft-delete: move a note under `.trash/` instead of tombstoning it. A real
@@ -3726,11 +3758,23 @@ mod tests {
         // neighbour, so the sweep has something at the prefix key as well.
         write_note_merged(&node, &doc, b"work/a.md", "", "OURS\n").await.expect("seed");
         write_note_merged(&node, &doc, b"work/b.md", "", "ALSO OURS\n").await.expect("seed");
+        // And one deleted *before* the folder was — so its key holds only our
+        // tombstone, which no note listing can see and the prefix sweep
+        // destroys. The third class of key, and the easiest to miss.
+        write_note_merged(&node, &doc, b"work/gone.md", "", "ALREADY GONE\n").await.expect("seed");
+        delete_key(&node, &doc, "work/gone.md", false).await.expect("delete note");
+
         delete_key(&node, &doc, "work", true).await.expect("delete folder");
 
-        for key in [b"work/a.md".as_slice(), b"work/b.md".as_slice()] {
+        for key in [
+            b"work/a.md".as_slice(),
+            b"work/b.md".as_slice(),
+            b"work/gone.md".as_slice(),
+        ] {
             let name = String::from_utf8_lossy(key).to_string();
-            // A tombstone at the key: an entry, with no content.
+            // A tombstone at the key: an entry, with no content. Without one, a
+            // peer's pre-deletion entry arriving later is the newest thing
+            // there — a note in the tree that reads as deleted.
             let tomb = doc
                 .get_one(Query::key_exact(key).include_empty())
                 .await
@@ -3738,13 +3782,71 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: nothing at the key to say it was deleted"));
             assert_eq!(tomb.content_len(), 0, "{name}: expected a tombstone");
             // And the durable record, which outlives that tombstone.
-            let deletion = deletion_of(&node, &doc, key, None)
+            let deletion = deletion_of(&node, &doc, key, &Default::default())
                 .await
                 .expect("deletion_of")
                 .unwrap_or_else(|| panic!("{name}: no deletion recorded"));
             assert!(deletion.at > 0, "{name}: deletion recorded without a moment");
             assert!(read_note_text(&node, &doc, key).await.expect("read").is_none());
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A deletion record whose blob hasn't arrived still counts, at its own
+    /// entry timestamp — that is what keeps a device returning from a long
+    /// spell offline from reviving its own pre-deletion entry. It is displaced
+    /// only by a tombstone from *its own* author, because another author's
+    /// tombstone can be older than this deletion, and taking that as the
+    /// deletion's moment would lose everything in between.
+    ///
+    /// `set_hash` gives an entry whose content was never downloaded, which is
+    /// what an undownloaded record looks like.
+    #[tokio::test]
+    async fn an_undownloaded_record_is_not_silenced_by_another_devices_tombstone() {
+        let dir = std::env::temp_dir().join(format!("notes-rec-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+        let peer = node.docs.author_create().await.expect("second author");
+        let other = node.docs.author_create().await.expect("third author");
+
+        // A third device's tombstone from some earlier deletion, and *then*
+        // the peer's note — so that tombstone is older than the text it would
+        // have to account for, and taking it as the deletion's moment leaves
+        // the peer's entry uncovered.
+        doc.del(other, b"n.md".to_vec()).await.expect("other's tombstone");
+        let other_ts = doc
+            .get_one(Query::key_exact(b"n.md").author(other).include_empty())
+            .await
+            .expect("get_one")
+            .expect("other's tombstone")
+            .timestamp();
+        doc.set_bytes(peer, b"n.md".to_vec(), fresh_note("PEER TEXT\n")).await.expect("peer");
+        let peer_ts = doc
+            .get_one(Query::key_exact(b"n.md").author(peer))
+            .await
+            .expect("get_one")
+            .expect("peer entry")
+            .timestamp();
+        assert!(peer_ts > other_ts, "the peer's text must postdate the older tombstone");
+
+        // Our own deletion, recorded but with its content never downloaded —
+        // and no tombstone of ours, as if our next write had replaced it.
+        let missing = iroh_blobs::Hash::new(b"a record that never downloaded");
+        doc.set_hash(node.author, tomb_key(b"n.md"), missing, 64).await.expect("record");
+        let rec_ts = doc
+            .get_one(Query::key_exact(tomb_key(b"n.md")).author(node.author))
+            .await
+            .expect("get_one")
+            .expect("record entry")
+            .timestamp();
+        assert!(rec_ts > peer_ts, "the record must postdate the entry it deletes");
+
+        // The record speaks, so the peer's text is deleted. Silenced by the
+        // third device's older tombstone, it would read as live.
+        let text = read_note_text(&node, &doc, b"n.md").await.expect("read");
+        assert!(text.is_none(), "an undownloaded record was ignored: {text:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

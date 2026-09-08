@@ -393,8 +393,10 @@ pub(crate) async fn reconcile(
             //
             // Said out loud, because a note whose bytes never decode stalls
             // this path in both directions for as long as the link lives, and
-            // a silent skip is indistinguishable from a working sync.
-            tracing::warn!(path = %rel, "skipping a path that can't be read on one side");
+            // a silent skip is indistinguishable from a working sync. Only at
+            // debug: the ordinary reason is a content blob that hasn't landed
+            // yet, which clears itself, and reconcile runs on every change.
+            tracing::debug!(path = %rel, "skipping a path that can't be read on one side");
             continue;
         }
         let vault_path = format!("{folder}{rel}");
