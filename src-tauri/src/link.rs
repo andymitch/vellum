@@ -299,31 +299,30 @@ async fn write_and_reread(
         .unwrap_or_default())
 }
 
+/// A per-path escape for the writes the vault declines. It refuses a write
+/// whose current state it cannot read — a note still syncing, one that was
+/// deleted, or one whose stored bytes do not decode (#251/#254/#255) — and one
+/// such note must not stop a linked folder syncing everything else. `Ok(None)`
+/// says skip this path; the next pass picks it up if the cause has cleared.
+///
+/// Only refusals. Anything else — a full disk, a closed replica — is a real
+/// failure and propagates, because a pass that swallowed those would skip every
+/// remaining file and still report the folder as synced.
+fn skip_refusals(result: Result<String>, rel: &str) -> Result<Option<String>> {
+    match result {
+        Ok(merged) => Ok(Some(merged)),
+        Err(e) if vault::is_refusal(&e) => {
+            tracing::warn!(path = %rel, error = %e, "skipping a note the vault would not accept");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Push local content to the vault, using the vault's own current text as the
 /// merge base — i.e. "local wins" for whatever the vault doesn't already
 /// agree on. Used when there's no better (previously-synced) base to merge
 /// against.
-/// `push_to_vault`, but a refusal only costs this path. The vault declines a
-/// write whose current state it cannot read — a note still syncing, or one whose
-/// stored bytes do not decode (#251/#255) — and one such note must not stop a
-/// linked folder syncing everything else. Returns `None` to skip; the next pass
-/// picks it up if the cause has cleared.
-async fn push_or_skip(
-    node: &Node,
-    doc: &iroh_docs::api::Doc,
-    vault_path: &str,
-    local: &str,
-    rel: &str,
-) -> Option<String> {
-    match push_to_vault(node, doc, vault_path, local).await {
-        Ok(merged) => Some(merged),
-        Err(e) => {
-            tracing::warn!(path = %rel, error = %e, "skipping a file the vault would not accept");
-            None
-        }
-    }
-}
-
 async fn push_to_vault(
     node: &Node,
     doc: &iroh_docs::api::Doc,
@@ -404,7 +403,8 @@ pub(crate) async fn reconcile(
                 // both directions, until whatever it is clears. Same treatment
                 // as a local file that won't read — skip it, try again next
                 // pass (#255).
-                let Some(merged) = push_or_skip(node, doc, &vault_path, l, &rel).await else {
+                let pushed = push_to_vault(node, doc, &vault_path, l).await;
+                let Some(merged) = skip_refusals(pushed, &rel)? else {
                     continue;
                 };
                 write_local_file(&local_path, &merged)?;
@@ -414,14 +414,24 @@ pub(crate) async fn reconcile(
             // merged against the vault's current text (answers the "non-empty
             // target directory" question from #219: union, don't require empty).
             (None, Some(v), Some(l)) => {
-                let merged = write_and_reread(node, doc, &vault_path, v, l).await?;
+                let written = write_and_reread(node, doc, &vault_path, v, l).await;
+                let Some(merged) = skip_refusals(written, &rel)? else {
+                    continue;
+                };
                 write_local_file(&local_path, &merged)?;
                 base.insert(rel, merged);
             }
             // Previously synced, local file is gone -> the user deleted it;
             // soft-delete the note rather than resurrecting the file.
             (Some(_), Some(_), None) => {
-                vault::trash_note(node, doc, &vault_path).await?;
+                // Trashing is a move, so it copies the note first and can be
+                // refused for the same reasons a write can — and skipping is
+                // right for the same reason: the file stays in `base`, so the
+                // next pass tries the delete again.
+                let trashed = vault::trash_note(node, doc, &vault_path).await;
+                if skip_refusals(trashed, &rel)?.is_none() {
+                    continue;
+                }
                 base.remove(&rel);
             }
             // Previously synced, vault note is gone (deleted or trashed) ->
@@ -441,7 +451,8 @@ pub(crate) async fn reconcile(
             (Some(h), Some(v), Some(l)) => {
                 if h == *v {
                     // Vault unchanged since last sync -> local edit, push it.
-                    let Some(merged) = push_or_skip(node, doc, &vault_path, l, &rel).await else {
+                    let pushed = push_to_vault(node, doc, &vault_path, l).await;
+                    let Some(merged) = skip_refusals(pushed, &rel)? else {
                         continue;
                     };
                     write_local_file(&local_path, &merged)?;
@@ -454,7 +465,10 @@ pub(crate) async fn reconcile(
                     // Both changed since last sync -> a real three-way merge,
                     // with the last-synced text as the base (the one case that
                     // needs it rather than just a hash).
-                    let merged = write_and_reread(node, doc, &vault_path, &h, l).await?;
+                    let written = write_and_reread(node, doc, &vault_path, &h, l).await;
+                    let Some(merged) = skip_refusals(written, &rel)? else {
+                        continue;
+                    };
                     write_local_file(&local_path, &merged)?;
                     base.insert(rel, merged);
                 }
