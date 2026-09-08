@@ -212,7 +212,21 @@
               return false;
             },
             blur: () => {
-              if (!tearingDown) focused = false;
+              // Removing the editor's DOM fires a blur of its own, and it
+              // arrives *before* Svelte runs this component's cleanup — so
+              // `tearingDown` is still false and can't catch it there. Writing
+              // `focused` from inside that teardown throws
+              // `state_unsafe_mutation`, which aborts the very flush that
+              // places the quick-edit caret (#122).
+              //
+              // A microtask lands after the flush, where the write is legal —
+              // and by then a teardown has set the flag, so the blur that only
+              // happened because the editor is going away writes nothing. A
+              // real blur is a frame's fraction late, which the toolbar this
+              // drives cannot notice.
+              queueMicrotask(() => {
+                if (!tearingDown) focused = false;
+              });
               return false;
             },
           }),
