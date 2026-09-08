@@ -7,6 +7,7 @@ import {
   activate,
   activeTab,
   closeTab,
+  moveTab,
   noTabs,
   normalize,
   openTab,
@@ -109,6 +110,52 @@ describe("closeTab", () => {
   test("an out-of-range index changes nothing", () => {
     const l = opened("a.md");
     expect(closeTab(l, 4)).toBe(l);
+  });
+});
+
+describe("moveTab", () => {
+  // `opened` leaves the last note active, and a drag rearranges the strip
+  // rather than navigating — so the active *note* keeps the star wherever the
+  // move puts it.
+  test("a tab dragged right lands at the index it was dropped on", () => {
+    const l = opened("a.md", "b.md", "c.md");
+    expect(show(moveTab(l, 0, 2))).toBe("b.md *c.md a.md");
+  });
+
+  test("a tab dragged left lands there too", () => {
+    const l = opened("a.md", "b.md", "c.md");
+    expect(show(moveTab(l, 2, 0))).toBe("*c.md a.md b.md");
+  });
+
+  test("the note that was active stays active, wherever it ends up", () => {
+    let l = opened("a.md", "b.md", "c.md");
+    l = activate(l, 1); // b.md
+    // Drag the *active* tab to the end.
+    expect(show(moveTab(l, 1, 2))).toBe("a.md c.md *b.md");
+    // Drag a different tab past it: b.md is still the active note.
+    expect(show(moveTab(l, 0, 2))).toBe("*b.md c.md a.md");
+  });
+
+  test("dropping a tab where it already is changes nothing", () => {
+    const l = opened("a.md", "b.md");
+    expect(moveTab(l, 1, 1)).toBe(l);
+  });
+
+  test("an index past the end clamps to the last position", () => {
+    const l = opened("a.md", "b.md");
+    expect(show(moveTab(l, 0, 9))).toBe("*b.md a.md");
+  });
+
+  test("dragging the only tab is a no-op", () => {
+    const l = opened("a.md");
+    expect(moveTab(l, 0, 0)).toBe(l);
+    expect(moveTab(l, 0, 1)).toBe(l);
+  });
+
+  test("an out-of-range source changes nothing", () => {
+    const l = opened("a.md", "b.md");
+    expect(moveTab(l, 5, 0)).toBe(l);
+    expect(moveTab(l, -1, 0)).toBe(l);
   });
 });
 

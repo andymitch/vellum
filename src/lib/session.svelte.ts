@@ -11,6 +11,7 @@ import {
   activate,
   activeTab,
   closeTab,
+  moveTab,
   noTabs,
   normalize,
   openTab,
@@ -127,6 +128,10 @@ export const session = {
   },
   close(i: number) {
     set(closeTab(list, i));
+  },
+  /** Reorder: the tab at `from` is dragged to index `to`. */
+  move(from: number, to: number) {
+    set(moveTab(list, from, to));
   },
   /** Promote the preview tab so the next sidebar click doesn't replace it. */
   pin(i: number) {
