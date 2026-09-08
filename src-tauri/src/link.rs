@@ -299,6 +299,26 @@ async fn write_and_reread(
         .unwrap_or_default())
 }
 
+/// A per-path escape for the writes the vault declines. It refuses a write
+/// whose current state it cannot read — a note still syncing, one that was
+/// deleted, or one whose stored bytes do not decode (#251/#254/#255) — and one
+/// such note must not stop a linked folder syncing everything else. `Ok(None)`
+/// says skip this path; the next pass picks it up if the cause has cleared.
+///
+/// Only refusals. Anything else — a full disk, a closed replica — is a real
+/// failure and propagates, because a pass that swallowed those would skip every
+/// remaining file and still report the folder as synced.
+fn skip_refusals(result: Result<String>, rel: &str) -> Result<Option<String>> {
+    match result {
+        Ok(merged) => Ok(Some(merged)),
+        Err(e) if vault::is_refusal(&e) => {
+            tracing::warn!(path = %rel, error = %e, "skipping a note the vault would not accept");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Push local content to the vault, using the vault's own current text as the
 /// merge base — i.e. "local wins" for whatever the vault doesn't already
 /// agree on. Used when there's no better (previously-synced) base to merge
@@ -331,6 +351,12 @@ pub(crate) async fn reconcile(
     std::fs::create_dir_all(local_dir)?;
 
     let mut vault_texts: HashMap<String, String> = HashMap::new();
+    // Notes that are there but that this device cannot read right now: content
+    // still downloading, or bytes that don't decode (#255). The symmetric case
+    // to `local_unreadable`, and it matters for the same reason — a note we
+    // can't read is not a note that was deleted, and treating it as one would
+    // delete the local file, which holds the last text we *could* read.
+    let mut vault_unreadable: HashSet<String> = HashSet::new();
     for entry in vault::list_entries(doc).await? {
         if vault::is_hidden_path(&entry.path) {
             continue;
@@ -341,8 +367,13 @@ pub(crate) async fn reconcile(
         if rel.is_empty() {
             continue;
         }
-        if let Some(text) = vault::read_note_text(node, doc, entry.path.as_bytes()).await? {
-            vault_texts.insert(rel.to_string(), text);
+        match vault::read_note_text(node, doc, entry.path.as_bytes()).await? {
+            Some(text) => {
+                vault_texts.insert(rel.to_string(), text);
+            }
+            None => {
+                vault_unreadable.insert(rel.to_string());
+            }
         }
     }
     let (local_texts, local_unreadable) = read_local_texts(local_dir);
@@ -351,12 +382,21 @@ pub(crate) async fn reconcile(
     all.extend(vault_texts.keys().cloned());
     all.extend(local_texts.keys().cloned());
     all.extend(local_unreadable.iter().cloned());
+    all.extend(vault_unreadable.iter().cloned());
 
     for rel in all {
-        if local_unreadable.contains(&rel) {
-            // Present on disk but unreadable right now (permission error,
-            // transient I/O, or non-UTF-8 content) — must not look like a
-            // deletion. Leave it for a later pass once it reads cleanly.
+        if local_unreadable.contains(&rel) || vault_unreadable.contains(&rel) {
+            // Present but unreadable on one side or the other — a permission
+            // error or non-UTF-8 bytes on disk, a note still syncing or one
+            // whose stored bytes don't decode in the vault. Neither is a
+            // deletion. Leave the path alone until it reads cleanly.
+            //
+            // Said out loud, because a note whose bytes never decode stalls
+            // this path in both directions for as long as the link lives, and
+            // a silent skip is indistinguishable from a working sync. Only at
+            // debug: the ordinary reason is a content blob that hasn't landed
+            // yet, which clears itself, and reconcile runs on every change.
+            tracing::debug!(path = %rel, "skipping a path that can't be read on one side");
             continue;
         }
         let vault_path = format!("{folder}{rel}");
@@ -378,7 +418,15 @@ pub(crate) async fn reconcile(
             }
             // Never synced, local-only -> push it up.
             (None, None, Some(l)) => {
-                let merged = push_to_vault(node, doc, &vault_path, l).await?;
+                // A write the vault refuses is this path's problem, not the
+                // pass's: `?` here would abandon every path sorted after it, in
+                // both directions, until whatever it is clears. Same treatment
+                // as a local file that won't read — skip it, try again next
+                // pass (#255).
+                let pushed = push_to_vault(node, doc, &vault_path, l).await;
+                let Some(merged) = skip_refusals(pushed, &rel)? else {
+                    continue;
+                };
                 write_local_file(&local_path, &merged)?;
                 base.insert(rel, merged);
             }
@@ -386,14 +434,24 @@ pub(crate) async fn reconcile(
             // merged against the vault's current text (answers the "non-empty
             // target directory" question from #219: union, don't require empty).
             (None, Some(v), Some(l)) => {
-                let merged = write_and_reread(node, doc, &vault_path, v, l).await?;
+                let written = write_and_reread(node, doc, &vault_path, v, l).await;
+                let Some(merged) = skip_refusals(written, &rel)? else {
+                    continue;
+                };
                 write_local_file(&local_path, &merged)?;
                 base.insert(rel, merged);
             }
             // Previously synced, local file is gone -> the user deleted it;
             // soft-delete the note rather than resurrecting the file.
             (Some(_), Some(_), None) => {
-                vault::trash_note(node, doc, &vault_path).await?;
+                // Trashing is a move, so it copies the note first and can be
+                // refused for the same reasons a write can — and skipping is
+                // right for the same reason: the file stays in `base`, so the
+                // next pass tries the delete again.
+                let trashed = vault::trash_note(node, doc, &vault_path).await;
+                if skip_refusals(trashed, &rel)?.is_none() {
+                    continue;
+                }
                 base.remove(&rel);
             }
             // Previously synced, vault note is gone (deleted or trashed) ->
@@ -413,7 +471,10 @@ pub(crate) async fn reconcile(
             (Some(h), Some(v), Some(l)) => {
                 if h == *v {
                     // Vault unchanged since last sync -> local edit, push it.
-                    let merged = push_to_vault(node, doc, &vault_path, l).await?;
+                    let pushed = push_to_vault(node, doc, &vault_path, l).await;
+                    let Some(merged) = skip_refusals(pushed, &rel)? else {
+                        continue;
+                    };
                     write_local_file(&local_path, &merged)?;
                     base.insert(rel, merged);
                 } else if h == *l {
@@ -424,7 +485,10 @@ pub(crate) async fn reconcile(
                     // Both changed since last sync -> a real three-way merge,
                     // with the last-synced text as the base (the one case that
                     // needs it rather than just a hash).
-                    let merged = write_and_reread(node, doc, &vault_path, &h, l).await?;
+                    let written = write_and_reread(node, doc, &vault_path, &h, l).await;
+                    let Some(merged) = skip_refusals(written, &rel)? else {
+                        continue;
+                    };
                     write_local_file(&local_path, &merged)?;
                     base.insert(rel, merged);
                 }
@@ -789,7 +853,13 @@ mod tests {
     use crate::vault::init;
 
     async fn fixture(name: &str) -> (Node, iroh_docs::api::Doc, PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("vellum-link-{name}-{}", std::process::id()));
+        // Counted as well as named: two tests that happened to pick the same
+        // name would share a data dir, and two iroh nodes on one redb store
+        // don't fail — they wait on each other until the suite times out.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let base =
+            std::env::temp_dir().join(format!("vellum-link-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let node = init(base.join("data")).await.expect("node");
         let doc = node.docs().create().await.expect("create vault");
@@ -938,6 +1008,95 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(local_dir.join("a.md")).unwrap(), "in scope");
         assert!(!local_dir.join("other.md").exists());
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// A note this device can't read is not a note that was deleted. The vault
+    /// refuses to overwrite one (#255), and reconcile has to hold the same
+    /// line: leave the path alone in both directions, keep syncing everything
+    /// else, and above all don't delete the local file — it holds the last text
+    /// that could be read.
+    #[tokio::test]
+    async fn reconcile_leaves_a_note_it_cannot_read_alone() {
+        let (node, doc, local_dir, base_dir) = fixture("unreadable-note").await;
+        // Tagged as a CRDT note, but the payload isn't a yrs update — what a
+        // value from an unknown format version looks like from here.
+        let junk = vec![0x02u8, 0xff, 0xfe, 0x00, 0x42];
+        doc.set_bytes(node.author(), b"a-bad.md".to_vec(), junk.clone()).await.unwrap();
+        doc.set_bytes(node.author(), b"z-good.md".to_vec(), crate::vault::fresh_note("fine"))
+            .await
+            .unwrap();
+        std::fs::write(local_dir.join("a-bad.md"), "the last text we could read").unwrap();
+
+        let mut base = HashMap::new();
+        // Sorted first, so a pass that gave up on it would never reach z-good.
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(local_dir.join("z-good.md")).unwrap(), "fine");
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("a-bad.md")).unwrap(),
+            "the last text we could read",
+            "the local copy was overwritten from a note that can't be read"
+        );
+        assert!(!base.contains_key("a-bad.md"), "recorded as synced: {base:?}");
+        let entry = doc
+            .get_one(iroh_docs::store::Query::single_latest_per_key().key_exact(b"a-bad.md"))
+            .await
+            .unwrap()
+            .expect("entry survives");
+        let stored = node.blobs().get_bytes(entry.content_hash()).await.unwrap();
+        assert_eq!(stored.to_vec(), junk, "the unreadable note was overwritten");
+
+        // And the other direction: a note that goes unreadable *after* it has
+        // synced must not take the local file with it.
+        doc.set_bytes(node.author(), b"z-good.md".to_vec(), junk.clone()).await.unwrap();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("z-good.md")).unwrap(),
+            "fine",
+            "an unreadable note was treated as a deletion and took the local file"
+        );
+        assert_eq!(
+            base.get("z-good.md").map(String::as_str),
+            Some("fine"),
+            "the last text that synced cleanly was forgotten"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// The common reason a note can't be read is not corruption but sync: the
+    /// entry arrives before its content blob. Same rule — not a deletion — and
+    /// this is the case that actually happens, so it gets its own test.
+    /// `set_hash` is how an entry with no downloaded content is made.
+    #[tokio::test]
+    async fn reconcile_waits_for_a_note_whose_content_has_not_arrived() {
+        let (node, doc, local_dir, base_dir) = fixture("awaiting").await;
+        doc.set_bytes(node.author(), b"note.md".to_vec(), crate::vault::fresh_note("v1"))
+            .await
+            .unwrap();
+        let mut base = HashMap::new();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(std::fs::read_to_string(local_dir.join("note.md")).unwrap(), "v1");
+
+        // A hash we never downloaded: the entry is live, its content is not
+        // here — exactly what a peer's edit looks like in the moment before
+        // the blob lands.
+        let missing = iroh_blobs::Hash::new(b"content that was never downloaded");
+        doc.set_hash(node.author(), b"note.md".to_vec(), missing, 42).await.unwrap();
+        assert!(
+            vault::read_note_text(&node, &doc, b"note.md").await.unwrap().is_none(),
+            "the note should read as unavailable"
+        );
+
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("note.md")).unwrap(),
+            "v1",
+            "a note waiting on its content was treated as deleted and took the local file"
+        );
+        assert_eq!(base.get("note.md").map(String::as_str), Some("v1"));
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
