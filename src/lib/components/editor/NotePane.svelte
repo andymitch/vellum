@@ -44,6 +44,7 @@
     onscrollratio,
     onchrome,
     onedit,
+    onactivate,
     onopen,
     ontag,
     oninternallink,
@@ -67,6 +68,8 @@
     onchrome?: (hidden: boolean) => void;
     /// The note has a local edit — enough to pin a preview tab (#169).
     onedit?: () => void;
+    /// The user pointed at this pane: in a split, that moves the keyboard here.
+    onactivate?: () => void;
     /// Open another note: the recovered copy a refused save was written to.
     onopen?: (path: string, opts?: { focus?: boolean }) => void;
     ontag?: (tag: string) => void;
@@ -835,7 +838,7 @@
 
 <!-- The pane fills its share of the row; `relative` anchors the save banner
      over this note rather than the window. -->
-<div class="relative flex min-w-0 flex-1 flex-col">
+<div class="relative flex min-w-0 flex-1 flex-col" onpointerdowncapture={() => onactivate?.()}>
     <!-- A save that isn't happening, said out loud (#253). Fixed rather than in
        flow so it can't shift the editor's layout, and offset below the header
        so it clears the floating mobile chrome. -->

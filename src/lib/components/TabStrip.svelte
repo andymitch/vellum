@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { X } from "@lucide/svelte";
+  import { X, Columns2, Ungroup } from "@lucide/svelte";
   import { isMacApp } from "$lib/platform";
-  import { tabLabels, type Tab } from "$lib/tabs";
+  import { isJoined, tabLabels, type Tab } from "$lib/tabs";
 
   let {
     tabs,
@@ -10,6 +10,8 @@
     onclose,
     ondblclick,
     onreorder,
+    onjoin,
+    onsplit,
   }: {
     tabs: Tab[];
     active: number;
@@ -20,18 +22,26 @@
     ondblclick: (i: number) => void;
     // A tab was dragged along the strip and dropped at `to` (#266).
     onreorder: (from: number, to: number) => void;
+    // A tab was dropped *onto* another one: show both notes side by side (#169).
+    onjoin: (from: number, to: number) => void;
+    // The split-apart button on a joined tab.
+    onsplit: (i: number) => void;
   } = $props();
 
   // Two notes can share a name in different folders, and a tab has no room for
   // the path — so only the ones that clash carry a folder qualifier (see
   // tabLabels).
   const labels = $derived(tabLabels(tabs));
+  const bare = (path: string) => path.replace(/\.md$/, "");
   // A pinned tab's double-click renames the note, so it's worth saying; a
-  // preview tab's promotes it, which needs no announcing.
+  // preview tab's promotes it, which needs no announcing. A joined tab names
+  // both of its notes, and renaming from it would be ambiguous.
   const tip = (tab: Tab) =>
-    tab.preview
-      ? tab.path.replace(/\.md$/, "")
-      : `${tab.path.replace(/\.md$/, "")}\nDouble-click to rename`;
+    isJoined(tab)
+      ? tab.panes.map((p) => bare(p.path)).join("  ·  ")
+      : tab.preview
+        ? bare(tab.panes[0].path)
+        : `${bare(tab.panes[0].path)}\nDouble-click to rename`;
 
   let strip = $state<HTMLElement | undefined>(undefined);
   // Whether there are tabs scrolled out of sight on either side. The strip has
@@ -84,25 +94,47 @@
   function onDragStart(e: DragEvent, i: number) {
     dragFrom = i;
     // WebKit needs setData called or the drag never starts.
-    e.dataTransfer?.setData("text/plain", tabs[i].path);
+    e.dataTransfer?.setData("text/plain", tabs[i].panes[0].path);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   }
+  // The tab a drop would join with, rather than slot beside — set when the
+  // pointer is over the middle of another tab (#169).
+  let dropOnto = $state<number | null>(null);
+
   function onDragOverTab(e: DragEvent, i: number) {
     if (dragFrom === null) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // Past the middle of a tab means the gap after it.
-    dropGap = e.clientX > box.left + box.width / 2 ? i + 1 : i;
+    const across = (e.clientX - box.left) / box.width;
+    // The middle of a tab joins the two notes; the outer thirds are the gaps
+    // either side, which reorder. Only where a join is actually possible —
+    // two panes is the limit, so over a split (or its own tab) the whole
+    // width reorders as before.
+    const joinable = i !== dragFrom && !isJoined(tabs[i]) && !isJoined(tabs[dragFrom]);
+    if (joinable && across > 0.33 && across < 0.67) {
+      dropOnto = i;
+      dropGap = null;
+      return;
+    }
+    dropOnto = null;
+    dropGap = across > 0.5 ? i + 1 : i;
   }
   function onDrop(e: DragEvent) {
     e.preventDefault();
     const from = dragFrom;
     const gap = dropGap;
+    const onto = dropOnto;
     dragFrom = null;
     dropGap = null;
-    if (from === null || gap === null) return;
+    dropOnto = null;
+    if (from === null) return;
+    if (onto !== null) {
+      onjoin(from, onto);
+      return;
+    }
+    if (gap === null) return;
     // A gap is between tabs; removing the dragged tab first shifts every gap
     // to its right down by one.
     onreorder(from, gap > from ? gap - 1 : gap);
@@ -112,6 +144,7 @@
     // moving anything.
     dragFrom = null;
     dropGap = null;
+    dropOnto = null;
   }
 
   // A trackpad swipes the strip sideways on its own; a mouse wheel only has an
@@ -153,11 +186,12 @@
     // The empty space past the last tab: dropping there sends it to the end.
     if (dragFrom === null) return;
     e.preventDefault();
+    dropOnto = null;
     dropGap = tabs.length;
   }}
   ondrop={onDrop}
 >
-  {#each tabs as tab, i (tab.path)}
+  {#each tabs as tab, i (tab.panes.map((p) => p.path).join("|"))}
     <!-- The close button is nested inside, so this is a div rather than a
          button (no interactive descendants) with the tab role doing the work. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
@@ -178,6 +212,7 @@
         : ''}"
       class:drop-before={dropGap === i && dragFrom !== null}
       class:drop-after={dropGap === i + 1 && dragFrom !== null}
+      class:drop-onto={dropOnto === i}
       style="-webkit-user-drag:element;"
       onclick={() => onselect(i)}
       ondblclick={() => ondblclick(i)}
@@ -193,14 +228,45 @@
         }
       }}
     >
-      <!-- Italic marks a preview tab: the one the next sidebar click replaces. -->
-      <span class="truncate text-sm {tab.preview ? 'italic' : ''}">{labels[i].name}</span>
-      {#if labels[i].qualifier}
-        <!-- Dimmer and smaller than the name, and the first thing truncated: it
-             is here to break a tie, not to be read. -->
-        <span class="min-w-0 shrink truncate text-xs text-muted-foreground/70"
-          >{labels[i].qualifier}</span
+      {#if isJoined(tab)}
+        <!-- A split reads as one tab naming both notes, with the icon between
+             them saying why there are two. -->
+        <Columns2 size={12} class="shrink-0 opacity-60" />
+      {/if}
+      {#each labels[i] as label, p}
+        {#if p > 0}
+          <span class="shrink-0 text-muted-foreground/40">|</span>
+        {/if}
+        <!-- Italic marks a preview tab: the one the next sidebar click replaces.
+             In a split, the pane with the keyboard is the un-dimmed one. -->
+        <span
+          class="truncate text-sm {tab.preview ? 'italic' : ''} {isJoined(tab) && p !== tab.focused
+            ? 'text-muted-foreground'
+            : ''}">{label.name}</span
         >
+        {#if label.qualifier}
+          <!-- Dimmer and smaller than the name, and the first thing truncated:
+               it is here to break a tie, not to be read. -->
+          <span class="min-w-0 shrink truncate text-xs text-muted-foreground/70"
+            >{label.qualifier}</span
+          >
+        {/if}
+      {/each}
+      {#if isJoined(tab)}
+        <!-- Put the two notes back in tabs of their own. Hover-revealed like
+             the close button, and beside it, since both are "undo this tab". -->
+        <button
+          type="button"
+          class="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          aria-label="Split {labels[i].map((l) => l.name).join(' and ')} into separate tabs"
+          title="Split into separate tabs"
+          onclick={(e) => {
+            e.stopPropagation();
+            onsplit(i);
+          }}
+        >
+          <Ungroup size={12} />
+        </button>
       {/if}
       <!-- Reserved space rather than a mounted-on-hover button, so the tab
            doesn't change width under the pointer as you move along the strip. -->
@@ -210,8 +276,8 @@
         active
           ? 'opacity-60'
           : ''}"
-        aria-label="Close {labels[i].name}"
-        title="Close"
+        aria-label="Close {labels[i].map((l) => l.name).join(' and ')}"
+        title={isJoined(tab) ? "Close both" : "Close"}
         onclick={(e) => {
           e.stopPropagation();
           onclose(i);
@@ -249,6 +315,11 @@
   }
   .drop-after::after {
     right: 0;
+  }
+  /* The tab a drop would join with: ringed rather than barred, since the two
+     notes merge into it instead of slotting beside it. */
+  .drop-onto {
+    box-shadow: inset 0 0 0 2px var(--primary);
   }
   /* Fade whichever edge has tabs behind it. Masking the strip's own box (not
      its content) means the fade stays at the edge as the content scrolls under
