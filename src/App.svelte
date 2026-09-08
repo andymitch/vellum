@@ -6,6 +6,7 @@
   import Preview from "$lib/components/editor/Preview.svelte";
   import JournalView from "$lib/components/editor/JournalView.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
+  import TabStrip from "$lib/components/TabStrip.svelte";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
@@ -51,7 +52,9 @@
   } from "@lucide/svelte";
 
   type Mode = "source" | "preview";
-  let mode = $state<Mode>(session.mode);
+  // The view mode belongs to the active tab (#169), so it lives in the session
+  // store rather than here — switching tabs switches mode with it.
+  const mode = $derived<Mode>(session.mode);
   // The scrollable element differs by mode: CodeMirror scrolls inside its own
   // `.cm-scroller`, while the preview scrolls the <main> element itself.
   let mainEl = $state<HTMLElement | undefined>(undefined);
@@ -101,7 +104,6 @@
     if (m === "preview") quickEditActive = false;
     const ratio = scrollRatio(mode);
     resetChrome();
-    mode = m;
     session.mode = m;
     session.scroll = ratio;
     await tick();
@@ -193,14 +195,6 @@
       if (activePath) session.scroll = scrollRatio(mode);
     }, 150);
   }
-  // Captured at init, before the sidebar's launch sequence clears session.path
-  // (via onvaultchange). Used to restore scroll for the note reopened on launch.
-  const initialPath = session.path;
-  const initialScroll = session.scroll;
-  // Set once we've handled the first (launch-restore) note open, so subsequent
-  // opens start at the top instead of inheriting the restored ratio.
-  let didFirstOpen = false;
-
   const mobileInit = window.matchMedia("(max-width: 767px)").matches;
   let mobile = $state(mobileInit);
   // The installed macOS app uses an Overlay titlebar (traffic lights float over our
@@ -335,14 +329,24 @@
     drawerPan = null;
   }
 
-  let activeVault = $state<string | null>(null);
   // Search palette (#15). `searchInitial` seeds the query when opened from a
   // tag chip in the preview, so the tag is pre-filtered.
   let searchOpen = $state(false);
   let searchInitial = $state("");
-  let activePath = $state<string | null>(null);
+  // The open vault and the active tab's note both live in the session store, so
+  // the tab strip, the sidebar highlight and the editor can't disagree about
+  // which note is open (#169).
+  const activeVault = $derived(session.vault);
+  const activePath = $derived(session.path);
+  // Only the active tab holds a buffer: switching tabs flushes the pending save
+  // and re-reads the note it lands on (see syncActive). `loadedVault`/
+  // `loadedPath` say which note `content` belongs to — which is *not* always
+  // the active one, since the read is async and the flush of the outgoing note
+  // has to know where to send its text.
   let content = $state("");
   let lastLoaded = $state("");
+  let loadedVault: string | null = null;
+  let loadedPath: string | null = null;
 
   // Note types (#104). A typed note renders one way only, so it hides the
   // source/preview control and shows its own header actions instead.
@@ -360,6 +364,9 @@
 
   // Editor handle + focus, for the mobile markdown toolbar.
   let editorView = $state<EditorView | undefined>(undefined);
+  // Journal handle, so a chunk being edited can be committed before we leave
+  // the note it belongs to (see flushSave).
+  let journalView = $state<JournalView | undefined>(undefined);
   let editorFocused = $state(false);
   // Whether the soft keyboard is up. The toolbar is anchored to the keyboard, so
   // it must hide when the keyboard is dismissed even if the editor keeps focus.
@@ -697,7 +704,7 @@
 
   function openInternalLink(path: string, fragment: string | undefined) {
     if (!activeVault) return;
-    if (path !== activePath) handleOpen(activeVault, path);
+    if (path !== activePath) openNote(activeVault, path);
     if (!fragment) return;
     const sel = `#${CSS.escape(slugify(fragment))}`;
     let done = false;
@@ -715,66 +722,189 @@
       }, d);
   }
 
-  async function handleOpen(vault: string, path: string, focus = false) {
+  // ---- Tabs (#169) ----
+  //
+  // The tab list is the session store's; this side owns the buffer for the
+  // *active* tab only. Everything that changes which tab is active ends in
+  // syncActive(), which is the one place the buffer is swapped.
+
+  /**
+   * Bring the buffer in line with the active tab: drop the outgoing text and
+   * read the note we've landed on. Callers park the outgoing tab (flushSave)
+   * *before* they change which tab is active, since that is the last moment its
+   * pending edit and scroll position can be written to the right note.
+   *
+   * Every state change up to the first await is synchronous on purpose. The
+   * autosave effect keys off (activePath, content), and if it ever observed the
+   * outgoing note's text against the incoming note's path it would write one
+   * over the other.
+   */
+  async function syncActive() {
+    const v = session.vault;
+    const p = session.path;
+    if (v === loadedVault && p === loadedPath) return;
     clearTimeout(saveTimer);
-    // Reopening is a fresh start: whatever the backend last refused belonged to
-    // the note as it was, and holding on to it would silently block saving that
-    // same text again.
-    rejectedEdit = null;
-    saveBlocked = null;
-    resetChrome();
-    // Restore the saved scroll only for the note reopened at launch; any other
-    // open (or switching notes) starts at the top.
-    const restoreRatio =
-      !didFirstOpen && initialPath && path === initialPath ? initialScroll : 0;
-    didFirstOpen = true;
-    activeVault = vault;
-    activePath = path;
-    session.vault = vault;
-    session.path = path;
-    session.scroll = restoreRatio;
-    // A new note always opens in source mode so the user can type right away.
-    if (focus && mode !== "source") {
-      mode = "source";
-      session.mode = "source";
-    }
-    focusNewNote = focus;
-    // Clear the previous note's text before the (async) read so the new note
-    // never briefly shows the old content while readNote resolves (#44). Set
-    // lastLoaded too so the autosave effect doesn't treat this as an edit.
+    loadedVault = v;
+    loadedPath = p;
+    // Clear before the (async) read so the new note never briefly shows the old
+    // content (#44). lastLoaded too, so the autosave effect sees no edit.
     content = "";
     lastLoaded = "";
-    content = await readNote(vault, path);
-    lastLoaded = content;
+    // Whatever the backend last refused belonged to the note we just left, and
+    // holding on to it would block saving that same text there again.
+    rejectedEdit = null;
+    saveBlocked = null;
+    // A quick edit belongs to the note it started in.
+    quickEditActive = false;
+    resetChrome();
+    if (!v || !p) return;
+    const text = await readNote(v, p);
+    // We may have moved on again while the read was in flight — e.g. creating a
+    // note fires vault-changed, and opening it swaps tabs mid-read (#123).
+    if (v !== loadedVault || p !== loadedPath) return;
+    content = text;
+    lastLoaded = text;
     openToken++;
-    if (mobile) setSidebar(false);
     await tick();
     // The remounted Editor read focusNewNote via its focusOnMount prop and
     // focused itself; clear the flag so the next (non-new) open doesn't.
     focusNewNote = false;
-    applyScrollRestore(mode, restoreRatio);
+    // Each tab remembers where it was left, so this restores on every switch,
+    // not just at launch.
+    applyScrollRestore(mode, session.scroll);
   }
 
-  function handleVaultChange(vault: string | null) {
+  /**
+   * Park the active tab before its buffer is dropped: write where it was left,
+   * and land any edit the 400ms debounce hasn't sent yet. Returns false if that
+   * write failed — the caller then leaves the note open rather than throwing
+   * the text away, and the #253 banner says why (its "Save a copy" is the way
+   * out).
+   *
+   * Runs while the tab is still the active one, which is what makes the two
+   * session writes land on it rather than on the tab we're moving to.
+   */
+  async function flushSave(): Promise<boolean> {
     clearTimeout(saveTimer);
-    resetChrome();
-    activeVault = vault;
-    activePath = null;
-    content = "";
-    lastLoaded = "";
+    // A journal chunk mid-edit lives in the view's own state until something
+    // finishes it — normally the blur from clicking elsewhere. A hotkey moves
+    // no focus, so ask for it explicitly, while this is still the open note.
+    journalView?.commitPending();
+    // The debounced scroll-save may not have fired yet, and afterwards it would
+    // credit this tab's position to the next one.
+    clearTimeout(scrollSaveTimer);
+    if (loadedPath) session.scroll = scrollRatio(mode);
+    const v = loadedVault;
+    const p = loadedPath;
+    const c = content;
+    const base = lastLoaded;
+    if (!v || !p || c === base) return true;
+    if (rejectedEdit && rejectedEdit.path === p && rejectedEdit.content === c) return false;
+    lastLoaded = c;
+    if (await saveNote(v, p, c, base)) return true;
+    // Restore the base so the debounced save retries this edit, exactly as it
+    // does when a debounced write fails.
+    if (lastLoaded === c) lastLoaded = base;
+    return false;
+  }
+
+  async function openNote(
+    vault: string,
+    path: string,
+    opts: { focus?: boolean; pin?: boolean; newTab?: boolean } = {},
+  ) {
+    // A path that has left the tabs was just renamed or deleted (those callers
+    // flush before they touch the vault), so there is nothing left to send.
+    const stale = !!loadedPath && !session.tabs.some((t) => t.path === loadedPath);
+    if (!stale && path !== loadedPath && !(await flushSave())) return;
+    // Opening a note is what dismisses the drawer, whether or not it was
+    // already the open one.
+    if (mobile) setSidebar(false);
+    session.vault = vault; // closes the tabs if this is a different vault
+    // Mobile keeps the single-note view — there is no strip to switch or close
+    // tabs with, so opening a note there closes the last one rather than
+    // stacking up a list nobody can see.
+    if (mobile && path !== session.path) session.closeAll();
+    // A note we just created is pinned: you're about to type in it, and a
+    // preview tab would be replaced by the next thing clicked in the sidebar.
+    session.open(path, { pin: opts.pin || opts.focus, newTab: opts.newTab });
+    // A new note always opens in source mode so the user can type right away.
+    if (opts.focus) session.mode = "source";
+    focusNewNote = !!opts.focus;
+    await syncActive();
+  }
+
+  async function selectTab(i: number) {
+    if (i === session.active) return;
+    if (!(await flushSave())) return;
+    session.activate(i);
+    await syncActive();
+  }
+
+  /**
+   * Double-clicking a tab promotes it: a preview tab gets pinned, and a tab
+   * that is already pinned opens the rename dialog — which is where the
+   * breadcrumb's double-click-to-rename went when tabs took its place (#52).
+   */
+  async function tabDblClick(i: number) {
+    const t = session.tabs[i];
+    if (!t) return;
+    if (t.preview) {
+      session.pin(i);
+      return;
+    }
+    await selectTab(i);
+    if (session.active === i && session.tabs[i]?.path === t.path) sidebar?.renameActive();
+  }
+
+  async function closeTab(i: number) {
+    // Only the active tab holds a buffer, so only closing that one can lose an
+    // edit that hasn't landed yet.
+    if (i === session.active && !(await flushSave())) return;
+    session.close(i);
+    await syncActive();
+  }
+
+  // A note (or a folder of them) renamed anywhere — the sidebar's rename, a
+  // drag in the tree, or Move in the settings sheet. Tabs follow it, including
+  // background ones, so none is left pointing at a path that no longer exists.
+  async function notesRenamed(from: string, to: string, isDir: boolean) {
+    if (loadedPath === from) loadedPath = to;
+    else if (isDir && loadedPath?.startsWith(from + "/"))
+      loadedPath = to + loadedPath.slice(from.length);
+    session.renamed(from, to, isDir);
+    await syncActive();
+  }
+
+  // Deleted, likewise: its tabs go. Nothing is flushed — the note is gone.
+  async function notesRemoved(path: string, isDir: boolean) {
+    session.removed(path, isDir);
+    await syncActive();
+  }
+
+  async function handleVaultChange(vault: string | null) {
+    // Only worth flushing when we're leaving a vault we had open; the launch
+    // sequence reports the restored vault as a "change" with nothing loaded.
+    if (loadedPath) await flushSave();
+    // Setting the vault closes the tabs when it differs from the one they were
+    // opened in — and keeps them when it doesn't, which is the launch restore.
     session.vault = vault;
-    session.path = null;
+    needsPrune = true;
+    await syncActive();
   }
 
-  function closeNote() {
-    clearTimeout(saveTimer);
-    rejectedEdit = null;
-    saveBlocked = null;
-    resetChrome();
-    activePath = null;
-    content = "";
-    lastLoaded = "";
-    session.path = null;
+  // Restored tabs are pruned against the first tree we see for the vault: a
+  // note may have been deleted on another device since we last ran. Once only —
+  // a note created later is opened before it reaches the tree, and pruning
+  // again would close it.
+  let needsPrune = true;
+  async function handleTree(t: TreeNode[]) {
+    tree = t;
+    if (!needsPrune || !session.vault) return;
+    needsPrune = false;
+    const files = new Set([...walk(t)].filter((n) => !n.is_dir).map((n) => n.path));
+    session.prune((p) => files.has(p));
+    await syncActive();
   }
 
   // FAB / Cmd+N: one tap creates and opens an "Untitled" note in the current
@@ -784,8 +914,9 @@
     sidebar?.newUntitledNote(currentDir);
   }
 
-  // Breadcrumb rename: long-press (mobile) mirrors the double-click (desktop)
-  // path; both open the sidebar's rename prompt for the active note (#52).
+  // Breadcrumb rename (mobile, where the header carries the note's path):
+  // long-press opens the sidebar's rename prompt for the active note (#52).
+  // Desktop reaches the same prompt by double-clicking the note's tab.
   let crumbPressTimer: ReturnType<typeof setTimeout> | undefined;
   function crumbPressStart() {
     crumbPressTimer = setTimeout(() => {
@@ -800,17 +931,19 @@
   // File actions (from the settings sheet).
   async function moveNote(dir: string) {
     if (!activeVault || !activePath) return;
-    clearTimeout(saveTimer);
-    const base = activePath.split("/").pop()!;
+    // Land any pending edit before the note moves out from under it.
+    await flushSave();
+    const from = activePath;
+    const base = from.split("/").pop()!;
     const to = dir ? `${dir}/${base}` : base;
-    await renamePath(activeVault, activePath, to, false);
-    handleOpen(activeVault, to);
+    await renamePath(activeVault, from, to, false);
+    await notesRenamed(from, to, false);
   }
   // Duplicate the note in the same folder as "X (copy).md" (or "X (copy N).md").
   async function duplicateNote() {
     if (!activeVault || !activePath) return;
     const finalPath = await duplicateNoteFile(activeVault, activePath, tree);
-    handleOpen(activeVault, finalPath);
+    openNote(activeVault, finalPath, { pin: true });
   }
   // Import/export run through native dialogs + the backend; surface any failure
   // instead of letting the promise reject silently (#79).
@@ -821,7 +954,7 @@
     if (!activeVault) return;
     try {
       const created = await importNoteMd(activeVault, currentDir);
-      if (created) handleOpen(activeVault, created);
+      if (created) openNote(activeVault, created, { pin: true });
     } catch (e) {
       reportTransferError(e);
     }
@@ -836,8 +969,9 @@
   async function deleteNote() {
     if (!activeVault || !activePath) return;
     clearTimeout(saveTimer);
-    await deletePath(activeVault, activePath, false);
-    closeNote();
+    const path = activePath;
+    await deletePath(activeVault, path, false);
+    await notesRemoved(path, false);
   }
 
   // The edit a save last failed on, for any reason the backend didn't mark as
@@ -872,9 +1006,46 @@
       await writeNote(v, created, text, "");
       saveBlocked = null;
       rejectedEdit = null;
-      await handleOpen(v, created, true);
+      // The words are safe in the copy now, so the buffer has nothing pending —
+      // say so, or opening the copy would try (and fail) to flush it back to
+      // the note that wouldn't take it, and refuse to switch.
+      lastLoaded = content;
+      await openNote(v, created, { focus: true });
     } catch (e) {
       console.error("could not save a copy", e);
+    }
+  }
+
+  /**
+   * Write one note, and own what the failure means (#251/#253). Returns whether
+   * it landed; the caller decides what to do with the buffer, since the
+   * debounced save and the flush-on-tab-switch answer that differently.
+   */
+  async function saveNote(v: string, p: string, c: string, base: string): Promise<boolean> {
+    try {
+      await writeNote(v, p, c, base);
+      rejectedEdit = null;
+      saveBlocked = null;
+      return true;
+    } catch (e) {
+      // Retrying is the exception, not the rule: only a write that says it is
+      // waiting on a sync will succeed if we just try again. Anything else
+      // fails identically every time, and since the caller rolls the base back
+      // to retry, that would be a 400ms loop with no end. Latching on "not
+      // retryable" rather than listing the failures that aren't keeps a future
+      // error from reintroducing that loop.
+      if (!String(e).includes("still syncing")) {
+        rejectedEdit = { path: p, content: c };
+        // Say so, rather than leaving the note looking saved (#253). The
+        // deleted case is worth naming; anything else is honest but vague.
+        saveBlocked = String(e).includes("no longer exists")
+          ? "This note was deleted on another device, so your changes aren't being saved."
+          : String(e).includes("can't be read")
+            ? "This note's saved content can't be read, so your changes aren't being saved."
+            : "Your changes aren't being saved.";
+      }
+      console.error("save failed", e);
+      return false;
     }
   }
 
@@ -887,7 +1058,11 @@
     // `base` = the text last synced to the backend; it merges base→c against
     // concurrent peer edits so a remote change isn't clobbered (#99).
     const base = lastLoaded;
-    if (!v || !p || c === lastLoaded) return;
+    if (!v || !p || c === base) return;
+    // Editing a preview tab pins it — the note is yours now, so the next click
+    // in the sidebar opens beside it instead of replacing it (#169). Idempotent
+    // once pinned, which is what keeps this out of its own dependencies.
+    session.pinActive();
     // Cancel any queued save first: returning with one still pending would let
     // it write text the editor has since moved on from.
     clearTimeout(saveTimer);
@@ -898,32 +1073,9 @@
       // sent — not this same stale `base` — or the 3-way merge sees both sides
       // diverging from an old ancestor and injects spurious conflict markers.
       lastLoaded = c;
-      try {
-        await writeNote(v, p, c, base);
-        rejectedEdit = null;
-        saveBlocked = null;
-      } catch (e) {
-        // Restore the prior base so the effect retries this edit — the base
-        // stays truthful, which is the whole point of #251.
-        if (lastLoaded === c) lastLoaded = base;
-        // Retrying is the exception, not the rule: only a write that says it is
-        // waiting on a sync will succeed if we just try again. Anything else
-        // fails identically every time, and since restoring the base re-fires
-        // this effect, retrying it is a 400ms loop that never ends. Latching on
-        // "not retryable" rather than listing the failures that aren't keeps a
-        // future error from reintroducing that loop.
-        if (!String(e).includes("still syncing")) {
-          rejectedEdit = { path: p, content: c };
-          // Say so, rather than leaving the note looking saved (#253). The
-          // deleted case is worth naming; anything else is honest but vague.
-          saveBlocked = String(e).includes("no longer exists")
-            ? "This note was deleted on another device, so your changes aren't being saved."
-            : String(e).includes("can't be read")
-              ? "This note's saved content can't be read, so your changes aren't being saved."
-              : "Your changes aren't being saved.";
-        }
-        throw e;
-      }
+      // Restore the prior base so the effect retries this edit — the base stays
+      // truthful, which is the whole point of #251.
+      if (!(await saveNote(v, p, c, base)) && lastLoaded === c) lastLoaded = base;
     }, 400);
   });
 
@@ -1068,6 +1220,21 @@
         e.preventDefault();
         setMode(mode === "source" ? "preview" : "source");
       }
+    } else if (key === "w") {
+      // Close the active tab. Cmd+W reaches us because the macOS menu's Close
+      // Window moved to Cmd+Shift+W (see setup_macos_menu) — a native
+      // accelerator would otherwise swallow the key before the webview.
+      if (!mobile && session.active !== -1) {
+        e.preventDefault();
+        closeTab(session.active);
+      }
+    } else if (!mobile && key >= "1" && key <= "9") {
+      // Jump straight to a tab by position (#169).
+      const i = Number(key) - 1;
+      if (i < session.tabs.length) {
+        e.preventDefault();
+        selectTab(i);
+      }
     }
   }
 </script>
@@ -1105,10 +1272,10 @@
           : '0'});opacity:${chromeHidden ? 0 : 1};`
       : ''}"
   >
-    <div data-tauri-drag-region class="flex min-w-0 items-center gap-2">
+    <div data-tauri-drag-region class="flex min-w-0 flex-1 items-center gap-2">
       <button
         type="button"
-        class="rounded text-muted-foreground hover:bg-muted hover:text-foreground {isMacApp
+        class="shrink-0 rounded text-muted-foreground hover:bg-muted hover:text-foreground {isMacApp
           ? 'p-1'
           : 'p-1.5'}"
         aria-label="Toggle sidebar"
@@ -1118,37 +1285,50 @@
       >
         <PanelLeft size={chromeIcon} />
       </button>
-      <!-- Tail path rendering: when the path is too long, the ellipsis collapses
-           the *leading* path (left) so the filename stays visible. The container
-           is rtl (so overflow/ellipsis lands on the left); an inner `dir="ltr"`
-           override keeps the path itself reading left-to-right. -->
-      <!-- Base color is the muted/60 of the leading segments so the truncation
-           ellipsis matches them; the active segment overrides with text-foreground. -->
-      <span
-        data-tauri-drag-region
-        class="path-crumb text-sm font-medium text-muted-foreground/60"
-      >
-        {#if activePath}
-          {@const parts = activePath.replace(/\.md$/, "").split("/")}
-          <bdo dir="ltr">
-            {#each parts as seg, i}
-              {#if i > 0}<span class="mx-1.5 text-muted-foreground/40">/</span
-                >{/if}{#if i === parts.length - 1}<!-- The filename: double-click
-                (desktop) or long-press (mobile) to rename the open note (#52). -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span
-                  class="cursor-text text-foreground"
-                  title="Double-click or long-press to rename"
-                  ondblclick={() => sidebar?.renameActive()}
-                  onpointerdown={crumbPressStart}
-                  onpointerup={crumbPressEnd}
-                  onpointerleave={crumbPressEnd}
-                  oncontextmenu={(e) => e.preventDefault()}>{seg}</span
-                >{:else}<span class="text-muted-foreground/60">{seg}</span>{/if}
-            {/each}
-          </bdo>
-        {/if}
-      </span>
+      {#if mobile}
+        <!-- Tail path rendering: when the path is too long, the ellipsis collapses
+             the *leading* path (left) so the filename stays visible. The container
+             is rtl (so overflow/ellipsis lands on the left); an inner `dir="ltr"`
+             override keeps the path itself reading left-to-right. -->
+        <!-- Base color is the muted/60 of the leading segments so the truncation
+             ellipsis matches them; the active segment overrides with text-foreground. -->
+        <span
+          data-tauri-drag-region
+          class="path-crumb text-sm font-medium text-muted-foreground/60"
+        >
+          {#if activePath}
+            {@const parts = activePath.replace(/\.md$/, "").split("/")}
+            <bdo dir="ltr">
+              {#each parts as seg, i}
+                {#if i > 0}<span class="mx-1.5 text-muted-foreground/40">/</span
+                  >{/if}{#if i === parts.length - 1}<!-- The filename: long-press
+                  to rename the open note (#52). -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <span
+                    class="cursor-text text-foreground"
+                    title="Long-press to rename"
+                    onpointerdown={crumbPressStart}
+                    onpointerup={crumbPressEnd}
+                    onpointerleave={crumbPressEnd}
+                    oncontextmenu={(e) => e.preventDefault()}>{seg}</span
+                  >{:else}<span class="text-muted-foreground/60">{seg}</span>{/if}
+              {/each}
+            </bdo>
+          {/if}
+        </span>
+      {:else}
+        <!-- Desktop: the open notes as tabs, where the breadcrumb sits on mobile
+             (#169). A tab shows the filename with the full path as its tooltip.
+             No drag region on the strip — the window drags by the header
+             around it. -->
+        <TabStrip
+          tabs={session.tabs}
+          active={session.active}
+          onselect={selectTab}
+          onclose={closeTab}
+          ondblclick={tabDblClick}
+        />
+      {/if}
     </div>
 
     <div data-tauri-drag-region class="flex items-center gap-1.5">
@@ -1262,9 +1442,11 @@
         <Sidebar
           bind:this={sidebar}
           {activePath}
-          onopen={handleOpen}
+          onopen={openNote}
           onvaultchange={handleVaultChange}
-          ontree={(t) => (tree = t)}
+          ontree={handleTree}
+          onrenamed={notesRenamed}
+          onremoved={notesRemoved}
         />
       </div>
     </aside>
@@ -1316,7 +1498,7 @@
           <p class="text-sm">Select or create a note.</p>
         </div>
       {:else if view === "journal"}
-        <JournalView bind:value={content} {mobile} {kbOpen} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
+        <JournalView bind:this={journalView} bind:value={content} {mobile} {kbOpen} {notePaths} ontag={openTagSearch} oninternallink={openInternalLink} />
       {:else if view === "preview"}
         <Preview
           bind:value={content}
@@ -1360,7 +1542,7 @@
   bind:open={searchOpen}
   vault={activeVault}
   initial={searchInitial}
-  onopen={(path) => activeVault && handleOpen(activeVault, path)}
+  onopen={(path) => activeVault && openNote(activeVault, path)}
 />
 
 <SettingsSheet

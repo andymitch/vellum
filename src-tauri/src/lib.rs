@@ -475,7 +475,11 @@ pub fn run() {
     // Vellum" hard-quits via app.exit(0).
     #[cfg(target_os = "macos")]
     let builder = builder.on_menu_event(|app, ev| {
-        if ev.id().as_ref() == "menu_quit" {
+        if ev.id().as_ref() == "menu_close_window" {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.close();
+            }
+        } else if ev.id().as_ref() == "menu_quit" {
             if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.close();
@@ -791,6 +795,17 @@ fn setup_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::select_all(app, None)?,
         ],
     )?;
+    // Close Window on Cmd+Shift+W, leaving Cmd+W to the webview for closing the
+    // active editor tab (#169) — the split every browser makes. A predefined
+    // close_window item keeps Cmd+W as a native accelerator, which the menu
+    // swallows before the page ever sees the key.
+    let close_window = MenuItem::with_id(
+        app,
+        "menu_close_window",
+        "Close Window",
+        true,
+        Some("Cmd+Shift+W"),
+    )?;
     let window_menu = Submenu::with_items(
         app,
         "Window",
@@ -799,7 +814,7 @@ fn setup_macos_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::minimize(app, None)?,
             &PredefinedMenuItem::maximize(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::close_window(app, None)?,
+            &close_window,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;

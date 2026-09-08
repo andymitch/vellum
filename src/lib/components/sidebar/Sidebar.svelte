@@ -46,7 +46,7 @@
     import { session } from "$lib/session.svelte";
     import { portal } from "$lib/portal";
     import { drag } from "$lib/dnd";
-    import { createAndOpenNote, duplicateNote } from "$lib/notes";
+    import { createAndOpenNote, duplicateNote, type OpenNote } from "$lib/notes";
     import { NOTE_TYPES, type NoteType } from "$lib/note-type";
 
     // Sharing and joining used to be hidden in the web build, which had no node
@@ -76,13 +76,20 @@
         onopen,
         onvaultchange,
         ontree,
+        onrenamed,
+        onremoved,
     }: {
         activePath?: string | null;
-        onopen: (vault: string, path: string, focus?: boolean) => void;
+        onopen: OpenNote;
         onvaultchange: (vault: string | null) => void;
         // Notify the parent of the current tree (used to derive the folder list
         // for move/duplicate actions).
         ontree?: (tree: TreeNode[]) => void;
+        // A note (or a folder of them) was renamed or deleted here. The parent
+        // owns the open-note tabs, and a background tab pointing at the old path
+        // has to follow it or go (#169).
+        onrenamed?: (from: string, to: string, isDir: boolean) => void;
+        onremoved?: (path: string, isDir: boolean) => void;
     } = $props();
 
     // True until we've restored the saved vault + note once on launch, so manual
@@ -485,7 +492,7 @@
             const final = node.is_dir || name.endsWith(".md") ? name : `${name}.md`;
             const to = join(dirOf(node.path), final);
             await renamePath(activeVault, node.path, to, node.is_dir);
-            if (activePath === node.path) onopen(activeVault, to);
+            onrenamed?.(node.path, to, node.is_dir);
         } else if (kind === "move") {
             const dir = await askMove(node);
             if (dir === null) return;
@@ -493,7 +500,7 @@
             return;
         } else if (kind === "duplicate") {
             const finalPath = await duplicateNote(activeVault, node.path, tree);
-            onopen(activeVault, finalPath);
+            onopen(activeVault, finalPath, { pin: true });
         } else if (kind === "copy") {
             try {
                 await navigator.clipboard.writeText(await readNote(activeVault, node.path));
@@ -504,18 +511,13 @@
         } else if (kind === "delete") {
             if (!(await askConfirm(`Delete "${displayName(node)}"?`))) return;
             await deletePath(activeVault, node.path, node.is_dir);
-            if (
-                activePath &&
-                (activePath === node.path ||
-                    activePath.startsWith(node.path + "/"))
-            )
-                onvaultchange(activeVault);
+            onremoved?.(node.path, node.is_dir);
         }
         await refreshTree();
     }
 
     // Drag-and-drop move (desktop): move `from` into folder `toDir` ("" = root).
-    // Follows the open note if it (or its containing folder) moved.
+    // Open tabs follow whatever moved, here as for any other rename.
     const dndEnabled = !window.matchMedia("(max-width: 767px)").matches;
     let rootDragOver = $state(false);
     async function moveTo(from: string, isDir: boolean, toDir: string) {
@@ -525,9 +527,7 @@
         if (toDir === from || toDir.startsWith(from + "/")) return;
         const dest = join(toDir, from.split("/").pop()!);
         await renamePath(activeVault, from, dest, isDir);
-        if (activePath === from) onopen(activeVault, dest);
-        else if (activePath && activePath.startsWith(from + "/"))
-            onopen(activeVault, dest + activePath.slice(from.length));
+        onrenamed?.(from, dest, isDir);
         await refreshTree();
     }
 
@@ -690,7 +690,8 @@ Delete this note whenever you're ready. Happy writing!
                 {activePath}
                 {expanded}
                 dnd={dndEnabled}
-                onselect={(node) => onopen(activeVault!, node.path)}
+                onselect={(node, opts) => onopen(activeVault!, node.path, opts)}
+                onpin={(node) => onopen(activeVault!, node.path, { pin: true })}
                 onmenu={openMenu}
                 onmove={moveTo}
                 {noteTypes}

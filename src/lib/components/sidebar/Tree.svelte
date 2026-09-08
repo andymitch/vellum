@@ -15,6 +15,7 @@
     activePath,
     expanded,
     onselect,
+    onpin,
     onmenu,
     onmove,
     dnd = false,
@@ -24,7 +25,11 @@
     nodes: TreeNode[];
     activePath: string | null;
     expanded: Record<string, boolean>;
-    onselect: (node: TreeNode) => void;
+    // Cmd/Ctrl-click asks for a tab of its own, as it would in a browser (#169).
+    onselect: (node: TreeNode, opts?: { newTab?: boolean }) => void;
+    // Double-click pins the tab, so the next single click opens beside it
+    // instead of replacing it (#169).
+    onpin?: (node: TreeNode) => void;
     onmenu: (e: MouseEvent, node: TreeNode) => void;
     onmove?: (from: string, isDir: boolean, toDir: string) => void;
     dnd?: boolean;
@@ -81,8 +86,11 @@
         ? 'bg-primary/15 text-foreground'
         : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
     style="padding-left: {depth * 12 + 8}px;{dnd ? '-webkit-user-drag:element;' : ''}"
-    onclick={() =>
-      node.is_dir ? (expanded[node.path] = !expanded[node.path]) : onselect(node)}
+    onclick={(e) =>
+      node.is_dir
+        ? (expanded[node.path] = !expanded[node.path])
+        : onselect(node, { newTab: e.metaKey || e.ctrlKey })}
+    ondblclick={() => !node.is_dir && onpin?.(node)}
     oncontextmenu={(e) => onmenu(e, node)}
     ondragstart={dnd ? (e) => onDragStart(e, node) : undefined}
     ondragend={dnd
@@ -128,6 +136,7 @@
       {activePath}
       {expanded}
       {onselect}
+      {onpin}
       {onmenu}
       {onmove}
       {dnd}
