@@ -27,7 +27,7 @@
   // an HTML comment marker, invisible wherever the note is rendered, and
   // content with no marker is kept rather than discarded, since note-type.ts
   // never destroys content it doesn't recognize.
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { isToday, isYesterday, format } from "date-fns";
   import {
     parseJournalCells,
@@ -182,8 +182,23 @@
     void focusEditor(cursor);
   }
 
+  // Set as this view goes away — a tab switch, or the note being closed. The
+  // chunk being edited is committed *before* that, by the parent calling
+  // commitPending; anything that reaches commitEdit afterwards is teardown
+  // noise, reading cells that are already inert and writing to a `value` whose
+  // note is no longer the open one (#169).
+  let tearingDown = false;
+  onDestroy(() => (tearingDown = true));
+
+  /// Finish the chunk being edited, if any. Called by the parent before it
+  /// swaps notes: a hotkey (Cmd+1..9 / Cmd+W) never moves focus, so there is no
+  /// blur to commit through and the chunk's text would otherwise be dropped.
+  export function commitPending() {
+    if (editingIndex !== null) commitEdit();
+  }
+
   function commitEdit() {
-    if (reconciling || editingIndex === null) return;
+    if (tearingDown || reconciling || editingIndex === null) return;
     const i = editingIndex;
     const text = editText.trim();
     editingIndex = null;

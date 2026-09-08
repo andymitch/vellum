@@ -1,6 +1,14 @@
 import { createNote, writeNote, readNote, type TreeNode } from "./vault";
 import { newNoteContent, type NoteType } from "./note-type";
 
+/// Opens a note in the editor. `focus` also puts the caret in it (a note we
+/// just created); `pin` and `newTab` are the tab-strip options in `$lib/tabs`.
+export type OpenNote = (
+  vault: string,
+  path: string,
+  opts?: { focus?: boolean; pin?: boolean; newTab?: boolean },
+) => void;
+
 /// Create an empty note named `name` in `dir` (empty string = vault root) and
 /// open it. The filename is independent of the content — callers prompt for the
 /// name. `createNote` de-duplicates against existing siblings. Returns the path.
@@ -8,7 +16,7 @@ export async function createAndOpenNote(
   vault: string,
   dir: string,
   name: string,
-  open: (vault: string, path: string, focus?: boolean) => void,
+  open: OpenNote,
   type: NoteType = "markdown",
 ): Promise<string> {
   const file = name.endsWith(".md") ? name : `${name}.md`;
@@ -19,7 +27,7 @@ export async function createAndOpenNote(
   if (seed) await writeNote(vault, path, seed);
   // A brand-new note opens in source mode with the editor focused so the user
   // can type immediately (#50).
-  open(vault, path, true);
+  open(vault, path, { focus: true });
   return path;
 }
 
