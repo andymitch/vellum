@@ -9,7 +9,9 @@ set -euo pipefail
 
 APP_NAME="Vellum"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUNDLE_DIR="$PROJECT_ROOT/src-tauri/target/release/bundle/macos"
+# src-tauri is a workspace member, so cargo emits to the workspace-root target,
+# not to src-tauri/target.
+BUNDLE_DIR="$PROJECT_ROOT/target/release/bundle/macos"
 DEST="/Applications/$APP_NAME.app"
 
 if [[ "$(uname)" != "Darwin" ]]; then

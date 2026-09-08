@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import NotePane from "$lib/components/editor/NotePane.svelte";
+  import Splitter from "$lib/components/Splitter.svelte";
   import Sidebar from "$lib/components/sidebar/Sidebar.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
@@ -245,16 +246,39 @@
   // Set true when opening a brand-new note: force source mode and focus the
   // editor once it mounts (#50). The pane clears it once it has.
   let focusNewNote = $state(false);
-  // The open note's pane (#169). It owns the buffer, the saving and the scroll
-  // for the note it shows; App owns which note that is. `flush` parks it before
-  // the note changes, which is the one ordering rule between the two.
-  let pane = $state<NotePane | undefined>(undefined);
-  // The open note's type, for the header's source/preview control.
-  let paneNoteType = $state<NoteType>("markdown");
-  const singleView = $derived(!!activePath && noteTypeInfo(paneNoteType).singleView);
-  /// Park the open note, if there is one. False when its save was refused, in
-  /// which case the caller leaves the note where it is (#253).
-  const flushSave = async () => (pane ? await pane.flush() : true);
+  // The active tab's panes (#169) — one, or two side by side. Each owns the
+  // buffer, the saving and the scroll for the note it shows; App owns which
+  // notes those are. `flush` parks them before the notes change, which is the
+  // one ordering rule between the two.
+  let paneRefs = $state<(NotePane | undefined)[]>([]);
+  // Seeded for both panes: `bind:` to an unset slot is refused when the prop
+  // has a fallback, and two panes is the ceiling.
+  let paneNoteTypes = $state<NoteType[]>(["markdown", "markdown"]);
+  // The tab on screen, and the pane within it that has the keyboard: what the
+  // header's controls, the hotkeys and the settings sheet all act on.
+  const tab = $derived(session.tab);
+  const focusedPane = $derived(tab?.focused ?? 0);
+  // Which of the tab's notes are on screen, with the index each one has in the
+  // tab. A split needs room, so a phone shows the focused side only — the tab
+  // stays joined, and widening the window brings the other back. (Opening a
+  // note on mobile collapses the strip to one tab, but a session restored from
+  // a desktop can still arrive holding a split.)
+  const shownPanes = $derived.by(() => {
+    const t = tab;
+    if (!t) return [];
+    if (mobile) return [{ p: t.panes[t.focused], i: t.focused }];
+    return t.panes.map((p, i) => ({ p, i }));
+  });
+  const pane = $derived(paneRefs[focusedPane]);
+  const singleView = $derived(
+    !!activePath && noteTypeInfo(paneNoteTypes[focusedPane] ?? "markdown").singleView,
+  );
+  /// Park every open note. False when a save was refused, in which case the
+  /// caller leaves the notes where they are (#253).
+  async function flushSave(): Promise<boolean> {
+    for (const p of paneRefs) if (p && !(await p.flush())) return false;
+    return true;
+  }
 
   // A `[[note#heading]]` link: open the note (unless already open) and scroll
   // the preview to the heading. Headings get their slug ids after Preview
@@ -294,11 +318,9 @@
     path: string,
     opts: { focus?: boolean; pin?: boolean; newTab?: boolean } = {},
   ) {
-    // A path that has left the tabs was just renamed or deleted (those callers
-    // flush before they touch the vault), so there is nothing left to send.
-    const open = session.path;
-    const stale = !!open && !session.tabs.some((t) => t.path === open);
-    if (!stale && path !== open && !(await flushSave())) return;
+    // Park what's open before the notes change. A refused save leaves them
+    // where they are, with the #253 banner saying why.
+    if (path !== session.path && !(await flushSave())) return;
     // Opening a note is what dismisses the drawer, whether or not it was
     // already the open one.
     if (mobile) setSidebar(false);
@@ -333,8 +355,38 @@
       session.pin(i);
       return;
     }
+    // A joined tab names two notes, so there is no "the note" to rename from
+    // it — the tree's context menu and the settings sheet still do.
+    if (t.panes.length > 1) return;
+    const path = t.panes[0].path;
     await selectTab(i);
-    if (session.active === i && session.tabs[i]?.path === t.path) sidebar?.renameActive();
+    if (session.active === i && session.tabs[i]?.panes[0]?.path === path)
+      sidebar?.renameActive();
+  }
+
+  /// A tab dropped onto another: the two notes become one tab showing both.
+  async function joinTabs(from: number, to: number) {
+    if (!(await flushSave())) return;
+    session.join(from, to);
+  }
+
+  /// The split-apart button: two notes, two tabs again.
+  async function splitTab(i: number) {
+    if (!(await flushSave())) return;
+    session.split(i);
+  }
+
+  // The row the panes share, for turning a divider drag into a ratio.
+  let paneRow = $state<HTMLElement | undefined>(undefined);
+  function dragDivider(clientX: number) {
+    const box = paneRow?.getBoundingClientRect();
+    if (!box || box.width === 0 || session.active === -1) return;
+    session.ratio(session.active, (clientX - box.left) / box.width);
+  }
+  function nudgeDivider(dir: -1 | 1) {
+    const t = session.tab;
+    if (!t || session.active === -1) return;
+    session.ratio(session.active, t.ratio + dir * 0.02);
   }
 
   async function closeTab(i: number) {
@@ -348,7 +400,7 @@
   // drag in the tree, or Move in the settings sheet. Tabs follow it, including
   // background ones, so none is left pointing at a path that no longer exists.
   async function notesRenamed(from: string, to: string, isDir: boolean) {
-    pane?.renamed(from, to, isDir);
+    for (const p of paneRefs) p?.renamed(from, to, isDir);
     session.renamed(from, to, isDir);
   }
 
@@ -657,6 +709,8 @@
           onclose={closeTab}
           ondblclick={tabDblClick}
           onreorder={(from, to) => session.move(from, to)}
+          onjoin={joinTabs}
+          onsplit={splitTab}
         />
       {/if}
     </div>
@@ -781,31 +835,60 @@
       </div>
     </aside>
 
-    <!-- The open note. One pane today; a joined tab renders two side by side
-         (#169). The pane owns the note's buffer, saving and scroll — App only
-         says which note, and parks it (flush) before that changes. -->
-    {#if activeVault && activePath}
-      <NotePane
-        bind:this={pane}
-        bind:noteType={paneNoteType}
-        bind:focusNew={focusNewNote}
-        vault={activeVault}
-        path={activePath}
-        {mode}
-        scroll={session.scroll}
-        {mobile}
-        {kbOpen}
-        {headerH}
-        {notePaths}
-        {userScrolling}
-        onmode={(m) => (session.mode = m)}
-        onscrollratio={(r) => (session.scroll = r)}
-        onchrome={(hidden) => (chromeHidden = hidden)}
-        onedit={() => session.pinActive()}
-        onopen={(path, opts) => activeVault && openNote(activeVault, path, opts)}
-        ontag={openTagSearch}
-        oninternallink={openInternalLink}
-      />
+    <!-- The open tab's notes: one pane, or two side by side with a draggable
+         divider (#169). Each pane owns its note's buffer, saving and scroll —
+         App only says which notes, and parks them (flush) before that changes.
+         A grid rather than flex so the ratio is the column definition, and
+         neither pane's content can push the split around. -->
+    {#if activeVault && tab}
+      <div
+        bind:this={paneRow}
+        class="grid min-w-0 flex-1"
+        style={shownPanes.length > 1
+          ? `grid-template-columns:${tab.ratio}fr auto ${1 - tab.ratio}fr;`
+          : "grid-template-columns:1fr;"}
+      >
+        <!-- Deliberately unkeyed: a pane is a *slot*, and handing it a
+             different note is a prop change, not a new component. Keying by
+             path would remount on every note change — throwing away the
+             editor, its undo history, the in-flight-read guards (#123) and the
+             rename-follow that exist precisely to avoid that. -->
+        {#each shownPanes as { p, i }, at}
+          {#if at > 0}
+            <Splitter
+              label="Resize panes"
+              value={tab.ratio * 100}
+              ondrag={dragDivider}
+              onnudge={nudgeDivider}
+              onreset={() => session.ratio(session.active, 0.5)}
+            />
+          {/if}
+          <div class="flex min-w-0 overflow-hidden">
+            <NotePane
+              bind:this={paneRefs[i]}
+              bind:noteType={paneNoteTypes[i]}
+              bind:focusNew={focusNewNote}
+              vault={activeVault}
+              path={p.path}
+              mode={p.mode}
+              scroll={p.scroll}
+              {mobile}
+              {kbOpen}
+              {headerH}
+              {notePaths}
+              {userScrolling}
+              onmode={(m) => session.setPane(session.active, i, { mode: m })}
+              onscrollratio={(r) => session.setPane(session.active, i, { scroll: r })}
+              onchrome={(hidden) => (chromeHidden = hidden)}
+              onedit={() => session.pinActive()}
+              onactivate={() => session.focus(session.active, i)}
+              onopen={(path, opts) => activeVault && openNote(activeVault, path, opts)}
+              ontag={openTagSearch}
+              oninternallink={openInternalLink}
+            />
+          </div>
+        {/each}
+      </div>
     {:else}
       <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
         <NotebookPen size={40} class="opacity-30" />

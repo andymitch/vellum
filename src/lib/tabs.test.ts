@@ -5,8 +5,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   activate,
+  activePane,
   activeTab,
   closeTab,
+  focusPane,
+  joinTabs,
   moveTab,
   noTabs,
   normalize,
@@ -15,14 +18,26 @@ import {
   pruneTabs,
   removePaths,
   renamePaths,
+  setRatio,
+  splitApart,
   tabLabels,
   updateActive,
   type TabList,
 } from "./tabs";
 
-/** Compact view of a list: `*` marks the active tab, `~` a preview tab. */
+/**
+ * Compact view of a list: `*` marks the active tab, `~` a preview tab, and a
+ * joined tab's panes are separated by `|` with `>` on the focused one.
+ */
 const show = (l: TabList) =>
-  l.tabs.map((t, i) => `${i === l.active ? "*" : ""}${t.preview ? "~" : ""}${t.path}`).join(" ");
+  l.tabs
+    .map((t, i) => {
+      const panes = t.panes
+        .map((p, j) => `${t.panes.length > 1 && j === t.focused ? ">" : ""}${p.path}`)
+        .join("|");
+      return `${i === l.active ? "*" : ""}${t.preview ? "~" : ""}${panes}`;
+    })
+    .join(" ");
 
 const opened = (...paths: string[]) =>
   paths.reduce((l, p) => openTab(l, p, { pin: true }), noTabs());
@@ -81,8 +96,8 @@ describe("openTab", () => {
 
   test("a new tab inherits the mode passed in, so preview reading carries over", () => {
     const l = openTab(noTabs(), "a.md", { mode: "preview" });
-    expect(activeTab(l)?.mode).toBe("preview");
-    expect(activeTab(openTab(noTabs(), "a.md"))?.mode).toBe("source");
+    expect(activePane(l)?.mode).toBe("preview");
+    expect(activePane(openTab(noTabs(), "a.md"))?.mode).toBe("source");
   });
 });
 
@@ -159,16 +174,170 @@ describe("moveTab", () => {
   });
 });
 
+describe("joinTabs", () => {
+  test("dropping one tab on another shows both, the dragged note on the right", () => {
+    const l = opened("a.md", "b.md", "c.md");
+    // Drag c.md (index 2) onto a.md (index 0).
+    expect(show(joinTabs(l, 2, 0))).toBe("*a.md|>c.md b.md");
+  });
+
+  test("the joined tab takes the keyboard, in the note that was dragged", () => {
+    const l = opened("a.md", "b.md");
+    const joined = joinTabs(l, 1, 0);
+    expect(activePane(joined)?.path).toBe("b.md");
+    expect(activeTab(joined)?.panes).toHaveLength(2);
+  });
+
+  test("a split is never the preview tab — nothing should replace it", () => {
+    let l = openTab(noTabs(), "a.md", { pin: true });
+    l = openTab(l, "b.md"); // preview
+    const joined = joinTabs(l, 1, 0);
+    expect(joined.tabs[0].preview).toBe(false);
+    expect(show(joined)).toBe("*a.md|>b.md");
+    // Nothing in the list is a preview tab now, so a note opened while some
+    // *other* tab is active gets one of its own rather than eating the split.
+    const elsewhere = openTab(activate(joined, 0), "c.md", { newTab: true });
+    expect(elsewhere.tabs.filter((t) => t.preview)).toHaveLength(0);
+  });
+
+  test("two panes is the limit: dropping onto a split, or a split onto a tab, does nothing", () => {
+    const l = joinTabs(opened("a.md", "b.md", "c.md"), 1, 0); // a|b, then c
+    expect(joinTabs(l, 1, 0)).toBe(l);
+    expect(joinTabs(l, 0, 1)).toBe(l);
+  });
+
+  test("a tab can't be joined to itself", () => {
+    const l = opened("a.md", "b.md");
+    expect(joinTabs(l, 1, 1)).toBe(l);
+    expect(joinTabs(l, 9, 0)).toBe(l);
+  });
+
+  test("opening a note while a split is active replaces the focused pane", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    const after = openTab(l, "c.md");
+    expect(show(after)).toBe("*a.md|>c.md");
+    expect(after.tabs).toHaveLength(1);
+  });
+
+  test("a note already open in the other pane is focused, not opened twice", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    const after = openTab(l, "a.md");
+    expect(show(after)).toBe("*>a.md|b.md");
+    expect(after.tabs[0].panes).toHaveLength(2);
+  });
+});
+
+describe("splitApart", () => {
+  test("a joined tab becomes two tabs, side by side in the strip", () => {
+    const l = joinTabs(opened("a.md", "b.md", "c.md"), 2, 0); // a|>c, b
+    expect(show(splitApart(l, 0))).toBe("a.md *c.md b.md");
+  });
+
+  test("the note that had the keyboard stays active", () => {
+    let l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    expect(activePane(splitApart(l, 0))?.path).toBe("b.md");
+    l = focusPane(l, 0, 0); // now the left one
+    expect(activePane(splitApart(l, 0))?.path).toBe("a.md");
+  });
+
+  test("splitting a single-note tab does nothing", () => {
+    const l = opened("a.md");
+    expect(splitApart(l, 0)).toBe(l);
+  });
+
+  test("splitting a tab you aren't in doesn't navigate away from the one you are", () => {
+    // The button is hover-revealed on any joined tab, so this is reachable.
+    let l = joinTabs(opened("a.md", "b.md", "c.md"), 1, 0); // a|>b, c — active is a|b
+    l = activate(l, 1); // now in c.md
+    const after = splitApart(l, 0);
+    expect(show(after)).toBe("a.md b.md *c.md");
+    expect(activePane(after)?.path).toBe("c.md");
+  });
+
+  test("a tab left of the split keeps its place", () => {
+    let l = opened("a.md", "b.md", "c.md");
+    l = joinTabs(l, 2, 1); // a, b|>c
+    l = activate(l, 0); // in a.md
+    expect(show(splitApart(l, 1))).toBe("*a.md b.md c.md");
+  });
+});
+
+describe("setRatio", () => {
+  test("the divider moves, and is clamped so neither pane vanishes", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0);
+    expect(setRatio(l, 0, 0.3).tabs[0].ratio).toBe(0.3);
+    expect(setRatio(l, 0, 0.01).tabs[0].ratio).toBe(0.15);
+    expect(setRatio(l, 0, 5).tabs[0].ratio).toBe(0.85);
+  });
+
+  test("a single-note tab has no divider, and an unchanged ratio is a no-op", () => {
+    const single = opened("a.md");
+    expect(setRatio(single, 0, 0.3)).toBe(single);
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0);
+    expect(setRatio(l, 0, 0.5)).toBe(l);
+  });
+});
+
+describe("panes and the rest of the rules", () => {
+  test("a rename follows the note into whichever pane holds it", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0);
+    expect(show(renamePaths(l, "a.md", "z.md", false))).toBe("*z.md|>b.md");
+  });
+
+  test("deleting one side of a split leaves the other open as a single note", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    const after = removePaths(l, "b.md", false);
+    expect(show(after)).toBe("*a.md");
+    expect(after.tabs[0].panes).toHaveLength(1);
+    expect(after.tabs[0].focused).toBe(0);
+  });
+
+  test("deleting the folder both panes live in closes the tab", () => {
+    const l = joinTabs(opened("d/a.md", "d/b.md"), 1, 0);
+    expect(removePaths(l, "d", true)).toEqual(noTabs());
+  });
+
+  test("a pruned split keeps the focus on the pane that survived", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // focus on b.md
+    const kept = pruneTabs(l, (p) => p === "a.md");
+    expect(activePane(kept)?.path).toBe("a.md");
+  });
+
+  test("a joined tab labels both of its notes", () => {
+    const l = joinTabs(opened("journal/Notes.md", "projects/Notes.md"), 1, 0);
+    expect(tabLabels(l.tabs)).toEqual([
+      [
+        { name: "Notes", qualifier: "journal" },
+        { name: "Notes", qualifier: "projects" },
+      ],
+    ]);
+  });
+
+  test("dragging a joined tab along the strip keeps it active", () => {
+    const l = joinTabs(opened("a.md", "b.md", "c.md"), 2, 0); // *a|>c, b
+    expect(show(moveTab(l, 0, 1))).toBe("b.md *a.md|>c.md");
+  });
+
+  test("mode and scroll belong to the focused pane, not to the tab", () => {
+    let l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    l = updateActive(l, { mode: "preview", scroll: 0.4 });
+    expect(l.tabs[0].panes[1]).toEqual({ path: "b.md", mode: "preview", scroll: 0.4 });
+    expect(l.tabs[0].panes[0].mode).toBe("source");
+    l = focusPane(l, 0, 0);
+    expect(activePane(l)?.mode).toBe("source");
+  });
+});
+
 describe("updateActive", () => {
   test("mode and scroll are remembered per tab", () => {
     let l = opened("a.md", "b.md");
     l = updateActive(l, { mode: "preview", scroll: 0.5 });
     l = activate(l, 0);
-    expect(activeTab(l)?.mode).toBe("source");
-    expect(activeTab(l)?.scroll).toBe(0);
+    expect(activePane(l)?.mode).toBe("source");
+    expect(activePane(l)?.scroll).toBe(0);
     l = activate(l, 1);
-    expect(activeTab(l)?.mode).toBe("preview");
-    expect(activeTab(l)?.scroll).toBe(0.5);
+    expect(activePane(l)?.mode).toBe("preview");
+    expect(activePane(l)?.scroll).toBe(0.5);
   });
 
   test("a no-op patch returns the same list, so it can't re-fire an effect", () => {
@@ -207,6 +376,23 @@ describe("renamePaths", () => {
   test("a rename that touches nothing returns the same list", () => {
     const l = opened("a.md");
     expect(renamePaths(l, "other.md", "z.md", false)).toBe(l);
+  });
+
+  test("the active note stays active through a rename that collapses a duplicate", () => {
+    let l = opened("d/a.md", "e/a.md", "d/b.md", "z.md");
+    l = activate(l, 2); // d/b.md
+    // Folder d → e: d/a.md collapses into the existing e/a.md, and the active
+    // note becomes e/b.md — which is where the star must follow it.
+    const after = renamePaths(l, "d", "e", true);
+    expect(show(after)).toBe("e/a.md *e/b.md z.md");
+    expect(activePane(after)?.path).toBe("e/b.md");
+  });
+
+  test("a rename doesn't move the keyboard to the other side of a split", () => {
+    const l = joinTabs(opened("a.md", "b.md"), 1, 0); // a | >b
+    const after = renamePaths(l, "b.md", "z.md", false);
+    expect(show(after)).toBe("*a.md|>z.md");
+    expect(activePane(after)?.path).toBe("z.md");
   });
 });
 
@@ -251,8 +437,10 @@ describe("pruneTabs", () => {
 });
 
 describe("tabLabels", () => {
+  const one = (l: { name: string; qualifier: string }) =>
+    l.qualifier ? `${l.name} · ${l.qualifier}` : l.name;
   const labels = (...paths: string[]) =>
-    tabLabels(opened(...paths).tabs).map((l) => (l.qualifier ? `${l.name} · ${l.qualifier}` : l.name));
+    tabLabels(opened(...paths).tabs).map((panes) => panes.map(one).join(" | "));
 
   test("distinct names are shown bare", () => {
     expect(labels("a.md", "d/b.md")).toEqual(["a", "b"]);
@@ -296,11 +484,70 @@ describe("tabLabels", () => {
 
 describe("normalize", () => {
   test("reads back a persisted list", () => {
+    const raw: TabList = {
+      tabs: [
+        {
+          panes: [{ path: "a.md", mode: "preview", scroll: 0.5 }],
+          focused: 0,
+          ratio: 0.5,
+          preview: false,
+        },
+      ],
+      active: 0,
+    };
+    expect(normalize(raw)).toEqual(raw);
+  });
+
+  test("a pre-split session — a tab *was* a pane — reopens as a single-note tab", () => {
     const raw = { tabs: [{ path: "a.md", mode: "preview", scroll: 0.5, preview: false }], active: 0 };
     expect(normalize(raw)).toEqual({
-      tabs: [{ path: "a.md", mode: "preview", scroll: 0.5, preview: false }],
+      tabs: [
+        {
+          panes: [{ path: "a.md", mode: "preview", scroll: 0.5 }],
+          focused: 0,
+          ratio: 0.5,
+          preview: false,
+        },
+      ],
       active: 0,
     });
+  });
+
+  test("a joined tab reads back with both panes, its focus and its ratio", () => {
+    const raw: TabList = {
+      tabs: [
+        {
+          panes: [
+            { path: "a.md", mode: "source", scroll: 0 },
+            { path: "b.md", mode: "preview", scroll: 0.25 },
+          ],
+          focused: 1,
+          ratio: 0.35,
+          preview: false,
+        },
+      ],
+      active: 0,
+    };
+    expect(normalize(raw)).toEqual(raw);
+  });
+
+  test("more than two panes, a bad focus or an absurd ratio are corrected", () => {
+    const l = normalize({
+      tabs: [
+        {
+          panes: [{ path: "a.md" }, { path: "b.md" }, { path: "c.md" }],
+          focused: 7,
+          ratio: 0.99,
+          preview: true,
+        },
+      ],
+      active: 0,
+    });
+    expect(l.tabs[0].panes.map((p) => p.path)).toEqual(["a.md", "b.md"]);
+    expect(l.tabs[0].focused).toBe(0);
+    expect(l.tabs[0].ratio).toBe(0.5);
+    // A split is never the preview tab.
+    expect(l.tabs[0].preview).toBe(false);
   });
 
   test("malformed entries are dropped rather than trusted", () => {
@@ -315,7 +562,14 @@ describe("normalize", () => {
       active: 9,
     };
     expect(normalize(raw)).toEqual({
-      tabs: [{ path: "a.md", mode: "source", scroll: 0, preview: false }],
+      tabs: [
+        {
+          panes: [{ path: "a.md", mode: "source", scroll: 0 }],
+          focused: 0,
+          ratio: 0.5,
+          preview: false,
+        },
+      ],
       active: 0,
     });
   });

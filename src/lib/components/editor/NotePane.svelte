@@ -8,7 +8,7 @@
   // it can know back up: the view mode it was toggled into, where it was
   // scrolled, whether the chrome should hide, and that the note has been
   // edited. The host owns the tab list and decides what to do with all of that.
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { EditorView } from "@codemirror/view";
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
@@ -44,6 +44,7 @@
     onscrollratio,
     onchrome,
     onedit,
+    onactivate,
     onopen,
     ontag,
     oninternallink,
@@ -67,6 +68,8 @@
     onchrome?: (hidden: boolean) => void;
     /// The note has a local edit — enough to pin a preview tab (#169).
     onedit?: () => void;
+    /// The user pointed at this pane: in a split, that moves the keyboard here.
+    onactivate?: () => void;
     /// Open another note: the recovered copy a refused save was written to.
     onopen?: (path: string, opts?: { focus?: boolean }) => void;
     ontag?: (tag: string) => void;
@@ -113,6 +116,17 @@
     onchrome?.(false);
     lastChromeTop = 0;
   }
+
+  // Nothing pending outlives this pane. The debounced scroll-save would
+  // otherwise fire from a destroyed pane and report a *detached* scroller's
+  // ratio — 0 — which the host would write into whichever note occupies this
+  // slot next, silently forgetting where that one was left. (Closing a tab
+  // whose note was deleted gets here without a flush, which is the case that
+  // clears these two timers otherwise.)
+  onDestroy(() => {
+    clearTimeout(saveTimer);
+    clearTimeout(scrollSaveTimer);
+  });
 
   /// The scroller the host's chrome logic should watch — whichever view is up.
   export function scroller(): HTMLElement | null {
@@ -835,7 +849,7 @@
 
 <!-- The pane fills its share of the row; `relative` anchors the save banner
      over this note rather than the window. -->
-<div class="relative flex min-w-0 flex-1 flex-col">
+<div class="relative flex min-w-0 flex-1 flex-col" onpointerdowncapture={() => onactivate?.()}>
     <!-- A save that isn't happening, said out loud (#253). Fixed rather than in
        flow so it can't shift the editor's layout, and offset below the header
        so it clears the floating mobile chrome. -->

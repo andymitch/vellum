@@ -9,8 +9,11 @@
 
 import {
   activate,
+  activePane,
   activeTab,
   closeTab,
+  focusPane,
+  joinTabs,
   moveTab,
   noTabs,
   normalize,
@@ -19,9 +22,13 @@ import {
   pruneTabs,
   removePaths,
   renamePaths,
+  setRatio,
+  splitApart,
   updateActive,
+  updatePane,
   type Mode,
   type OpenOpts,
+  type Tab,
   type TabList,
 } from "./tabs";
 
@@ -96,13 +103,17 @@ export const session = {
   get active() {
     return list.active;
   },
-  /** The active tab's note, or null when nothing is open. */
+  /** The active tab, whether it holds one note or two. */
+  get tab(): Tab | null {
+    return activeTab(list);
+  },
+  /** The note the keyboard is in — the active tab's focused pane. */
   get path() {
-    return activeTab(list)?.path ?? null;
+    return activePane(list)?.path ?? null;
   },
 
   get mode(): Mode {
-    return activeTab(list)?.mode ?? lastMode;
+    return activePane(list)?.mode ?? lastMode;
   },
   set mode(m: Mode) {
     lastMode = m;
@@ -113,7 +124,7 @@ export const session = {
   },
 
   get scroll() {
-    return activeTab(list)?.scroll ?? 0;
+    return activePane(list)?.scroll ?? 0;
   },
   set scroll(r: number) {
     set(updateActive(list, { scroll: r }));
@@ -132,6 +143,27 @@ export const session = {
   /** Reorder: the tab at `from` is dragged to index `to`. */
   move(from: number, to: number) {
     set(moveTab(list, from, to));
+  },
+  /** Dropped one tab onto another: show both notes side by side (#169). */
+  join(from: number, to: number) {
+    set(joinTabs(list, from, to));
+  },
+  /** Put a joined tab's two notes back in tabs of their own. */
+  split(i: number) {
+    set(splitApart(list, i));
+  },
+  /** Drag the divider between a joined tab's panes. */
+  ratio(i: number, ratio: number) {
+    set(setRatio(list, i, ratio));
+  },
+  /** Click into one side of a split: that pane takes the keyboard. */
+  focus(i: number, pane: number) {
+    set(focusPane(list, i, pane));
+  },
+  /** A named pane's view mode or scroll — which is not always the focused one. */
+  setPane(i: number, pane: number, patch: { mode?: Mode; scroll?: number }) {
+    if (patch.mode) lastMode = patch.mode;
+    set(updatePane(list, i, pane, patch));
   },
   /** Promote the preview tab so the next sidebar click doesn't replace it. */
   pin(i: number) {
