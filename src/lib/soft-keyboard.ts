@@ -1,9 +1,14 @@
 // Dismissing the soft keyboard, as an event.
 //
 // On mobile, hiding the keyboard is how you finish what you were typing — a
-// journal chunk (#258), a quick edit (#33). It is not a blur: Android and iOS
-// both leave the focused element focused when the keyboard goes away, so
-// nothing fires and a field wired to `onblur` sits there open forever.
+// journal chunk (#258). It is not a blur: Android and iOS both leave the
+// focused element focused when the keyboard goes away, so nothing fires and a
+// field wired to `onblur` sits there open forever.
+//
+// App applies the same rule inline to end a markdown note's quick edit (#33),
+// where it is tangled up with re-pinning the caret across the frames the
+// keyboard takes to open. Worth folding into this once that can be re-tested
+// on a device — the pinning is what #122/#147 were about.
 //
 // What the keyboard *does* change is the visual viewport, which shrinks while
 // it is up. App watches that and passes the result down as `kbOpen`. Turning

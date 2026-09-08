@@ -157,7 +157,11 @@
   // fire its own blur handler — and a second commit over the state we just
   // wrote would undo it (deleting, for instance, the empty chunk a split had
   // only just created). Set while that handoff is in flight.
-  let reconciling = false;
+  //
+  // Reactive so the keyboard watch below re-runs when the handoff finishes: a
+  // dismissal that lands mid-handoff has to be acted on once it settles, not
+  // dropped because the chunk it arrived for was already on its way out.
+  let reconciling = $state(false);
 
   async function focusEditor(cursor: "start" | "end") {
     await tick();
@@ -219,11 +223,30 @@
 
   // Dismissing the keyboard finishes the chunk (#258) — see soft-keyboard.ts
   // for why that can't just be the field's own blur.
+  //
+  // Mobile only. `kbOpen` is derived from the visual viewport, which a desktop
+  // window shrinks too: without this gate, dragging a window shorter and back
+  // while a chunk is open would read as a keyboard and close it.
   const kb = keyboardDismissal();
+  let armedFor: number | null = null;
   $effect(() => {
-    if (editingIndex === null) {
+    // Mid-handoff the chunk being edited is about to change; neither arm nor
+    // fire against the one on its way out. Settling re-runs this.
+    if (reconciling) return;
+    if (editingIndex === null || !mobile) {
       kb.reset();
+      armedFor = null;
       return;
+    }
+    // Armed per chunk, not per edit session: tapping straight from one chunk
+    // to another never passes through "nothing being edited" — the blur that
+    // commits and the `startEdit` that follows land in the same tick, and this
+    // runs after both. The keyboard having been up for the previous chunk must
+    // not count as having been up for this one, or a momentarily-lowered
+    // keyboard during the handoff closes the chunk just tapped into.
+    if (editingIndex !== armedFor) {
+      kb.reset();
+      armedFor = editingIndex;
     }
     if (kb.dismissed(kbOpen)) {
       // Blurring is what commits, which keeps this on one path with Escape and
