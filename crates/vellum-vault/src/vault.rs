@@ -14,7 +14,7 @@
 //! (via `ndk-context`), which tao only initializes once the event loop is
 //! running — after `setup`. Deferring the build avoids that startup race.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 #[cfg(feature = "desktop")]
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -411,22 +411,28 @@ struct Deletion {
 impl Deletion {
     /// Whether this deletion deleted the given entry — i.e. whether the entry
     /// is part of what the user threw away, rather than an edit that outlived
-    /// it. An edit made after a deletion keeps the note: that is a real "I
-    /// deleted this" / "I kept writing" conflict, and dropping it would be data
-    /// loss of its own.
+    /// it. An entry stamped after the deletion keeps the note: that is a real
+    /// "I deleted this" / "I kept writing" conflict, and dropping it would be
+    /// data loss of its own.
     ///
-    /// "After" is the moment of the deletion, which makes this the one decision
-    /// in the vault that compares two devices' clocks. It has to be: the same
-    /// question is asked by `list_entries` and `key_exists`, which have only
-    /// entry timestamps to go on, and a note that reads live while the tree
-    /// says deleted is worse than either answer on its own.
+    /// Stamped, not made. This is the one decision in the vault that compares
+    /// two devices' clocks, and it has to be: `list_entries` and `key_exists`
+    /// ask the same question with nothing but entry timestamps to go on, and a
+    /// note that reads live while the tree says deleted is worse than either
+    /// answer on its own — it vanishes from the tree while still holding text,
+    /// and the next note at that name opens full of conflict markers. So an
+    /// edit a lagging device makes *after* a delete, but stamps before it, is
+    /// deleted. That is also what a concurrent edit looks like from here — a
+    /// peer writing while we delete, before either knows about the other — and
+    /// for that case delete-winning is the answer iroh-docs' own ordering and
+    /// every listing in this module already give.
     ///
-    /// The per-author set is what a timestamp alone can't do. iroh-docs stamps
-    /// entries from the local clock and rejects only those more than ten
-    /// minutes in the *future*, so a device running ahead can write an entry
-    /// timestamped after a deletion that in fact preceded it. Naming the entry
-    /// the deletion actually covered — by that author's own clock — deletes it
-    /// anyway.
+    /// The per-author set is what a timestamp alone can't do, in the other
+    /// direction. iroh-docs stamps entries from the local clock and rejects
+    /// only those more than ten minutes in the *future*, so a device running
+    /// ahead can write an entry stamped after a deletion that in fact preceded
+    /// it. Naming the entry the deletion actually covered — by that author's
+    /// own clock — deletes it anyway.
     fn covers(&self, author: AuthorId, timestamp: u64) -> bool {
         timestamp < self.at || self.covered.get(&author).is_some_and(|&seen| timestamp <= seen)
     }
@@ -494,9 +500,16 @@ async fn deletion_of(
                     }
                 }
             }
-            // No blob, or a record written by a version we don't understand:
-            // all we know is that a deletion happened at about this moment.
-            None => consider(entry.timestamp(), &mut at),
+            // No blob, or a record written by a version we don't understand.
+            // All we know is that a deletion happened at about this moment —
+            // and "about" is a shade *later* than the tombstone it was written
+            // beside, which would make the merge call an entry in between
+            // deleted while every listing still calls it live. So it only
+            // speaks when no tombstone is here to speak for it, which is the
+            // case it exists for: a device whose own later write replaced its
+            // tombstone, returning from a spell offline.
+            None if tombstoned.is_none() => consider(entry.timestamp(), &mut at),
+            None => {}
         }
     }
     Ok(at.map(|at| Deletion { at, covered }))
@@ -2214,21 +2227,29 @@ pub async fn create_folder(state: State<'_, VaultManager>, vault: String, path: 
 ///    tombstone RESURRECTS the peer's record underneath it, which is how a
 ///    folder came back after being deleted. Sweep the prefix FIRST.
 ///
-/// So: sweep, then re-read the listing and tombstone whatever still reads as
-/// live. The listing must be taken *after* the sweep — a pre-sweep listing
-/// misses exactly the keys the sweep just resurrected.
+/// So: sweep, then tombstone every key by name — the union of what was there
+/// before the sweep and what still reads as live after it. Both listings are
+/// needed. A pre-sweep listing misses exactly the keys the sweep resurrected;
+/// a post-sweep one misses the keys the sweep removed outright, which are the
+/// notes only this device ever wrote. Those need a tombstone of their own or
+/// there is nothing at the key to say it was deleted, and a peer's entry
+/// arriving later — from a device that was offline when the folder went —
+/// brings the note back (#254).
 pub async fn clear_prefix(
     node: &Node,
     doc: &iroh_docs::api::Doc,
     prefix: &str,
 ) -> Result<()> {
+    let under = |keys: Vec<String>| -> Vec<String> {
+        keys.into_iter().filter(|k| k.starts_with(prefix)).collect()
+    };
+    let mut keys: BTreeSet<String> = under(list_keys(doc).await?).into_iter().collect();
     // Clears our own entries under the folder, plus the folder marker key
     // itself (an empty folder whose only entry is "work/"). `del` takes a
     // prefix, so there is no way to drop the marker without this side effect.
     doc.del(node.author, prefix.as_bytes().to_vec()).await?;
-    // Anything still live under the prefix was written by another device (or
-    // was just uncovered by the sweep); tombstone it by exact key.
-    for key in list_keys(doc).await?.iter().filter(|k| k.starts_with(prefix)) {
+    keys.extend(under(list_keys(doc).await?));
+    for key in keys {
         doc.del(node.author, key.clone().into_bytes()).await?;
         record_deletion(node, doc, key.as_bytes()).await;
     }
@@ -3682,6 +3703,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Deleting a folder has to leave behind the same two things deleting a
+    /// note leaves — a tombstone at the key and a durable record — including
+    /// for the notes only this device ever wrote.
+    ///
+    /// Those are the ones that were missing. The prefix sweep removes our own
+    /// entries outright rather than tombstoning them, so such a key vanishes
+    /// from the post-sweep listing and used to get neither. Nothing was then
+    /// left at the key to say the note had ever existed, let alone been
+    /// deleted, and an entry arriving later from a device that was offline at
+    /// the time had nothing to contradict it (#254). What suppresses such an
+    /// entry once the tombstone is there is covered by
+    /// `a_peers_deleted_text_does_not_come_back`; this pins the tombstone.
+    #[tokio::test]
+    async fn a_folder_delete_leaves_a_record_for_our_own_notes_too() {
+        let dir = std::env::temp_dir().join(format!("notes-folder-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+
+        // Two notes only this device wrote — one of them the folder marker's
+        // neighbour, so the sweep has something at the prefix key as well.
+        write_note_merged(&node, &doc, b"work/a.md", "", "OURS\n").await.expect("seed");
+        write_note_merged(&node, &doc, b"work/b.md", "", "ALSO OURS\n").await.expect("seed");
+        delete_key(&node, &doc, "work", true).await.expect("delete folder");
+
+        for key in [b"work/a.md".as_slice(), b"work/b.md".as_slice()] {
+            let name = String::from_utf8_lossy(key).to_string();
+            // A tombstone at the key: an entry, with no content.
+            let tomb = doc
+                .get_one(Query::key_exact(key).include_empty())
+                .await
+                .expect("get_one")
+                .unwrap_or_else(|| panic!("{name}: nothing at the key to say it was deleted"));
+            assert_eq!(tomb.content_len(), 0, "{name}: expected a tombstone");
+            // And the durable record, which outlives that tombstone.
+            let deletion = deletion_of(&node, &doc, key, None)
+                .await
+                .expect("deletion_of")
+                .unwrap_or_else(|| panic!("{name}: no deletion recorded"));
+            assert!(deletion.at > 0, "{name}: deletion recorded without a moment");
+            assert!(read_note_text(&node, &doc, key).await.expect("read").is_none());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Renaming something to the name it already has is a no-op, not a copy of
+    /// the note onto its own key followed by a delete of that key — which
+    /// would destroy the note and record it deleted.
+    #[tokio::test]
+    async fn renaming_to_the_same_name_changes_nothing() {
+        let dir = std::env::temp_dir().join(format!("notes-same-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let node = init(dir.clone()).await.expect("init");
+        let doc = node.docs.create().await.expect("create");
+        write_note_merged(&node, &doc, b"n.md", "", "KEEP\n").await.expect("seed");
+        write_note_merged(&node, &doc, b"work/a.md", "", "ALSO KEEP\n").await.expect("seed");
+
+        rename_key(&node, &doc, "n.md", "n.md", false).await.expect("note no-op");
+        // The same folder, with and without the trailing slash a folder key has.
+        rename_key(&node, &doc, "work", "work", true).await.expect("folder no-op");
+        rename_key(&node, &doc, "work", "work/", true).await.expect("folder no-op, slashed");
+
+        assert_eq!(
+            read_note_text(&node, &doc, b"n.md").await.expect("read").as_deref(),
+            Some("KEEP\n"),
+        );
+        assert_eq!(
+            read_note_text(&node, &doc, b"work/a.md").await.expect("read").as_deref(),
+            Some("ALSO KEEP\n"),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Moving a folder into itself would have the sweep of the old prefix
     /// delete the copies it had just made under the new one — and now record
     /// those keys as deleted, which would keep anything written there later
@@ -3839,3 +3935,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+

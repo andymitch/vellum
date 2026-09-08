@@ -382,6 +382,7 @@ pub(crate) async fn reconcile(
     all.extend(vault_texts.keys().cloned());
     all.extend(local_texts.keys().cloned());
     all.extend(local_unreadable.iter().cloned());
+    all.extend(vault_unreadable.iter().cloned());
 
     for rel in all {
         if local_unreadable.contains(&rel) || vault_unreadable.contains(&rel) {
@@ -389,6 +390,11 @@ pub(crate) async fn reconcile(
             // error or non-UTF-8 bytes on disk, a note still syncing or one
             // whose stored bytes don't decode in the vault. Neither is a
             // deletion. Leave the path alone until it reads cleanly.
+            //
+            // Said out loud, because a note whose bytes never decode stalls
+            // this path in both directions for as long as the link lives, and
+            // a silent skip is indistinguishable from a working sync.
+            tracing::warn!(path = %rel, "skipping a path that can't be read on one side");
             continue;
         }
         let vault_path = format!("{folder}{rel}");
@@ -1049,6 +1055,46 @@ mod tests {
             "fine",
             "an unreadable note was treated as a deletion and took the local file"
         );
+        assert_eq!(
+            base.get("z-good.md").map(String::as_str),
+            Some("fine"),
+            "the last text that synced cleanly was forgotten"
+        );
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    /// The common reason a note can't be read is not corruption but sync: the
+    /// entry arrives before its content blob. Same rule — not a deletion — and
+    /// this is the case that actually happens, so it gets its own test.
+    /// `set_hash` is how an entry with no downloaded content is made.
+    #[tokio::test]
+    async fn reconcile_waits_for_a_note_whose_content_has_not_arrived() {
+        let (node, doc, local_dir, base_dir) = fixture("awaiting").await;
+        doc.set_bytes(node.author(), b"note.md".to_vec(), crate::vault::fresh_note("v1"))
+            .await
+            .unwrap();
+        let mut base = HashMap::new();
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(std::fs::read_to_string(local_dir.join("note.md")).unwrap(), "v1");
+
+        // A hash we never downloaded: the entry is live, its content is not
+        // here — exactly what a peer's edit looks like in the moment before
+        // the blob lands.
+        let missing = iroh_blobs::Hash::new(b"content that was never downloaded");
+        doc.set_hash(node.author(), b"note.md".to_vec(), missing, 42).await.unwrap();
+        assert!(
+            vault::read_note_text(&node, &doc, b"note.md").await.unwrap().is_none(),
+            "the note should read as unavailable"
+        );
+
+        reconcile(&node, &doc, "", &local_dir, &mut base).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("note.md")).unwrap(),
+            "v1",
+            "a note waiting on its content was treated as deleted and took the local file"
+        );
+        assert_eq!(base.get("note.md").map(String::as_str), Some("v1"));
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }
