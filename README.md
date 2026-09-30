@@ -1,10 +1,19 @@
-# Vellum
+<div align="center">
+  <img src="src-tauri/icons/128x128@2x.png" alt="Vellum" width="128" height="128">
+  <h1>Vellum</h1>
+  <p><strong>Markdown notes that sync between your devices — no account, no server, no cloud.</strong></p>
 
 [![Release](https://img.shields.io/github/v/release/andymitch/vellum)](https://github.com/andymitch/vellum/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Android%20%7C%20Web-lightgrey)
 
-A local-first Markdown notes app that syncs **peer-to-peer** — no account, no server, no cloud. Your notes live on your devices and sync directly between them. Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), and [iroh](https://iroh.computer).
+  <p>
+    <img src="docs/screenshots/desktop.png" alt="Vellum on macOS" width="580">
+    <img src="docs/screenshots/mobile.png" alt="Vellum on Android" width="166">
+  </p>
+</div>
+
+Vellum is local-first: your notes live on your devices and sync **peer-to-peer**, directly between them. Built with [Tauri](https://tauri.app), [Svelte 5](https://svelte.dev), and [iroh](https://iroh.computer).
 
 ## Features
 
