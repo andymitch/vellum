@@ -491,6 +491,25 @@ mod tests {
         );
     }
 
+    /// Against the live internet, so not part of the normal run:
+    /// `cargo test --lib link_preview -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_public_previews_work_and_inward_hops_are_refused() {
+        // http → https redirect to a public page still yields a card.
+        let p = fetch("http://github.com/").await;
+        assert!(p.is_some_and(|p| p.title.is_some()), "public page lost its preview");
+        // A public hostname whose DNS answer is loopback.
+        assert!(fetch("http://localtest.me/").await.is_none());
+        // A public URL that redirects inward is stopped at the second hop.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("https://httpbin.org/redirect-to?url=http://127.0.0.1:{port}/");
+        assert!(get_public(url.parse().unwrap()).await.is_none());
+        let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+        assert!(accepted.is_err(), "the inward redirect reached loopback");
+    }
+
     /// Entity decoding must not double-decode through the ampersand.
     #[test]
     fn unescape_does_not_double_decode() {
