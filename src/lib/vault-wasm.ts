@@ -17,6 +17,7 @@ import type {
   LinkInfo,
   LinkPreview,
   McpStatus,
+  NoteState,
   NoteTypeEntry,
   SearchHit,
   TagCount,
@@ -111,6 +112,7 @@ export const renameVault = (vault: string, name: string) =>
 
 export const listTree = (vault: string) => cmd<TreeNode[]>("list_tree", vault);
 export const readNote = (vault: string, path: string) => cmd<string>("read_note", vault, path);
+export const noteState = (vault: string, path: string) => cmd<NoteState>("note_state", vault, path);
 export const writeNote = (vault: string, path: string, content: string, base = "") =>
   cmd<void>("write_note", vault, path, base, content);
 export const createNote = (vault: string, path: string) =>

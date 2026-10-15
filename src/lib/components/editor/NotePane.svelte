@@ -13,7 +13,7 @@
   import Editor from "$lib/components/editor/Editor.svelte";
   import Preview from "$lib/components/editor/Preview.svelte";
   import JournalView from "$lib/components/editor/JournalView.svelte";
-  import { readNote, writeNote, createNote, onVaultChanged } from "$lib/vault";
+  import { readNote, noteState, writeNote, createNote, onVaultChanged } from "$lib/vault";
   import { markAppScroll, appScrolling } from "$lib/app-scroll";
   import { slugify } from "$lib/slug";
   import { editorSettings } from "$lib/editor-settings.svelte";
@@ -241,6 +241,10 @@
       // mid-read. Without this guard the in-flight read of the *previous* note
       // lands in the new note's editor (#123, desktop timing).
       if (v !== loadedVault || p !== loadedPath) return;
+      // Still waiting on this note's content, and it still reads empty: it may
+      // have arrived empty, been deleted, or failed to decode. Ask again
+      // rather than leave "still syncing" up (#260).
+      if (syncing && fresh === "") return void explainEmpty(v, p);
       if (fresh === lastLoaded) return;
       // A remote key update can arrive before its content blob finishes
       // downloading; read_note then returns empty (unwrap_or_default). Don't
@@ -250,6 +254,7 @@
       if (fresh === "" && lastLoaded !== "") return;
       content = fresh;
       lastLoaded = fresh;
+      syncing = false;
     }).then((u) => (unlisten = u));
     return () => unlisten?.();
   });
@@ -668,6 +673,7 @@
     const p = path;
     if (v === loadedVault && p === loadedPath) return;
     clearTimeout(saveTimer);
+    loadSeq++;
     loadedVault = v;
     loadedPath = p;
     // Clear before the (async) read so the new note never briefly shows the old
@@ -678,6 +684,7 @@
     // holding on to it would block saving that same text there again.
     rejectedEdit = null;
     saveBlocked = null;
+    syncing = false;
     // A quick edit belongs to the note it started in.
     quickEditActive = false;
     resetChrome();
@@ -697,6 +704,24 @@
     // not just at launch — unless we were opened to jump at a heading, which is
     // a more specific request than "where you were".
     if (!pendingAnchor) applyScrollRestore(mode, scroll);
+    if (text === "") void explainEmpty(v, p);
+  }
+
+  /**
+   * An empty read isn't always an empty note (#260). A note that won't decode
+   * gets the save banner now, before anything typed into it is refused; one
+   * whose content hasn't downloaded says so until vault-changed refills it.
+   */
+  async function explainEmpty(v: string, p: string) {
+    // Tied to this open, not just this path: leaving and coming back starts a
+    // new read, and an answer from the old one must not land on it.
+    const seq = loadSeq;
+    const state = await noteState(v, p).catch(() => "text");
+    if (seq !== loadSeq || v !== loadedVault || p !== loadedPath || lastLoaded !== "") return;
+    syncing = state === "syncing";
+    if (state === "unreadable") {
+      saveBlocked = "This note's saved content can't be read, so changes to it won't be saved.";
+    }
   }
 
 
@@ -748,6 +773,10 @@
   // making it reactive would put a write to it back into that effect's own
   // dependencies — which is how the retry loop got here in the first place.
   let saveBlocked = $state<string | null>(null);
+  // The open note's content is still downloading from a peer (#260).
+  let syncing = $state(false);
+  // Bumped by every load(), so an answer about an earlier open can tell.
+  let loadSeq = 0;
 
 
   /// Put the text somewhere safe when its own note won't take it. Creates a
@@ -789,6 +818,7 @@
       await writeNote(v, p, c, base);
       rejectedEdit = null;
       saveBlocked = null;
+      syncing = false;
       return true;
     } catch (e) {
       // Retrying is the exception, not the rule: only a write that says it is
@@ -877,6 +907,14 @@
       >
         <X size={14} />
       </button>
+    </div>
+  {:else if syncing}
+    <div
+      class="absolute left-1/2 z-40 max-w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 rounded-2xl border border-border bg-popover px-4 py-2 text-sm text-muted-foreground shadow-lg"
+      style="top:calc(var(--chrome-h, 0px) + 0.5rem);"
+      role="status"
+    >
+      This note is still syncing from another device.
     </div>
   {/if}
 

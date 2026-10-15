@@ -561,6 +561,7 @@ pub fn run() {
             vault::rename_vault,
             vault::list_tree,
             vault::read_note,
+            vault::note_state,
             vault::search_notes,
             vault::list_tags,
             vault::list_note_types,

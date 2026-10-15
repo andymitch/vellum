@@ -128,6 +128,7 @@ async fn dispatch(request: &JsValue) -> Result<JsValue, JsValue> {
 
         "list_tree" => json(&v::tree(&n, &s(0)?).await.map_err(oops)?),
         "read_note" => Ok(JsValue::from_str(&v::read(&n, &s(0)?, &s(1)?).await.map_err(oops)?)),
+        "note_state" => Ok(JsValue::from_str(v::read_state(&n, &s(0)?, &s(1)?).await.map_err(oops)?)),
         "write_note" => {
             let (vault, path) = (s(0)?, s(1)?);
             v::write(&n, &vault, &path, &s(2)?, &s(3)?).await.map_err(oops)?;
