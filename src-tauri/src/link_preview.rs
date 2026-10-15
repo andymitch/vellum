@@ -219,17 +219,24 @@ fn is_public(ip: IpAddr) -> bool {
                 || v4.is_multicast()
                 || v4.is_documentation()
                 || a == 0
+                // Reserved, 240.0.0.0/4.
+                || a >= 240
                 // CGNAT, 100.64.0.0/10.
-                || (a == 100 && (64..128).contains(&b)))
+                || (a == 100 && (64..128).contains(&b))
+                // Benchmarking, 198.18.0.0/15, sometimes used internally.
+                || (a == 198 && (18..20).contains(&b))
+                // IETF protocol assignments, 192.0.0.0/24.
+                || v4.octets()[..3] == [192, 0, 0])
         }
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_public(IpAddr::V4(v4));
             }
             let s = v6.segments();
-            // NAT64 (64:ff9b::/96) wraps a v4 address; judge the one inside, so
-            // DNS64 networks still get previews of public sites.
-            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+            // NAT64 (64:ff9b::/96) and IPv4-compatible (::a.b.c.d) wrap a v4
+            // address; judge the one inside, so DNS64 networks still get
+            // previews of public sites.
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || (s[..6] == [0; 6] && s[6] != 0) {
                 let [a, b, c, d] = v6.octets()[12..] else {
                     unreachable!()
                 };
@@ -239,7 +246,10 @@ fn is_public(ip: IpAddr) -> bool {
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || v6.is_unique_local()
-                || v6.is_unicast_link_local())
+                || v6.is_unicast_link_local()
+                // Site-local fec0::/10 (deprecated) and local-use NAT64 64:ff9b:1::/48.
+                || (s[0] & 0xffc0) == 0xfec0
+                || s[..3] == [0x64, 0xff9b, 1])
         }
     }
 }
@@ -259,6 +269,8 @@ async fn get_public(mut url: reqwest::Url) -> Option<reqwest::Response> {
         let mut builder = reqwest::Client::builder()
             .timeout(TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            // A proxy would re-resolve the host itself, undoing the pinning below.
+            .no_proxy()
             // Identify honestly. Some sites serve no OG tags to unknown agents, and
             // pretending to be a browser to defeat that would be the wrong call for
             // an app whose whole premise is not phoning home behind your back.
@@ -301,7 +313,11 @@ async fn get_public(mut url: reqwest::Url) -> Option<reqwest::Response> {
 }
 
 async fn fetch(url: &str) -> Option<LinkPreview> {
-    let resp = get_public(reqwest::Url::parse(url).ok()?).await?;
+    // One budget for the whole chain: DNS lookups run outside reqwest's own
+    // timeout, and each hop would otherwise get a fresh one.
+    let resp = tokio::time::timeout(TIMEOUT, get_public(reqwest::Url::parse(url).ok()?))
+        .await
+        .ok()??;
     if !resp.status().is_success() {
         return None;
     }
@@ -450,6 +466,12 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:192.168.0.1",
             "64:ff9b::a00:1",
+            "198.18.0.1",
+            "240.0.0.1",
+            "192.0.0.8",
+            "::127.0.0.1",
+            "fec0::1",
+            "64:ff9b:1::7f00:1",
         ] {
             assert!(!ok(inner), "{inner} should be refused");
         }
