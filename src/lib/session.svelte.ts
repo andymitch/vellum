@@ -162,7 +162,6 @@ export const session = {
   split(i: number) {
     set(splitApart(list, i));
   },
-  /** Drag the divider between a joined tab's panes. */
   get sidebarWidth() {
     return sidebar;
   },
@@ -173,6 +172,7 @@ export const session = {
     persist();
   },
 
+  /** Drag the divider between a joined tab's panes. */
   ratio(i: number, ratio: number) {
     set(setRatio(list, i, ratio));
   },

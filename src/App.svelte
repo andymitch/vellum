@@ -120,6 +120,8 @@
   let sidebarOpen = $state(!mobileInit || !session.path);
   function setSidebar(open: boolean) {
     sidebarOpen = open;
+    // Closing mid-drag unmounts the splitter before its pointerup.
+    resizingSidebar = false;
   }
   // Desktop sidebar resize (#265). The width transition that animates
   // collapsing would make a drag lag behind the pointer, so it's off mid-drag.
