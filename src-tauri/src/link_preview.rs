@@ -7,6 +7,8 @@
 //!   the Link previews setting is on (the frontend gates the call).
 //! - One request per URL per session, cached in memory, so re-rendering a note
 //!   while typing doesn't re-hit the site.
+//! - Only public addresses. Every hop, redirects included, is resolved and
+//!   refused if it lands on loopback, LAN, link-local or similar (#273).
 //! - Bounded: a short timeout, a capped read, and only the `<head>` is parsed.
 //! - Failure is not an error state. Offline, a timeout, a 404 and a page with no
 //!   metadata all resolve the same way — no card, plain link stays.
@@ -16,6 +18,7 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -201,16 +204,120 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
+/// Whether an address is on the public internet. Note content can come from
+/// anyone holding the vault's write ticket, so a preview must never make this
+/// machine request something inside its own network (#273).
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                // Reserved, 240.0.0.0/4.
+                || a >= 240
+                // CGNAT, 100.64.0.0/10.
+                || (a == 100 && (64..128).contains(&b))
+                // Benchmarking, 198.18.0.0/15, sometimes used internally.
+                || (a == 198 && (18..20).contains(&b))
+                // IETF protocol assignments, 192.0.0.0/24.
+                || v4.octets()[..3] == [192, 0, 0])
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            // NAT64 (64:ff9b::/96) and IPv4-compatible (::a.b.c.d) wrap a v4
+            // address; judge the one inside, so DNS64 networks still get
+            // previews of public sites.
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || (s[..6] == [0; 6] && s[6] != 0) {
+                let [a, b, c, d] = v6.octets()[12..] else {
+                    unreachable!()
+                };
+                return is_public(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            }
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                // Site-local fec0::/10 (deprecated) and local-use NAT64 64:ff9b:1::/48.
+                || (s[0] & 0xffc0) == 0xfec0
+                || s[..3] == [0x64, 0xff9b, 1])
+        }
+    }
+}
+
+/// How many redirects a preview follows. Each hop is vetted like the first.
+const MAX_REDIRECTS: usize = 5;
+
+/// GET `url`, refusing any hop whose host resolves to a non-public address.
+/// The connection goes to the address we vetted, so DNS can't be swapped
+/// between the check and the request.
+async fn get_public(mut url: reqwest::Url) -> Option<reqwest::Response> {
+    for _ in 0..=MAX_REDIRECTS {
+        if !matches!(url.scheme(), "http" | "https") {
+            return None;
+        }
+        let port = url.port_or_known_default()?;
+        let mut builder = reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            // A proxy would re-resolve the host itself, undoing the pinning below.
+            .no_proxy()
+            // Identify honestly. Some sites serve no OG tags to unknown agents, and
+            // pretending to be a browser to defeat that would be the wrong call for
+            // an app whose whole premise is not phoning home behind your back.
+            .user_agent(concat!(
+                "Vellum/",
+                env!("CARGO_PKG_VERSION"),
+                " (link preview)"
+            ));
+        // The URL parser has already normalised odd IP spellings (`2130706433`,
+        // `0x7f.1`) into dotted form, and wraps v6 literals in brackets.
+        let host = url.host_str()?;
+        if let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        {
+            if !is_public(ip) {
+                return None;
+            }
+        } else {
+            let addrs: Vec<SocketAddr> =
+                tokio::net::lookup_host((host, port)).await.ok()?.collect();
+            if addrs.is_empty() || !addrs.iter().all(|a| is_public(a.ip())) {
+                return None;
+            }
+            builder = builder.resolve_to_addrs(host, &addrs);
+        }
+        let resp = builder.build().ok()?.get(url.clone()).send().await.ok()?;
+        if !resp.status().is_redirection() {
+            return Some(resp);
+        }
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)?
+            .to_str()
+            .ok()?;
+        url = url.join(location).ok()?;
+    }
+    None
+}
+
 async fn fetch(url: &str) -> Option<LinkPreview> {
-    let client = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        // Identify honestly. Some sites serve no OG tags to unknown agents, and
-        // pretending to be a browser to defeat that would be the wrong call for
-        // an app whose whole premise is not phoning home behind your back.
-        .user_agent(concat!("Vellum/", env!("CARGO_PKG_VERSION"), " (link preview)"))
-        .build()
-        .ok()?;
-    let resp = client.get(url).send().await.ok()?;
+    // One budget for the whole chain: DNS lookups run outside reqwest's own
+    // timeout, and each hop would otherwise get a fresh one.
+    let resp = tokio::time::timeout(TIMEOUT, get_public(reqwest::Url::parse(url).ok()?))
+        .await
+        .ok()??;
     if !resp.status().is_success() {
         return None;
     }
@@ -326,6 +433,103 @@ mod tests {
     fn a_page_with_no_metadata_is_not_useful() {
         let p = parse_metadata("<html><body>hi</body></html>", "https://example.com");
         assert!(!p.is_useful(), "site_name alone must not qualify: {p:?}");
+    }
+
+    #[test]
+    fn only_public_addresses_pass() {
+        let ok = |s: &str| is_public(s.parse().unwrap());
+        for public in [
+            "93.184.216.34",
+            "1.1.1.1",
+            "2606:4700::1111",
+            "64:ff9b::5db8:d822",
+        ] {
+            assert!(ok(public), "{public} should be public");
+        }
+        for inner in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "0.1.2.3",
+            "255.255.255.255",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.0.1",
+            "64:ff9b::a00:1",
+            "198.18.0.1",
+            "240.0.0.1",
+            "192.0.0.8",
+            "::127.0.0.1",
+            "fec0::1",
+            "64:ff9b:1::7f00:1",
+        ] {
+            assert!(!ok(inner), "{inner} should be refused");
+        }
+    }
+
+    /// Every way of naming this machine is refused before any request is made,
+    /// including odd IP spellings and a hostname that resolves to loopback.
+    #[tokio::test]
+    async fn local_targets_are_never_fetched() {
+        for url in [
+            "http://localhost:1/",
+            "http://127.0.0.1:1/",
+            "http://[::1]:1/",
+            "http://2130706433:1/",
+            "http://0x7f.0.0.1:1/",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                get_public(reqwest::Url::parse(url).unwrap())
+                    .await
+                    .is_none(),
+                "{url}"
+            );
+        }
+    }
+
+    /// Refusal happens before connecting: a live loopback listener never sees
+    /// a connection, so a side-effecting GET can't land.
+    #[tokio::test]
+    async fn loopback_is_never_connected_to() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let got = get_public(format!("http://{addr}/").parse().unwrap()).await;
+        assert!(got.is_none());
+        let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+        assert!(
+            accepted.is_err(),
+            "a loopback target must never be connected to"
+        );
+    }
+
+    /// Against the live internet, so not part of the normal run:
+    /// `cargo test --lib link_preview -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_public_previews_work_and_inward_hops_are_refused() {
+        // http → https redirect to a public page still yields a card.
+        let p = fetch("http://github.com/").await;
+        assert!(p.is_some_and(|p| p.title.is_some()), "public page lost its preview");
+        // A public hostname whose DNS answer is loopback.
+        assert!(fetch("http://localtest.me/").await.is_none());
+        // A public URL that redirects inward is stopped at the second hop.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("https://httpbin.org/redirect-to?url=http://127.0.0.1:{port}/");
+        assert!(get_public(url.parse().unwrap()).await.is_none());
+        let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+        assert!(accepted.is_err(), "the inward redirect reached loopback");
     }
 
     /// Entity decoding must not double-decode through the ampersand.
