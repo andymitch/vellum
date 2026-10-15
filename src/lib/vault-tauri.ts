@@ -10,6 +10,7 @@ import type {
   LinkInfo,
   LinkPreview,
   McpStatus,
+  NoteState,
   NoteTypeEntry,
   SearchHit,
   TagCount,
@@ -29,6 +30,8 @@ export const renameVault = (vault: string, name: string) =>
 export const listTree = (vault: string) => invoke<TreeNode[]>("list_tree", { vault });
 export const readNote = (vault: string, path: string) =>
   invoke<string>("read_note", { vault, path });
+export const noteState = (vault: string, path: string) =>
+  invoke<NoteState>("note_state", { vault, path });
 export const writeNote = (vault: string, path: string, content: string, base = "") =>
   invoke<void>("write_note", { vault, path, base, content });
 export const createNote = (vault: string, path: string) =>

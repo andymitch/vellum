@@ -1874,6 +1874,20 @@ pub async fn read(node: &Node, vault: &str, path: &str) -> Result<String> {
     Ok(read_note_text(node, &doc, path.as_bytes()).await?.unwrap_or_default())
 }
 
+/// Why a note reads the way it does: `read` returns "" for an empty note, a
+/// deleted one, one still downloading and one that won't decode alike, and the
+/// editor needs to tell those apart on open rather than on the first refused
+/// save (#260). One of "text", "syncing", "deleted", "unreadable".
+pub async fn read_state(node: &Node, vault: &str, path: &str) -> Result<&'static str> {
+    let doc = open(node, vault).await?;
+    Ok(match merged_note(node, &doc, path.as_bytes(), 0).await?.1 {
+        NoteRead::Text => "text",
+        NoteRead::AwaitingContent => "syncing",
+        NoteRead::Deleted => "deleted",
+        NoteRead::Unreadable => "unreadable",
+    })
+}
+
 /// Save a note, 3-way merging against any concurrent peer edit (#99).
 pub async fn write(node: &Node, vault: &str, path: &str, base: &str, content: &str) -> Result<()> {
     let doc = open(node, vault).await?;
@@ -2152,6 +2166,13 @@ pub async fn list_tags(
 pub async fn read_note(state: State<'_, VaultManager>, vault: String, path: String) -> Result<String, String> {
     let node = state.node().await?;
     map_err(read(node, &vault, &path).await)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub async fn note_state(state: State<'_, VaultManager>, vault: String, path: String) -> Result<&'static str, String> {
+    let node = state.node().await?;
+    map_err(read_state(node, &vault, &path).await)
 }
 
 /// Export every note in the vault as a zip of `.md` files mirroring the folder
@@ -3444,6 +3465,10 @@ mod tests {
 
         // It reads as absent, which is what makes the overwrite one keystroke away.
         assert!(read_note_text(&node, &doc, b"odd.md").await.expect("read").is_none());
+        // But the editor can ask why it's empty, and say so on open (#260).
+        let id = doc.id().to_string();
+        assert_eq!(read_state(&node, &id, "odd.md").await.expect("state"), "unreadable");
+        assert_eq!(read_state(&node, &id, "nothing-here.md").await.expect("state"), "deleted");
 
         let err = write_note_merged(&node, &doc, b"odd.md", "", "typed over the top\n")
             .await

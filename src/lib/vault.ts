@@ -52,6 +52,7 @@ export type SearchHit = {
   lines: string[];
 };
 export type TagCount = { tag: string; count: number };
+export type NoteState = "text" | "syncing" | "deleted" | "unreadable";
 
 // ---- link previews (#62) ----
 // Open Graph metadata for an external link, fetched backend-side (CORS blocks
@@ -110,6 +111,9 @@ export interface VaultBackend {
 
   listTree(vault: string): Promise<TreeNode[]>;
   readNote(vault: string, path: string): Promise<string>;
+  /// Why `readNote` came back the way it did — an empty string is also what a
+  /// deleted, still-downloading or undecodable note reads as (#260).
+  noteState(vault: string, path: string): Promise<NoteState>;
   /// Write note content. Filename and content are independent — renaming is an
   /// explicit file action (`renamePath`), never derived from the content.
   /// `base` is the text the editor loaded; the Tauri backend 3-way merges
@@ -175,6 +179,7 @@ export const {
   renameVault,
   listTree,
   readNote,
+  noteState,
   writeNote,
   createNote,
   createFolder,
