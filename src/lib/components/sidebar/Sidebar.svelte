@@ -25,6 +25,7 @@
     import {
         FilePlus,
         FolderPlus,
+        Search,
         Share2,
         Download,
         Plus,
@@ -78,6 +79,7 @@
         ontree,
         onrenamed,
         onremoved,
+        onsearch,
     }: {
         activePath?: string | null;
         onopen: OpenNote;
@@ -90,6 +92,9 @@
         // has to follow it or go (#169).
         onrenamed?: (from: string, to: string, isDir: boolean) => void;
         onremoved?: (path: string, isDir: boolean) => void;
+        // Search lives here rather than in the header, which the note title
+        // needs (#276). Only passed where there's no Cmd/Ctrl+F to reach it.
+        onsearch?: () => void;
     } = $props();
 
     // True until we've restored the saved vault + note once on launch, so manual
@@ -638,6 +643,18 @@ Delete this note whenever you're ready. Happy writing!
             <ChevronsUpDown class="h-4 w-4 shrink-0 text-muted-foreground" />
             <span class="truncate">{activeVaultName}</span>
         </button>
+        {#if onsearch}
+            <button
+                type="button"
+                class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 md:p-1"
+                title="Search notes"
+                aria-label="Search notes"
+                disabled={!activeVault}
+                onclick={onsearch}
+            >
+                <Search class="h-4.5 w-4.5 md:h-3.75 md:w-3.75" />
+            </button>
+        {/if}
         <button
             type="button"
             class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 md:p-1"
