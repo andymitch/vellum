@@ -11,6 +11,7 @@
     onreset,
     label = "Resize",
     value,
+    dragging = $bindable(false),
   }: {
     /// The pointer's x, during a drag.
     ondrag: (clientX: number) => void;
@@ -21,9 +22,10 @@
     label?: string;
     /// Where the divider sits, as a percentage, for assistive tech.
     value?: number;
+    /// Whether a drag is under way, for a host that animates its size and must
+    /// stop while the pointer drives it.
+    dragging?: boolean;
   } = $props();
-
-  let dragging = $state(false);
 
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;

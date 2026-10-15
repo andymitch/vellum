@@ -18,7 +18,7 @@
   } from "$lib/vault";
   import { isAndroidApp, isMacApp } from "$lib/platform";
   import { softKeyboard } from "$lib/soft-keyboard";
-  import { session } from "$lib/session.svelte";
+  import { session, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "$lib/session.svelte";
   import { duplicateNote as duplicateNoteFile } from "$lib/notes";
   import {
     exportVaultZip,
@@ -121,6 +121,10 @@
   function setSidebar(open: boolean) {
     sidebarOpen = open;
   }
+  // Desktop sidebar resize (#265). The width transition that animates
+  // collapsing would make a drag lag behind the pointer, so it's off mid-drag.
+  let asideEl = $state<HTMLElement | undefined>(undefined);
+  let resizingSidebar = $state(false);
 
   // ---- Mobile swipe gestures (#46) ----
   // A horizontal swipe in the middle of the screen opens (right, when closed) or
@@ -809,18 +813,21 @@
          we drive translateX inline with no transition so it tracks the finger;
          on release drawerPan clears and the class transition snaps it home. -->
     <aside
-      class="z-30 shrink-0 overflow-hidden border-border bg-secondary transition-all duration-200 ease-out fixed inset-y-0 left-0 w-64 md:static md:z-auto md:bg-secondary/40 {sidebarOpen
-        ? 'translate-x-0 border-r md:w-64'
+      bind:this={asideEl}
+      class="z-30 shrink-0 overflow-hidden border-border bg-secondary ease-out fixed inset-y-0 left-0 w-64 md:static md:z-auto md:w-(--sidebar-w) md:bg-secondary/40 {resizingSidebar
+        ? ''
+        : 'transition-all duration-200'} {sidebarOpen
+        ? 'translate-x-0 border-r md:border-r-0'
         : '-translate-x-full border-r-0 md:translate-x-0 md:w-0'}"
-      style={drawerPan !== null
+      style="--sidebar-w:{session.sidebarWidth}px;{drawerPan !== null
         ? `transform:translateX(${drawerPan}px);transition:none`
-        : ""}
+        : ''}"
     >
       <!-- Drawer is fixed on mobile, so it escapes the root's safe-area padding;
            re-apply top/bottom insets here so content clears the status/nav bars.
            Insets are 0 on desktop, so this is a no-op there. -->
       <div
-        class="h-full w-64"
+        class="h-full w-64 md:w-(--sidebar-w)"
         style="padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);"
       >
         <Sidebar
@@ -834,6 +841,20 @@
         />
       </div>
     </aside>
+    {#if sidebarOpen}
+      <!-- Straddles the sidebar's edge, so its line is the border and it adds
+           no width of its own. Desktop only: the mobile drawer is fixed. -->
+      <div class="-mx-[3px] hidden md:flex">
+        <Splitter
+          label="Resize sidebar"
+          bind:dragging={resizingSidebar}
+          value={((session.sidebarWidth - SIDEBAR_MIN) / (SIDEBAR_MAX - SIDEBAR_MIN)) * 100}
+          ondrag={(x) => (session.sidebarWidth = x - (asideEl?.getBoundingClientRect().left ?? 0))}
+          onnudge={(dir) => (session.sidebarWidth += dir * 16)}
+          onreset={() => (session.sidebarWidth = SIDEBAR_DEFAULT)}
+        />
+      </div>
+    {/if}
 
     <!-- The open tab's notes: one pane, or two side by side with a draggable
          divider (#169). Each pane owns its note's buffer, saving and scroll —

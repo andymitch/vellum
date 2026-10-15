@@ -39,6 +39,7 @@ type Saved = {
   tabs?: unknown;
   active?: unknown;
   mode?: Mode;
+  sidebar?: number;
   // Pre-#169 single-note session, migrated below.
   path?: string | null;
   scroll?: number;
@@ -68,10 +69,19 @@ let list = $state<TabList>(restore(saved));
 // last one the user chose. Persisted so launch reopens in the mode they left.
 let lastMode = $state<Mode>(saved.mode === "preview" ? "preview" : "source");
 
+// The desktop sidebar's width (#265). The mobile drawer keeps its fixed width:
+// the swipe gesture animates against it.
+export const SIDEBAR_DEFAULT = 256;
+export const SIDEBAR_MIN = 180;
+export const SIDEBAR_MAX = 480;
+const clampSidebar = (w: number) =>
+  Number.isFinite(w) ? Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w))) : SIDEBAR_DEFAULT;
+let sidebar = $state(clampSidebar(saved.sidebar ?? SIDEBAR_DEFAULT));
+
 function persist() {
   localStorage.setItem(
     KEY,
-    JSON.stringify({ vault, tabs: list.tabs, active: list.active, mode: lastMode }),
+    JSON.stringify({ vault, tabs: list.tabs, active: list.active, mode: lastMode, sidebar }),
   );
 }
 
@@ -153,6 +163,16 @@ export const session = {
     set(splitApart(list, i));
   },
   /** Drag the divider between a joined tab's panes. */
+  get sidebarWidth() {
+    return sidebar;
+  },
+  set sidebarWidth(w: number) {
+    const next = clampSidebar(w);
+    if (next === sidebar) return;
+    sidebar = next;
+    persist();
+  },
+
   ratio(i: number, ratio: number) {
     set(setRatio(list, i, ratio));
   },
