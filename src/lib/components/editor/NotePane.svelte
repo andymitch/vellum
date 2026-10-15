@@ -241,6 +241,10 @@
       // mid-read. Without this guard the in-flight read of the *previous* note
       // lands in the new note's editor (#123, desktop timing).
       if (v !== loadedVault || p !== loadedPath) return;
+      // Still waiting on this note's content, and it still reads empty: it may
+      // have arrived empty, been deleted, or failed to decode. Ask again
+      // rather than leave "still syncing" up (#260).
+      if (syncing && fresh === "") return void explainEmpty(v, p);
       if (fresh === lastLoaded) return;
       // A remote key update can arrive before its content blob finishes
       // downloading; read_note then returns empty (unwrap_or_default). Don't
@@ -669,6 +673,7 @@
     const p = path;
     if (v === loadedVault && p === loadedPath) return;
     clearTimeout(saveTimer);
+    loadSeq++;
     loadedVault = v;
     loadedPath = p;
     // Clear before the (async) read so the new note never briefly shows the old
@@ -708,12 +713,14 @@
    * whose content hasn't downloaded says so until vault-changed refills it.
    */
   async function explainEmpty(v: string, p: string) {
+    // Tied to this open, not just this path: leaving and coming back starts a
+    // new read, and an answer from the old one must not land on it.
+    const seq = loadSeq;
     const state = await noteState(v, p).catch(() => "text");
-    if (v !== loadedVault || p !== loadedPath) return;
+    if (seq !== loadSeq || v !== loadedVault || p !== loadedPath || lastLoaded !== "") return;
+    syncing = state === "syncing";
     if (state === "unreadable") {
       saveBlocked = "This note's saved content can't be read, so changes to it won't be saved.";
-    } else if (state === "syncing" && lastLoaded === "") {
-      syncing = true;
     }
   }
 
@@ -768,6 +775,8 @@
   let saveBlocked = $state<string | null>(null);
   // The open note's content is still downloading from a peer (#260).
   let syncing = $state(false);
+  // Bumped by every load(), so an answer about an earlier open can tell.
+  let loadSeq = 0;
 
 
   /// Put the text somewhere safe when its own note won't take it. Creates a
