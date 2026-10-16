@@ -13,7 +13,7 @@
     type CompletionResult,
   } from "@codemirror/autocomplete";
   import { onMount } from "svelte";
-  import { thingsTheme } from "./things-theme";
+  import { thingsTheme, cursorShape } from "./things-theme";
   import { theme } from "$lib/theme.svelte";
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { markAppScroll } from "$lib/app-scroll";
@@ -42,6 +42,7 @@
   // a compartment so the settings sheet can toggle them live without a remount.
   const bracketsConf = new Compartment();
   const attrsConf = new Compartment();
+  const cursorConf = new Compartment();
 
   let {
     value = $bindable(""),
@@ -148,6 +149,7 @@
           themeConf.of(thingsTheme(theme.dark)),
           bracketsConf.of(editorSettings.closeBrackets ? closeBrackets() : []),
           attrsConf.of(EditorView.contentAttributes.of(contentAttrs())),
+          cursorConf.of(cursorShape(editorSettings.cursorStyle)),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               value = update.state.doc.toString();
@@ -279,6 +281,10 @@
     view?.dispatch({
       effects: attrsConf.reconfigure(EditorView.contentAttributes.of(contentAttrs())),
     });
+  });
+  $effect(() => {
+    const style = editorSettings.cursorStyle;
+    view?.dispatch({ effects: cursorConf.reconfigure(cursorShape(style)) });
   });
 
   // Push external `value` changes into the editor. Guarded against the echo
