@@ -171,6 +171,10 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default also asks for `tools`, a package Google retired;
+          # cmdline-tools 16 refuses it and fails the job. The NDK comes next.
+          packages: platform-tools
       - name: Install Android NDK
         run: |
           sdkmanager "ndk;27.1.12297006"
