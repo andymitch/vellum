@@ -155,6 +155,15 @@ export interface VaultBackend {
   mcpStatus(): Promise<McpStatus>;
   setMcpEnabled(enabled: boolean): Promise<McpStatus>;
 
+  /// Private vaults (#274): this device's list, and the OS unlock that opens
+  /// one. The browser has no OS unlock, so there the list is always empty.
+  privateVaults(): Promise<string[]>;
+  /// Asks the OS to confirm the owner first; false when they didn't.
+  setVaultPrivate(vault: string, on: boolean): Promise<boolean>;
+  unlockVault(vault: string): Promise<boolean>;
+  /// Lock every vault but `except`.
+  lockVaults(except: string | null): Promise<void>;
+
   searchNotes(vault: string, query: string, max?: number): Promise<SearchHit[]>;
   listTags(vault: string): Promise<TagCount[]>;
 
@@ -194,6 +203,10 @@ export const {
   onBackgroundSyncChanged,
   mcpStatus,
   setMcpEnabled,
+  privateVaults,
+  setVaultPrivate,
+  unlockVault,
+  lockVaults,
   searchNotes,
   listTags,
   fetchLinkPreview,

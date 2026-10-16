@@ -32,6 +32,8 @@
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
   import { initLinkFolders } from "$lib/link-folders.svelte";
+  import { initPrivateVaults, privacy } from "$lib/private-vaults.svelte";
+  import LockScreen from "$lib/components/LockScreen.svelte";
   import { isBlankNote, noteTypeInfo, type NoteType } from "$lib/note-type";
   import {
     Code,
@@ -101,6 +103,7 @@
   // Read configured linked folders (#219) so Settings shows them; the backend
   // resumes any enabled ones on its own.
   onMount(() => void initLinkFolders());
+  onMount(() => void initPrivateVaults());
   // Keep the Settings toggle in step when background sync is changed from the
   // desktop tray ("Turn off background sync").
   onMount(() => {
@@ -230,6 +233,20 @@
 
   // Settings sheet + the vault tree (for file move/duplicate folder lists).
   let settingsOpen = $state(false);
+
+  // A private vault that's locked is covered by LockScreen, with the app inert
+  // underneath (#274). Leaving a vault locks it behind you.
+  // Until the private list has loaded, any vault might be one, so cover it.
+  const vaultLocked = $derived(
+    !!session.vault && (!privacy.ready || privacy.locked(session.vault)),
+  );
+  $effect(() => privacy.entered(session.vault));
+  $effect(() => {
+    if (vaultLocked) {
+      searchOpen = false;
+      settingsOpen = false;
+    }
+  });
   let tree = $state<TreeNode[]>([]);
   // Sidebar instance — exposes imperative hooks for global hotkeys.
   let sidebar = $state<Sidebar | undefined>(undefined);
@@ -605,6 +622,8 @@
   ]);
 
   function onKeydown(e: KeyboardEvent) {
+    // No shortcut reaches past a locked vault (#274).
+    if (vaultLocked) return;
     if (SCROLL_KEYS.has(e.key)) lastScrollGestureAt = Date.now();
     // ESC leaves a desktop quick edit (#153), returning to preview. Gated on
     // quickEditActive so it only undoes a double-click-to-edit, not a manual
@@ -667,6 +686,7 @@
 </script>
 
 <div
+  inert={vaultLocked}
   class="relative flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   style="padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);--chrome-h:{mobile
     ? headerH + 'px'
@@ -954,6 +974,14 @@
     ontype={(type) => sidebar?.newTypedNote(currentDir, type)}
     hidden={chromeHidden}
   />
+{/if}
+
+{#if vaultLocked && session.vault}
+  {#if privacy.ready}
+    <LockScreen vault={session.vault} />
+  {:else}
+    <div class="fixed inset-0 z-[100] bg-background"></div>
+  {/if}
 {/if}
 
 <SearchPalette

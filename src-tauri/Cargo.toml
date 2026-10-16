@@ -70,6 +70,8 @@ paranoid-android = "0.2"
 
 [target.'cfg(any(target_os="android",target_os="ios"))'.dependencies]
 tauri-plugin-barcode-scanner = "2.4.5"
+# Device unlock (fingerprint / face / PIN) for private vaults (#274).
+tauri-plugin-biometric = "2"
 
 # macOS: nudge the Overlay-titlebar traffic lights down so they center in our
 # taller web header (#156), and show the native share sheet (#105).
@@ -84,7 +86,10 @@ objc2-app-kit = { version = "0.3", features = [
   # NSSharingServicePicker lives in this module too — there is no separate feature.
   "NSSharingService",
 ] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSArray", "NSString", "NSError"] }
+# Touch ID / login password prompt for private vaults (#274).
+objc2-local-authentication = { version = "0.3", features = ["LAContext", "LAError", "block2"] }
+block2 = "0.6"
 
 # Desktop-only: in-app auto-update (Tauri's updater is desktop-only; mobile
 # updates ship via the APK/stores). process is used to relaunch after update.

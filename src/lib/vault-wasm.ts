@@ -160,6 +160,11 @@ const MCP_OFF: McpStatus = { enabled: false, port: null, url: null, token: "", c
 /// Reported off, as the mobile Rust build does.
 export const mcpStatus = (): Promise<McpStatus> => Promise.resolve(MCP_OFF);
 export const setMcpEnabled = (_enabled: boolean): Promise<McpStatus> => Promise.resolve(MCP_OFF);
+export const privateVaults = (): Promise<string[]> => Promise.resolve([]);
+export const setVaultPrivate = (_vault: string, _on: boolean): Promise<boolean> =>
+  Promise.reject(new Error("Private vaults need the desktop or Android app"));
+export const unlockVault = (_vault: string): Promise<boolean> => Promise.resolve(true);
+export const lockVaults = (_except: string | null): Promise<void> => Promise.resolve();
 
 /// Needs a cross-origin fetch of arbitrary sites, which CORS blocks from a
 /// page. The desktop does it backend-side; here a plain link is the answer.
