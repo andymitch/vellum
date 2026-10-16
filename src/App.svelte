@@ -12,6 +12,8 @@
   import {
     renamePath,
     deletePath,
+    readNote,
+    noteState,
     shareNote,
     onBackgroundSyncChanged,
     type TreeNode,
@@ -19,7 +21,7 @@
   import { isAndroidApp, isMacApp } from "$lib/platform";
   import { softKeyboard } from "$lib/soft-keyboard";
   import { session, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "$lib/session.svelte";
-  import { duplicateNote as duplicateNoteFile } from "$lib/notes";
+  import { createdHere, noteKey, duplicateNote as duplicateNoteFile } from "$lib/notes";
   import {
     exportVaultZip,
     importVaultZip,
@@ -30,7 +32,7 @@
   import { initLiveSync, applyLiveSyncFromBackend } from "$lib/live-sync.svelte";
   import { initMcp } from "$lib/mcp.svelte";
   import { initLinkFolders } from "$lib/link-folders.svelte";
-  import { noteTypeInfo, type NoteType } from "$lib/note-type";
+  import { isBlankNote, noteTypeInfo, type NoteType } from "$lib/note-type";
   import {
     Code,
     Eye,
@@ -392,6 +394,39 @@
     const t = session.tab;
     if (!t || session.active === -1) return;
     session.ratio(session.active, t.ratio + dir * 0.02);
+  }
+
+  // A note created here and left blank is deleted once nothing shows it any
+  // more — its pane moved on, its tab closed, or the vault changed (#277).
+  // Only after it has been seen open: creation and opening aren't one step.
+  const openKeys = () =>
+    new Set(session.tabs.flatMap((t) => t.panes.map((p) => noteKey(session.vault ?? "", p.path))));
+  const seenOpen = new Set<string>();
+  $effect(() => {
+    const open = openKeys();
+    for (const key of createdHere) {
+      if (open.has(key)) seenOpen.add(key);
+      else if (seenOpen.has(key)) {
+        createdHere.delete(key);
+        seenOpen.delete(key);
+        void dropIfBlank(key);
+      }
+    }
+  });
+  async function dropIfBlank(key: string) {
+    const [v, p] = key.split("\n");
+    try {
+      if (!isBlankNote(await readNote(v, p))) return;
+      // "text" is a note that read fine and is empty — never one still
+      // downloading or that failed to decode (#260).
+      if ((await noteState(v, p)) !== "text") return;
+      // Reopened while we were checking.
+      if (openKeys().has(key)) return;
+      await deletePath(v, p, false);
+      if (v === session.vault) await sidebar?.refresh();
+    } catch (e) {
+      console.error("could not drop blank note", e);
+    }
   }
 
   async function closeTab(i: number) {
