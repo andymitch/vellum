@@ -37,7 +37,6 @@
     PanelLeft,
     NotebookPen,
     Settings,
-    Search,
     X,
   } from "@lucide/svelte";
 
@@ -157,7 +156,7 @@
       touchOrigin = { x: landed.clientX, y: landed.clientY };
       touchDragging = false;
     }
-    if (!mobile || settingsOpen || e.touches.length !== 1) return;
+    if (!mobile || settingsOpen || searchOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
     panStart = { x: t.clientX, y: t.clientY, opening: !sidebarOpen };
@@ -290,7 +289,7 @@
   // the preview to the heading. Headings get their slug ids after Preview
   // renders, so retry across a few frames until the anchor exists (#45).
   // Open the search palette with an empty query. Shared by Cmd/Ctrl+F and the
-  // mobile search button (#209), so both clear any tag seeded by a previous
+  // sidebar's search button on mobile (#209, #276), so both clear any tag seeded by a previous
   // open rather than one path forgetting to.
   function openSearch() {
     searchInitial = "";
@@ -752,21 +751,6 @@
         </span>
       </button>
       {/if}
-      <!-- Search (#209). Desktop has Cmd/Ctrl+F; mobile has no hardware keyboard,
-           so without this button the palette — and therefore search and tags —
-           is unreachable there. Shown only where the hotkey isn't available, so
-           the desktop chrome doesn't gain a redundant control. -->
-      {#if mobile && activeVault}
-        <button
-          type="button"
-          class="flex items-center justify-center rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          aria-label="Search notes"
-          title="Search notes"
-          onclick={openSearch}
-        >
-          <Search size={chromeIcon} />
-        </button>
-      {/if}
       <button
         type="button"
         class="flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground {isMacApp
@@ -835,6 +819,7 @@
         <Sidebar
           bind:this={sidebar}
           {activePath}
+          onsearch={mobile ? openSearch : undefined}
           onopen={openNote}
           onvaultchange={handleVaultChange}
           ontree={handleTree}
