@@ -1,4 +1,5 @@
 import { createNote, writeNote, readNote, type TreeNode } from "./vault";
+import { SvelteSet } from "svelte/reactivity";
 import { newNoteContent, type NoteType } from "./note-type";
 
 /// Opens a note in the editor. `focus` also puts the caret in it (a note we
@@ -8,6 +9,13 @@ export type OpenNote = (
   path: string,
   opts?: { focus?: boolean; pin?: boolean; newTab?: boolean },
 ) => void;
+
+/// Notes created here this session, as `vault\npath` (#277). Only these are
+/// ever deleted for being left blank: an empty note from anywhere else may be
+/// one a peer is about to write into (#261), or one kept empty on purpose.
+/// Reactive, so the host sees a note whether it is added before or after its tab opens.
+export const createdHere = new SvelteSet<string>();
+export const noteKey = (vault: string, path: string) => `${vault}\n${path}`;
 
 /// Create an empty note named `name` in `dir` (empty string = vault root) and
 /// open it. The filename is independent of the content — callers prompt for the
@@ -28,6 +36,7 @@ export async function createAndOpenNote(
   // A brand-new note opens in source mode with the editor focused so the user
   // can type immediately (#50).
   open(vault, path, { focus: true });
+  createdHere.add(noteKey(vault, path));
   return path;
 }
 

@@ -744,6 +744,11 @@
     // credit this tab's position to the next one.
     clearTimeout(scrollSaveTimer);
     if (loadedPath) onscrollratio?.(scrollRatio(mode));
+    // A debounced save already under way has advanced the base, so the buffer
+    // looks saved; "parked" must mean it is on disk, which is what lets the
+    // host act on the note next (#277). A failure rolls the base back, and the
+    // check below then retries it.
+    await saving;
     const v = loadedVault;
     const p = loadedPath;
     const c = content;
@@ -777,6 +782,8 @@
   let syncing = $state(false);
   // Bumped by every load(), so an answer about an earlier open can tell.
   let loadSeq = 0;
+  // The debounced save's write, while one is in flight; flush() waits on it.
+  let saving: Promise<unknown> = Promise.resolve();
 
 
   /// Put the text somewhere safe when its own note won't take it. Creates a
@@ -869,9 +876,11 @@
       // sent — not this same stale `base` — or the 3-way merge sees both sides
       // diverging from an old ancestor and injects spurious conflict markers.
       lastLoaded = c;
+      const write = saveNote(v, p, c, base);
+      saving = write;
       // Restore the prior base so the effect retries this edit — the base stays
       // truthful, which is the whole point of #251.
-      if (!(await saveNote(v, p, c, base)) && lastLoaded === c) lastLoaded = base;
+      if (!(await write) && lastLoaded === c) lastLoaded = base;
     }, 400);
   });
 
