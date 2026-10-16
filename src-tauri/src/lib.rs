@@ -2,6 +2,7 @@
 mod link;
 #[cfg(desktop)]
 mod mcp;
+mod private;
 mod link_preview;
 mod share;
 mod vault;
@@ -449,7 +450,10 @@ pub fn run() {
     // Native camera QR scanner for joining vaults (mobile only; the crate is
     // gated to android/ios in Cargo.toml).
     #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    let builder = builder
+        .plugin(tauri_plugin_barcode_scanner::init())
+        // Device unlock for private vaults (#274).
+        .plugin(tauri_plugin_biometric::init());
     // In-app auto-update (desktop only; crates gated in Cargo.toml).
     #[cfg(desktop)]
     let builder = builder
@@ -496,6 +500,7 @@ pub fn run() {
             // which happens once the event loop runs — after setup.
             let dir = app.path().app_data_dir()?;
             app.manage(vault::VaultManager::new(dir.clone()));
+            app.manage(private::PrivateVaults::new(dir.clone()));
             // Local MCP server (#164). Off unless the user turned it on; the
             // listener is loopback-only and token-authenticated either way.
             #[cfg(desktop)]
@@ -553,6 +558,10 @@ pub fn run() {
             set_immersive,
             get_material_you,
             open_update_page,
+            private::private_vaults,
+            private::set_vault_private,
+            private::unlock_vault,
+            private::lock_vaults,
             vault::list_vaults,
             vault::create_vault,
             vault::join_vault,
@@ -588,6 +597,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|_app_handle, _event| {
+            // With the window gone nothing can relock a private vault on idle or
+            // backgrounding, and the hub may keep the process (and its MCP
+            // server) running for days — so a closed window locks them all (#274).
+            if let tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &_event
+            {
+                _app_handle.state::<private::PrivateVaults>().lock_all();
+            }
             // Keep the always-on hub alive when the last window closes. ExitRequested
             // with code = None is an implicit exit (last window closed / Cmd+Q); with
             // the hub on we prevent it so the iroh node keeps syncing as a menu-bar

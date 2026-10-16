@@ -62,6 +62,11 @@ export const onBackgroundSyncChanged = (cb: (on: boolean) => void): Promise<Unli
   listen<boolean>("background-sync", (e) => cb(e.payload));
 
 export const mcpStatus = () => invoke<McpStatus>("mcp_status");
+export const privateVaults = () => invoke<string[]>("private_vaults");
+export const setVaultPrivate = (vault: string, isPrivate: boolean) =>
+  invoke<boolean>("set_vault_private", { vault, private: isPrivate });
+export const unlockVault = (vault: string) => invoke<boolean>("unlock_vault", { vault });
+export const lockVaults = (except: string | null) => invoke<void>("lock_vaults", { except });
 export const setMcpEnabled = (enabled: boolean) =>
   invoke<McpStatus>("set_mcp_enabled", { enabled });
 

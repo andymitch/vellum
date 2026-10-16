@@ -67,6 +67,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
+use crate::private::PrivateVaults;
 use crate::vault::{self, Node, VaultChange, VaultManager, KEEP, TRASH};
 
 /// URI scheme for this server's resources.
@@ -165,6 +166,15 @@ fn clean_note_path(raw: &str) -> Result<String, ErrorData> {
 
 fn bad_request(msg: impl Into<String>) -> ErrorData {
     ErrorData::invalid_params(msg.into(), None)
+}
+
+/// Whether `uri` names a locked private vault's tree or notes — even its paths
+/// stay out of update notifications while it's locked (#274).
+fn locked_uri(app: &AppHandle, uri: &str) -> bool {
+    match ResourceUri::parse(uri) {
+        Some(ResourceUri::Tree(v)) | Some(ResourceUri::Note(v, _)) => app.state::<PrivateVaults>().is_locked(&v),
+        _ => false,
+    }
 }
 
 fn internal(e: impl std::fmt::Display) -> ErrorData {
@@ -538,6 +548,14 @@ impl Vellum {
     /// Live-sync the vault we're about to touch, so an agent-only session (no
     /// window open, background sync off) still converges with peers.
     async fn arm(&self, node: &Node, vault: &str) -> Result<(), ErrorData> {
+        // A private vault stays shut to agents until its owner unlocks it in
+        // the app (#274).
+        if self.app.state::<PrivateVaults>().is_locked(vault) {
+            return Err(ErrorData::invalid_request(
+                "This vault is private and locked. Ask the user to unlock it in Vellum, then retry.",
+                None,
+            ));
+        }
         let nsid = vault::parse_id(vault).map_err(|e| bad_request(e.to_string()))?;
         vault::arm_vault(&self.app, node, nsid).await.map_err(internal)
     }
@@ -895,7 +913,7 @@ impl ServerHandler for Vellum {
                 },
             };
             for uri in batch.uris {
-                if watched.contains(&uri) {
+                if watched.contains(&uri) && !locked_uri(&self.app, &uri) {
                     let _ = context.sink().notify_resource_updated(uri).await;
                 }
             }
@@ -936,6 +954,7 @@ impl ServerHandler for Vellum {
         }
         let mut rx = node.subscribe_changes();
         let subscribed = self.subscribed.clone();
+        let app = self.app.clone();
         let peer: Peer<RoleServer> = context.peer.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -943,7 +962,7 @@ impl ServerHandler for Vellum {
                     return;
                 };
                 for uri in batch.uris {
-                    if subscribed.lock().unwrap().contains(&uri) {
+                    if subscribed.lock().unwrap().contains(&uri) && !locked_uri(&app, &uri) {
                         // A send error means the session is gone — stop pumping.
                         let param = ResourceUpdatedNotificationParam::new(uri);
                         if peer.notify_resource_updated(param).await.is_err() {

@@ -16,6 +16,8 @@
   import { liveSync } from "$lib/live-sync.svelte";
   import { mcp } from "$lib/mcp.svelte";
   import { linkFolders } from "$lib/link-folders.svelte";
+  import { privacy } from "$lib/private-vaults.svelte";
+  import { session } from "$lib/session.svelte";
   import { listVaults, type VaultInfo } from "$lib/vault";
   import { betaChannel } from "$lib/beta-channel.svelte";
   import {
@@ -32,6 +34,27 @@
 
   // Transient "Copied" confirmation on the MCP connect command.
   let copiedMcp = $state(false);
+
+  // Private vault (#274). The OS asks the owner to confirm either way, and a
+  // cancel leaves the checkbox where it was.
+  let privateBusy = $state(false);
+  let privateError = $state("");
+  async function togglePrivate(e: Event & { currentTarget: HTMLInputElement }) {
+    const el = e.currentTarget;
+    const vault = session.vault;
+    if (!vault) return;
+    const on = el.checked;
+    privateBusy = true;
+    privateError = "";
+    try {
+      if (!(await privacy.setPrivate(vault, on))) el.checked = !on;
+    } catch (err) {
+      el.checked = !on;
+      privateError = String(err);
+    } finally {
+      privateBusy = false;
+    }
+  }
   async function copyMcpCommand() {
     if (!mcp.command) return;
     try {
@@ -477,6 +500,27 @@
           <ArchiveRestore class="h-4 w-4 shrink-0 text-muted-foreground" />
           <span>Import vault (.zip)</span>
         </button>
+        {#if privacy.available && session.vault}
+          <label class="flex cursor-pointer items-center justify-between gap-3 px-2 py-1.5">
+            <span class="flex flex-col">
+              <span class="text-sm">Private vault</span>
+              <span class="text-xs text-muted-foreground">
+                Ask for {isMac ? "Touch ID or your password" : "your fingerprint, face or PIN"} to
+                open this vault on this device. Agents can't reach it while it's locked.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              class="h-4 w-4 shrink-0 accent-primary"
+              checked={privacy.isPrivate(session.vault)}
+              disabled={privateBusy}
+              onchange={togglePrivate}
+            />
+          </label>
+          {#if privateError}
+            <p class="px-2 text-xs text-destructive" role="alert">{privateError}</p>
+          {/if}
+        {/if}
         {#if isWeb}
           <!-- The browser build syncs like any other now (#221/#222), but with
                one real limitation worth stating where it bites: no local
