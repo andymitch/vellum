@@ -210,7 +210,7 @@
   const canInstall = isWeb && !isStandalone;
 
   // Editor input-assist toggles. `key` indexes into the editorSettings store.
-  const EDITOR_TOGGLES: { key: keyof typeof editorSettings; label: string }[] = [
+  const EDITOR_TOGGLES: { key: Exclude<keyof typeof editorSettings, "cursorStyle">; label: string }[] = [
     { key: "autocomplete", label: "Autocomplete" },
     { key: "autocapitalize", label: "Autocapitalize" },
     { key: "autocorrect", label: "Autocorrect" },
