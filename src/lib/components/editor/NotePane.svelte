@@ -393,7 +393,8 @@
   // the tap. Re-check every frame for a fixed time, not a frame count (a 120Hz
   // screen halves that), and only move it while it's out of view or the caret
   // has drifted. `align` first puts the line at `tapY` even when it's visible,
-  // so entering source doesn't jump. Stops once the person types or touches the editor.
+  // so entering source doesn't jump. Stops once the person types, presses a key
+  // (an arrow moves the caret on purpose) or touches the editor.
   let cancelHold: (() => void) | null = null;
   function holdQuickEditCaret(v: EditorView, pos: number, tapY: number | null, align = false) {
     cancelHold?.();
@@ -403,6 +404,7 @@
     const stop = () => {
       cancelAnimationFrame(raf);
       v.scrollDOM.removeEventListener("pointerdown", stop);
+      v.contentDOM.removeEventListener("keydown", stop);
       cancelHold = null;
     };
     const tick = () => {
@@ -422,6 +424,7 @@
       raf = requestAnimationFrame(tick);
     };
     v.scrollDOM.addEventListener("pointerdown", stop);
+    v.contentDOM.addEventListener("keydown", stop);
     cancelHold = stop;
     raf = requestAnimationFrame(tick);
   }
