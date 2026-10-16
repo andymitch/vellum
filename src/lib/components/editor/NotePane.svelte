@@ -385,18 +385,48 @@
   let quickEditPin: { pos: number; tapY: number } | null = null; // re-pin once kb opens
   let tapStart: { x: number; y: number; t: number } | null = null;
 
-  // Scroll `view` so the caret's line sits at on-screen height `tapY` (where the
-  // preview tap was), but never below the keyboard/toolbar — clamp to the
-  // scroller's visible bottom. Used on quick-edit entry and again once the soft
-  // keyboard opens, since the keyboard shrinks the editor and would otherwise
-  // leave the tapped line behind it (#122).
-  function pinQuickEditCaret(view: EditorView, pos: number, tapY: number) {
-    const c = view.coordsAtPos(pos);
-    if (!c) return;
-    const rect = view.scrollDOM.getBoundingClientRect();
-    const targetY = Math.min(tapY, rect.bottom - 24);
-    markAppScroll();
-    view.scrollDOM.scrollTop += c.top - targetY;
+  // Keep a quick edit's caret at `pos` and its line in view — at the tap's
+  // on-screen height `tapY`, clamped above the keyboard/toolbar — until the
+  // layout settles (#122, #278). The preview→source swap, the keyboard opening
+  // and the toolbar's inset each land on their own schedule, and a long note's
+  // line heights are estimates until drawn, so the line moves for a while after
+  // the tap. Re-check every frame for a fixed time, not a frame count (a 120Hz
+  // screen halves that), and only move it while it's out of view or the caret
+  // has drifted. `align` first puts the line at `tapY` even when it's visible,
+  // so entering source doesn't jump. Stops once the person types, presses a key
+  // (an arrow moves the caret on purpose) or touches the editor.
+  let cancelHold: (() => void) | null = null;
+  function holdQuickEditCaret(v: EditorView, pos: number, tapY: number | null, align = false) {
+    cancelHold?.();
+    const doc = v.state.doc;
+    const until = performance.now() + 1000;
+    let raf = 0;
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      v.scrollDOM.removeEventListener("pointerdown", stop);
+      v.contentDOM.removeEventListener("keydown", stop);
+      cancelHold = null;
+    };
+    const tick = () => {
+      if (!v.dom.isConnected || v.state.doc !== doc || performance.now() > until) return stop();
+      if (v.state.selection.main.head !== pos) v.dispatch({ selection: { anchor: pos } });
+      const c = v.coordsAtPos(pos);
+      const rect = v.scrollDOM.getBoundingClientRect();
+      const bottom = rect.bottom - 24;
+      if (!c || tapY == null) {
+        if (!c || c.top < rect.top || c.bottom > bottom)
+          v.dispatch({ effects: EditorView.scrollIntoView(pos) });
+      } else if (align || c.top < rect.top || c.bottom > bottom) {
+        align = false;
+        markAppScroll();
+        v.scrollDOM.scrollTop += c.top - Math.min(tapY, bottom);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    v.scrollDOM.addEventListener("pointerdown", stop);
+    v.contentDOM.addEventListener("keydown", stop);
+    cancelHold = stop;
+    raf = requestAnimationFrame(tick);
   }
 
   // Caret position under a viewport point, across engines (Chromium/WebKit).
@@ -586,33 +616,19 @@
     const pos = Math.max(0, Math.min(caret, v.state.doc.length));
     // Place the caret, then scroll so its line sits at the same on-screen height
     // the tap had in the preview — a continuous transition instead of a jump to
-    // the viewport edge (what plain scrollIntoView does). scrollIntoView in place()
-    // first renders/reveals the line so coordsAtPos is measurable; pin() then
-    // shifts scrollTop to the tap's Y. The keyboard isn't up yet here, so pin()
-    // again once it opens (see below) — that reflow shrinks the editor (#122).
-    const place = () => v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
-    const pin = () => tapY != null && pinQuickEditCaret(v, pos, tapY);
-    place();
-    pin();
+    // the viewport edge (what plain scrollIntoView does). scrollIntoView renders
+    // the line so it can be measured; the hold then aligns it to the tap's Y. The
+    // keyboard isn't up yet here, so hold again once it opens (see below) — that
+    // reflow shrinks the editor (#122).
+    v.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
     if (tapY != null) quickEditPin = { pos, tapY };
     // The tap's synthetic click must be allowed through — it's what focuses the
     // editor and raises the soft keyboard on Android (programmatic focus alone
     // doesn't). But that click *natively* moves the caret to the tapped pixel,
     // which in the freshly-mounted, top-scrolled editor is the wrong offset, and
     // CodeMirror mirrors that DOM change back into its state a few frames later.
-    // Re-assert across a short window: each frame, if CM has drifted off our
-    // target, put it back and re-pin the scroll; once the synthetic sequence
-    // settles this is a no-op. Bails out if we leave the editor (#122).
-    let frames = 0;
-    const enforce = () => {
-      if (!v.dom.isConnected) return;
-      if (v.state.selection.main.head !== pos) {
-        place();
-        pin();
-      }
-      if (++frames < 20) requestAnimationFrame(enforce);
-    };
-    requestAnimationFrame(enforce);
+    // The hold below puts it back (#122).
+    holdQuickEditCaret(v, pos, tapY, true);
   });
 
   // While a quick edit is active, returning the keyboard to hidden returns to
@@ -623,30 +639,13 @@
     if (kbOpen) {
       kbWasOpen = true;
       // The keyboard opening shrinks the editor (--editor-kb-inset = keyboard +
-      // toolbar), which reflows the tapped line — potentially behind the keyboard
-      // or the markdown toolbar. Both land over several frames: the keyboard
-      // animates open and the toolbar only mounts/measures its height once kbOpen
-      // flips. So watch across a longer window and, *only while the caret is
-      // occluded* below the scroller's visible bottom, pull it back up to the
-      // tap's height clamped above that bottom. Conditional so it catches the late
-      // toolbar inset without fighting the user once the caret is already visible
-      // (#122, #147).
+      // toolbar), which can leave the tapped line behind the keyboard or the
+      // markdown toolbar, so hold it again from here (#122, #147).
       const p = quickEditPin;
       const v = editorView;
       if (p && v) {
         quickEditPin = null;
-        let n = 0;
-        const settle = () => {
-          if (!v.dom.isConnected) return;
-          const c = v.coordsAtPos(p.pos);
-          const bottom = v.scrollDOM.getBoundingClientRect().bottom - 24;
-          if (c && c.bottom > bottom) {
-            markAppScroll();
-            v.scrollDOM.scrollTop += c.top - Math.min(p.tapY, bottom);
-          }
-          if (++n < 32) requestAnimationFrame(settle);
-        };
-        requestAnimationFrame(settle);
+        holdQuickEditCaret(v, p.pos, p.tapY);
       }
     } else if (kbWasOpen) {
       quickEditActive = false;
