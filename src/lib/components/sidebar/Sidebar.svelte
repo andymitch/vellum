@@ -438,12 +438,12 @@
         await refreshTree();
     }
 
-    // Rename the currently-open note. Used by the settings sheet and the
-    // breadcrumb (double-click / long-press) so all rename entry points share
-    // the same prompt + path logic.
     /// Re-read the tree after a change made outside the sidebar.
     export const refresh = () => refreshTree();
 
+    // Rename the currently-open note. Used by the settings sheet and the
+    // breadcrumb (double-click / long-press) so all rename entry points share
+    // the same prompt + path logic.
     export function renameActive() {
         if (!activeVault || !activePath) return;
         const name = activePath.split("/").pop() ?? "";

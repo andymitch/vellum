@@ -107,11 +107,16 @@ function stripTypeKey(frontmatter: string): string {
 export const newNoteContent = (type: NoteType): string =>
   withType(noteTypeInfo(type).initialBody, type);
 
-/// Whether a note has nothing in it worth keeping (#277): no text once its
-/// frontmatter and any HTML comments (a journal's cell markers) are set aside.
-/// A fresh typed note is just its frontmatter, so it counts as blank too.
-export const isBlankNote = (text: string): boolean =>
-  parseNote(text).body.replace(/<!--[\s\S]*?-->/g, "").trim() === "";
+/// Whether a note has nothing in it worth keeping (#277). Frontmatter holding
+/// only our `type:` key is set aside (a fresh typed note is just that), and so
+/// are a journal's cell markers; anything a person wrote, including their own
+/// frontmatter or comments in a plain note, is not.
+export function isBlankNote(text: string): boolean {
+  const { type, body, frontmatter } = parseNote(text);
+  if (frontmatter && stripTypeKey(frontmatter)) return false;
+  const rest = type === "journal" ? body.replace(/<!--[\s\S]*?-->/g, "") : body;
+  return rest.trim() === "";
+}
 
 // ---- Journal helpers ----
 

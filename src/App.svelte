@@ -416,12 +416,17 @@
   async function dropIfBlank(key: string) {
     const [v, p] = key.split("\n");
     try {
+      // "text" before and after the read: a note that read fine, never one
+      // still downloading or undecodable (#260), and not one whose content
+      // landed from a peer between the two calls.
+      if ((await noteState(v, p)) !== "text") return;
       if (!isBlankNote(await readNote(v, p))) return;
-      // "text" is a note that read fine and is empty — never one still
-      // downloading or that failed to decode (#260).
       if ((await noteState(v, p)) !== "text") return;
       // Reopened while we were checking.
       if (openKeys().has(key)) return;
+      // shortcut: a peer write landing between these checks and the delete is
+      // covered by it; only a backend delete-if-blank would close that, worth
+      // it if this ever extends past notes made on this device moments ago.
       await deletePath(v, p, false);
       if (v === session.vault) await sidebar?.refresh();
     } catch (e) {
