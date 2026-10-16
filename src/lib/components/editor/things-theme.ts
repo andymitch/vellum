@@ -1,7 +1,8 @@
-import { EditorView } from "@codemirror/view";
+import { EditorView, drawSelection } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
+import type { CursorStyle } from "$lib/editor-settings.svelte";
 
 /**
  * CodeMirror theme matching the Obsidian "Things" theme.
@@ -187,3 +188,22 @@ export const thingsTheme = (dark: boolean): Extension => [
   thingsEditorTheme(dark),
   syntaxHighlighting(thingsHighlightStyle),
 ];
+
+// Block and underline need a drawn cursor: the native caret is always a line.
+// drawSelection hides the native caret; the block is translucent so the
+// character under it stays readable (#275).
+export const cursorShape = (style: CursorStyle): Extension =>
+  style === "line"
+    ? []
+    : [
+        drawSelection(),
+        EditorView.theme({
+          "& .cm-cursor": {
+            borderLeft: "none",
+            width: "0.6em",
+            ...(style === "block"
+              ? { backgroundColor: "var(--editor-cursor)", opacity: "0.45" }
+              : { borderBottom: "2px solid var(--editor-cursor)" }),
+          },
+        }),
+      ];

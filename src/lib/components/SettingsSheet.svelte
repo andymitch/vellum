@@ -12,7 +12,7 @@
     isWeb,
   } from "$lib/platform";
   import { theme, PALETTES, FONTS, type Mode } from "$lib/theme.svelte";
-  import { editorSettings } from "$lib/editor-settings.svelte";
+  import { editorSettings, type CursorStyle } from "$lib/editor-settings.svelte";
   import { liveSync } from "$lib/live-sync.svelte";
   import { mcp } from "$lib/mcp.svelte";
   import { linkFolders } from "$lib/link-folders.svelte";
@@ -563,6 +563,18 @@
           </label>
         {/if}
         {#if !isMobile}
+          <div class="flex items-center justify-between gap-3 py-1.5">
+            <span class="text-sm">Cursor</span>
+            <select
+              class="min-w-32 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+              value={editorSettings.cursorStyle}
+              onchange={(e) => (editorSettings.cursorStyle = e.currentTarget.value as CursorStyle)}
+            >
+              <option value="line">Line</option>
+              <option value="block">Block</option>
+              <option value="underline">Underline</option>
+            </select>
+          </div>
           <label class="flex cursor-pointer items-center justify-between gap-3 py-1.5">
             <span class="flex flex-col">
               <span class="text-sm">Journal: Return adds a line break</span>

@@ -25,7 +25,12 @@ export type EditorSettings = {
   // way to tell a plain Enter from a shift-modified one, so there Enter is
   // always a line break and finishing means dismissing the keyboard.
   journalReturnNewline: boolean;
+  // Desktop only: the caret's shape (#275). Mobile keeps the native caret, whose
+  // selection handles a drawn cursor would interfere with.
+  cursorStyle: CursorStyle;
 };
+
+export type CursorStyle = "line" | "block" | "underline";
 
 const KEY = "vellum-editor";
 
@@ -38,6 +43,7 @@ const DEFAULTS: EditorSettings = {
   quickEdit: false,
   linkPreviews: true,
   journalReturnNewline: false,
+  cursorStyle: "line",
 };
 
 let saved: Partial<EditorSettings> = {};
@@ -119,6 +125,13 @@ export const editorSettings = {
   },
   set journalReturnNewline(v: boolean) {
     state.journalReturnNewline = v;
+    persist();
+  },
+  get cursorStyle() {
+    return state.cursorStyle;
+  },
+  set cursorStyle(v: CursorStyle) {
+    state.cursorStyle = v;
     persist();
   },
 };
