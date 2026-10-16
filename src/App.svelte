@@ -156,7 +156,7 @@
       touchOrigin = { x: landed.clientX, y: landed.clientY };
       touchDragging = false;
     }
-    if (!mobile || settingsOpen || e.touches.length !== 1) return;
+    if (!mobile || settingsOpen || searchOpen || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t.clientX <= EDGE || t.clientX >= window.innerWidth - EDGE) return;
     panStart = { x: t.clientX, y: t.clientY, opening: !sidebarOpen };
