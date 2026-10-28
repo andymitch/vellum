@@ -18,12 +18,12 @@ import App from "./App.svelte";
 import Popup from "./Popup.svelte";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "$lib/platform";
-import { applyTheme } from "$lib/theme.svelte";
-
-applyTheme();
+import { applyTheme, useSystemTheme } from "$lib/theme.svelte";
 
 // The menu-bar popup (#288) is a second window over the same bundle.
 const popup = isTauri && getCurrentWindow().label === "popup";
+if (popup) useSystemTheme();
+else applyTheme();
 const app = mount(popup ? Popup : App, { target: document.getElementById("app")! });
 
 export default app;

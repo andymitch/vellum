@@ -651,6 +651,37 @@
   --md-quote: #8b949e;
 }
 
+/* ====================== System (popup only) ====================== */
+/* The menu-bar popup (#288) follows the OS instead of the user's palette, so it
+   reads as part of macOS: WebKit's -apple-system-* colors track the system
+   appearance and accent color. Light and dark share one block because those
+   colors resolve per appearance on their own (color-scheme). */
+[data-theme="system"] {
+  color-scheme: light dark;
+  --background: -apple-system-window-background;
+  --foreground: -apple-system-label;
+  --card: -apple-system-control-background;
+  --card-foreground: -apple-system-label;
+  --popover: -apple-system-control-background;
+  --popover-foreground: -apple-system-label;
+  --primary: -apple-system-control-accent;
+  --muted: -apple-system-control-background;
+  --muted-foreground: -apple-system-secondary-label;
+  --accent: -apple-system-control-accent;
+  --border: -apple-system-separator;
+  --input: -apple-system-separator;
+  --ring: -apple-system-control-accent;
+  --editor-bg: var(--background);
+  --editor-fg: var(--foreground);
+  --editor-accent: var(--accent);
+  --editor-muted: var(--muted-foreground);
+  --editor-selection: -apple-system-selected-text-background;
+  --editor-cursor: -apple-system-control-accent;
+  --editor-code-bg: -apple-system-control-background;
+  --editor-border: var(--border);
+  --font-sans: -apple-system, system-ui, sans-serif;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
