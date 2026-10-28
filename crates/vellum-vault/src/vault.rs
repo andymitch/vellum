@@ -620,10 +620,19 @@ pub async fn merged_note(
 
     for entry in live {
         // An entry the deletion covered is what the user threw away.
-        if deletion
+        if let Some(d) = deletion
             .as_ref()
-            .is_some_and(|d| d.covers(entry.author(), entry.timestamp()))
+            .filter(|d| d.covers(entry.author(), entry.timestamp()))
         {
+            // Debug, not info: the dropped entry stays in the replica, so every
+            // read of this key drops it again (#261).
+            tracing::debug!(
+                key = %String::from_utf8_lossy(key),
+                author = %entry.author().fmt_short(),
+                stamped = entry.timestamp(),
+                deleted_at = d.at,
+                "dropping an entry the note's deletion covered"
+            );
             continue;
         }
         // After a sync the entry can exist before its content blob has
