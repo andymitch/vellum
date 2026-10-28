@@ -2967,25 +2967,17 @@ mod tests {
     }
 
     /// Tag extraction (#15) has to coexist with ordinary Markdown: the only
-    /// thing separating `#tag` from an ATX heading is the space.
+    /// thing separating `#tag` from an ATX heading is the space. The cases live
+    /// in `tag-cases.json`, which the editor's TypeScript rules (`src/lib/tags.ts`)
+    /// are tested against too, so the two can't drift apart (#215).
     #[test]
-    fn extract_tags_handles_markdown_lookalikes() {
-        assert_eq!(extract_tags("Buy milk #errands #urgent"), ["errands", "urgent"]);
-        // A heading is not a tag, at any level.
-        assert!(extract_tags("# Heading\n## Sub").is_empty());
-        // Nor is a URL fragment, or a '#' mid-word.
-        assert!(extract_tags("see https://example.com/#anchor").is_empty());
-        assert!(extract_tags("wrote it in C#").is_empty());
-        // Nested and hyphenated tags survive intact.
-        assert_eq!(extract_tags("#in/progress #q3-goals"), ["in/progress", "q3-goals"]);
-        // Trailing punctuation and separators are trimmed off.
-        assert_eq!(extract_tags("done #work. next #home, then #a/"), ["work", "home", "a"]);
-        // Start of line counts as a boundary; repeats collapse (per note).
-        assert_eq!(extract_tags("#top\nmore #top #TOP"), ["top"]);
-        // A bare '#' or '# ' yields nothing.
-        assert!(extract_tags("# \n#\nnot # a tag").is_empty());
-        // Non-ASCII must not panic or split a codepoint.
-        assert_eq!(extract_tags("café #café #日本語"), ["café", "日本語"]);
+    fn extract_tags_matches_shared_cases() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../tag-cases.json")).unwrap();
+        for case in cases {
+            let tags: Vec<String> = serde_json::from_value(case["tags"].clone()).unwrap();
+            assert_eq!(extract_tags(case["text"].as_str().unwrap()), tags, "{}", case["why"]);
+        }
     }
 
     /// A tag query has to survive the whitespace the palette adds when it leaves
