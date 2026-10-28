@@ -5,7 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { appVersion } from "./platform";
+import { appVersion, isAndroidApp, isMacApp } from "./platform";
 import { betaChannel } from "./beta-channel.svelte";
 
 const REPO = "andymitch/vellum";
@@ -136,13 +136,43 @@ const rel = formatVersion;
 // Dev builds run off a 0.x version — there's no real release to update to.
 const isDevVersion = (v: string) => (parseInt(v.split(".")[0], 10) || 0) < 1;
 
-// Prompt, then download + restart. Shared by the launch check and the manual one.
+// Watch for updates while the app runs, not only at launch (#292): the app
+// re-checks whenever it comes back to the foreground, at most every 30 minutes.
+const RECHECK_MS = 30 * 60 * 1000;
+let lastCheck = 0;
+let checking = false;
+// A version the user said no to this session. Background checks don't ask about
+// it again; an explicit "Check for updates" still does.
+let declined: string | null = null;
+
+export async function checkForUpdatesIfDue(force = false): Promise<void> {
+  if (checking || (!force && Date.now() - lastCheck < RECHECK_MS)) return;
+  checking = true;
+  lastCheck = Date.now();
+  try {
+    if (isMacApp) await checkForUpdate();
+    else if (isAndroidApp) await checkForUpdateMobile();
+  } finally {
+    checking = false;
+  }
+}
+
 // Uses the dialog plugin, not window.confirm: the webview's synchronous
 // confirm()/alert() are no-ops in Tauri v2 (they return false without rendering).
-async function promptAndInstall(update: Update): Promise<void> {
-  const ok = await ask(
+async function askOnce(version: string, interactive: boolean, text: string, title: string) {
+  if (!interactive && version === declined) return false;
+  const yes = await ask(text, { title, kind: "info" });
+  if (!yes) declined = version;
+  return yes;
+}
+
+// Prompt, then download + restart. Shared by the background check and the manual one.
+async function promptAndInstall(update: Update, interactive: boolean): Promise<void> {
+  const ok = await askOnce(
+    update.version,
+    interactive,
     `Vellum ${rel(update.version)} is available (currently running ${rel(update.currentVersion)}).\n\nDownload and restart to update now?`,
-    { title: "Update available", kind: "info" },
+    "Update available",
   );
   if (!ok) return;
   try {
@@ -155,7 +185,7 @@ async function promptAndInstall(update: Update): Promise<void> {
   }
 }
 
-// Silent check on launch: prompt only if an update is available. Skips dev
+// Silent background check: prompt only if an update is available. Skips dev
 // builds (v0) so a locally-built 0.x app isn't nagged every launch (#110).
 export async function checkForUpdate(): Promise<void> {
   // Beta testers follow betas and stable releases both, which the stable
@@ -172,7 +202,7 @@ export async function checkForUpdate(): Promise<void> {
   }
   if (!update?.available) return;
   if (isDevVersion(update.currentVersion)) return;
-  await promptAndInstall(update);
+  await promptAndInstall(update, false);
 }
 
 // Manual "Check for updates" (Settings button). Unlike the launch check, this
@@ -208,7 +238,7 @@ export async function checkForUpdateInteractive(): Promise<void> {
     });
     return;
   }
-  await promptAndInstall(update);
+  await promptAndInstall(update, true);
 }
 
 // Mobile update check (#145). Android ships via APK (no updater plugin), so we
@@ -245,9 +275,11 @@ export async function checkForUpdateMobile(interactive = false): Promise<void> {
     }
     return;
   }
-  const ok = await ask(
+  const ok = await askOnce(
+    latest.version,
+    interactive,
     `Vellum ${rel(latest.version)} is available${current ? ` (currently running ${rel(current)})` : ""}.\n\nOpen the download page?`,
-    { title: "Update available", kind: "info" },
+    "Update available",
   );
   // open_update_page routes to the Komi Store app if installed, else the browser.
   if (ok) await invoke("open_update_page", { url: latest.url });
@@ -290,10 +322,12 @@ export async function checkForBetaUpdate(interactive = false): Promise<boolean> 
       });
     return false;
   }
-  const yes = await ask(`Vellum ${pre.tag} is available. Install and restart?`, {
-    title: pre.prerelease ? "Beta update available" : "Update available",
-    kind: "info",
-  });
+  const yes = await askOnce(
+    available,
+    interactive,
+    `Vellum ${pre.tag} is available. Install and restart?`,
+    pre.prerelease ? "Beta update available" : "Update available",
+  );
   if (!yes) return true;
   try {
     await invoke("install_update_at", { url: pre.manifest });

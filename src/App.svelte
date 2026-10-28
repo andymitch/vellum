@@ -7,7 +7,7 @@
   import TabStrip from "$lib/components/TabStrip.svelte";
   import SettingsSheet from "$lib/components/SettingsSheet.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
-  import { checkForUpdate, checkForUpdateMobile } from "$lib/updater";
+  import { checkForUpdatesIfDue } from "$lib/updater";
   import Fab from "$lib/components/Fab.svelte";
   import {
     renamePath,
@@ -18,7 +18,7 @@
     onBackgroundSyncChanged,
     type TreeNode,
   } from "$lib/vault";
-  import { isAndroidApp, isMacApp } from "$lib/platform";
+  import { isMacApp } from "$lib/platform";
   import { softKeyboard } from "$lib/soft-keyboard";
   import { session, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "$lib/session.svelte";
   import { createdHere, noteKey, duplicateNote as duplicateNoteFile } from "$lib/notes";
@@ -86,13 +86,22 @@
   // on a Mac has no titlebar to dodge, hence isMacApp rather than a UA test.
   const chromeIcon = isMacApp ? 14 : 16;
   let fullscreen = $state(false);
-  // Check for an app update on launch: desktop via the Tauri updater, Android via
-  // the GitHub releases check (#145). Both silently no-op if up to date/offline.
-  // The web app updates itself — the service worker fetches a new build in the
-  // background and it applies on the next load (#221).
+  // Check for an app update on launch and whenever the app comes back to the
+  // foreground (#292): desktop via the Tauri updater, Android via the GitHub
+  // releases check (#145). Both silently no-op if up to date/offline. The web app
+  // updates itself — the service worker fetches a new build in the background and
+  // it applies on the next load (#221).
   onMount(() => {
-    if (isMacApp) checkForUpdate();
-    else if (isAndroidApp) checkForUpdateMobile();
+    const due = () => {
+      if (document.visibilityState === "visible") checkForUpdatesIfDue();
+    };
+    due();
+    window.addEventListener("focus", due);
+    document.addEventListener("visibilitychange", due);
+    return () => {
+      window.removeEventListener("focus", due);
+      document.removeEventListener("visibilitychange", due);
+    };
   });
   // Re-apply the Background sync setting on launch (re-arm the hub + restart the
   // platform keep-alive if it was left enabled).

@@ -23,6 +23,7 @@
   import {
     checkForUpdateInteractive,
     checkForUpdateMobile,
+    checkForUpdatesIfDue,
     formatVersion,
     fetchChannelRelease,
     type LatestRelease,
@@ -687,7 +688,10 @@
               type="checkbox"
               class="h-4 w-4 shrink-0 accent-primary"
               checked={betaChannel.enabled}
-              onchange={(e) => (betaChannel.enabled = e.currentTarget.checked)}
+              onchange={(e) => {
+                betaChannel.enabled = e.currentTarget.checked;
+                checkForUpdatesIfDue(true);
+              }}
             />
           </label>
 
