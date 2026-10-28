@@ -1,0 +1,13 @@
+[
+  { "why": "plain tags", "text": "Buy milk #errands #urgent", "tags": ["errands", "urgent"] },
+  { "why": "a heading is not a tag, at any level", "text": "# Heading\n## Sub", "tags": [] },
+  { "why": "nor is a URL fragment", "text": "see https://example.com/#anchor", "tags": [] },
+  { "why": "nor a # mid-word", "text": "wrote it in C#", "tags": [] },
+  { "why": "nested and hyphenated tags survive intact", "text": "#in/progress #q3-goals", "tags": ["in/progress", "q3-goals"] },
+  { "why": "trailing punctuation and separators are trimmed", "text": "done #work. next #home, then #a/", "tags": ["work", "home", "a"] },
+  { "why": "start of line is a boundary; repeats collapse case-insensitively", "text": "#top\nmore #top #TOP", "tags": ["top"] },
+  { "why": "a bare # or '# ' yields nothing", "text": "# \n#\nnot # a tag", "tags": [] },
+  { "why": "non-ASCII must not split a codepoint", "text": "café #café #日本語", "tags": ["café", "日本語"] },
+  { "why": "first spelling seen wins", "text": "#Work and #work and #work/next", "tags": ["Work", "work/next"] },
+  { "why": "a tab is a boundary too", "text": "a\t#tabbed", "tags": ["tabbed"] }
+]

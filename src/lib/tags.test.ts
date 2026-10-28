@@ -68,3 +68,14 @@ describe("scanTags", () => {
     expect(hits[0].to).toBe(6);
   });
 });
+
+// The vault's Rust `extract_tags` runs the same cases, so the editor and the
+// vault agree on what a tag is (#215).
+describe("parity with the vault", () => {
+  test("distinctTags matches every shared case", async () => {
+    const cases: { why: string; text: string; tags: string[] }[] = await Bun.file(
+      new URL("../../crates/vellum-vault/tag-cases.json", import.meta.url),
+    ).json();
+    for (const c of cases) expect([c.why, distinctTags(c.text)]).toEqual([c.why, c.tags]);
+  });
+});
