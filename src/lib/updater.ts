@@ -51,31 +51,46 @@ export async function fetchLatestRelease(): Promise<LatestRelease | null> {
   }
 }
 
-// Newest PRE-release, as release notes. Separate from `latestPrerelease()`
-// below, which exists to resolve an updater manifest and therefore skips any
-// pre-release without a `latest.json` asset — a release with no manifest still
-// has a changelog worth reading.
-async function newestPrereleaseNotes(): Promise<LatestRelease | null> {
+// Newest release by version, stable or pre-release (#291). A beta tester follows
+// both: the next beta, and the stable release that supersedes the beta they're on
+// (11.0.0-beta.4 < 11.0.0). `needManifest` skips releases with no `latest.json`,
+// which can't be updated to but still have a changelog worth reading.
+async function newestRelease(
+  needManifest: boolean,
+): Promise<(LatestRelease & { manifest?: string }) | null> {
   try {
     const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
     if (!res.ok) return null;
-    const all = await res.json();
-    for (const r of all) {
-      if (!r.prerelease || r.draft) continue;
+    let best: (LatestRelease & { manifest?: string }) | null = null;
+    for (const r of await res.json()) {
       const tag: string = r.tag_name ?? "";
-      if (!tag) continue;
-      return {
+      if (r.draft || !tag) continue;
+      const manifest = (r.assets ?? []).find((a: { name: string }) => a.name === "latest.json")
+        ?.browser_download_url;
+      if (needManifest && !manifest) continue;
+      if (best && cmpTag(tag, best.tag) <= 0) continue;
+      best = {
         version: tag.replace(/^v/, ""),
         tag,
         notes: (r.body ?? "").trim(),
         url: r.html_url ?? RELEASES_PAGE,
-        prerelease: true,
+        prerelease: !!r.prerelease,
+        manifest,
       };
     }
-    return null;
+    return best;
   } catch {
     return null;
   }
+}
+
+// Compare release tags (`v11`, `v11.1`, `v12-beta.3`); a stable release sorts
+// after every beta of the same version.
+function cmpTag(a: string, b: string): number {
+  const [va, ba] = a.replace(/^v/, "").split("-beta.");
+  const [vb, bb] = b.replace(/^v/, "").split("-beta.");
+  const n = (beta?: string) => (beta === undefined ? Number.MAX_SAFE_INTEGER : parseInt(beta, 10) || 0);
+  return cmpVersion(va, vb) || n(ba) - n(bb);
 }
 
 /// Newest release on the channel the user is actually on (#210).
@@ -95,8 +110,7 @@ export async function fetchChannelRelease(): Promise<LatestRelease | null> {
     beta = (await appVersion()).includes("-");
   }
   if (!beta) return fetchLatestRelease();
-  // A tester with no pre-release published yet still deserves a changelog.
-  return (await newestPrereleaseNotes()) ?? fetchLatestRelease();
+  return (await newestRelease(false)) ?? fetchLatestRelease();
 }
 
 // Compare dotted numeric versions; missing trailing components count as 0, so
@@ -144,8 +158,8 @@ async function promptAndInstall(update: Update): Promise<void> {
 // Silent check on launch: prompt only if an update is available. Skips dev
 // builds (v0) so a locally-built 0.x app isn't nagged every launch (#110).
 export async function checkForUpdate(): Promise<void> {
-  // Beta testers check the pre-release channel instead; the stable endpoint
-  // would report nothing, since their version is already ahead of it (#175).
+  // Beta testers follow betas and stable releases both, which the stable
+  // endpoint alone can't do (#175, #291).
   if (betaChannel.enabled) {
     await checkForBetaUpdate();
     return;
@@ -242,40 +256,16 @@ export async function checkForUpdateMobile(interactive = false): Promise<void> {
 
 // ---- beta channel (#175) ----
 
-// Newest pre-release, with the URL of the updater manifest attached to it. The
-// updater's compiled-in endpoint points at /releases/latest/, which excludes
-// pre-releases — so a beta tester would otherwise never be offered the next
-// beta. Only the Rust builder can override that endpoint, so we resolve the URL
-// here (the releases API is already used for the changelog) and hand it over.
-async function latestPrerelease(): Promise<{ tag: string; version: string; manifest: string } | null> {
-  try {
-    const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
-    if (!res.ok) return null;
-    const all = await res.json();
-    for (const r of all) {
-      if (!r.prerelease || r.draft) continue;
-      const asset = (r.assets ?? []).find((a: { name: string }) => a.name === "latest.json");
-      if (!asset) continue; // a pre-release with no manifest can't be updated to
-      return {
-        tag: r.tag_name,
-        version: String(r.tag_name).replace(/^v/, ""),
-        manifest: asset.browser_download_url,
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 /// Check the beta channel and offer the update. `interactive` reports status
 /// even when there's nothing to do (the Settings button); the launch check is
 /// silent. Returns true if an update was offered.
 export async function checkForBetaUpdate(interactive = false): Promise<boolean> {
-  const pre = await latestPrerelease();
-  if (!pre) {
+  // The updater's compiled-in endpoint is /releases/latest/, which excludes
+  // pre-releases, so resolve the newest manifest here and hand its URL over.
+  const pre = await newestRelease(true);
+  if (!pre?.manifest) {
     if (interactive)
-      await message("No beta release is available right now.", {
+      await message("Couldn't find a release to update to.", {
         title: "Check for updates",
         kind: "info",
       });
@@ -294,15 +284,14 @@ export async function checkForBetaUpdate(interactive = false): Promise<boolean> 
   }
   if (!available) {
     if (interactive)
-      await message(
-        "You're on the latest beta. Note that while you're on a beta, the stable " +
-          "channel will report nothing to install until it overtakes your version.",
-        { title: "Check for updates", kind: "info" },
-      );
+      await message("You're on the latest version, counting betas.", {
+        title: "Check for updates",
+        kind: "info",
+      });
     return false;
   }
   const yes = await ask(`Vellum ${pre.tag} is available. Install and restart?`, {
-    title: "Beta update available",
+    title: pre.prerelease ? "Beta update available" : "Update available",
     kind: "info",
   });
   if (!yes) return true;

@@ -4,7 +4,7 @@
 // /releases/latest/, which excludes pre-releases — that's the whole mechanism
 // keeping a beta away from stable users (#171). The side effect is that a beta
 // tester is cut off from the NEXT beta too, so each one is a manual install.
-// With this on, the update check goes to the newest pre-release instead.
+// With this on, the update check goes to the newest release, beta or stable (#291).
 //
 // localStorage like the other UI preferences; the backend has no opinion.
 

@@ -679,9 +679,8 @@
             <span class="flex flex-col">
               <span class="text-sm">Beta updates</span>
               <span class="text-xs text-muted-foreground">
-                Receive pre-release builds. While you're on a beta the stable
-                channel reports nothing to install, since your version is already
-                ahead of it — you'll move back onto stable when it overtakes you.
+                Receive pre-release builds too. You're offered whichever is newer,
+                the latest beta or the latest stable release.
               </span>
             </span>
             <input
