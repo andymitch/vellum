@@ -74,6 +74,15 @@ export function parseNote(text: string): ParsedNote {
 /// The type of a note, without needing the rest of the split.
 export const noteTypeOf = (text: string): NoteType => parseNote(text).type;
 
+/// Every vault's scratch pad (#288): a Journal note at a fixed path. It is typed
+/// by that path rather than by frontmatter, so it exists before anything is
+/// written, and two devices opening it for the first time can't each add a
+/// frontmatter block that the merge would then keep twice.
+export const SCRATCH_PAD = "Scratch Pad.md";
+
+export const noteTypeAt = (path: string, text: string): NoteType =>
+  path === SCRATCH_PAD ? "journal" : noteTypeOf(text);
+
 /// Return `text` carrying `type`, adding, replacing or removing the frontmatter
 /// block as needed. The body is never touched.
 export function withType(text: string, type: NoteType): string {

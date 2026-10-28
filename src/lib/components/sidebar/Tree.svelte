@@ -1,6 +1,7 @@
 <script lang="ts">
   import Self from "./Tree.svelte";
   import type { TreeNode } from "$lib/vault";
+  import { SCRATCH_PAD } from "$lib/note-type";
   import { drag } from "$lib/dnd";
   import {
     ChevronRight,
@@ -49,7 +50,7 @@
     // `scratchpad` is the pre-#181 name, still readable from beta-era notes.
     scratchpad: NotebookPen,
   };
-  const iconFor = (path: string) => ICONS[noteTypes[path]] ?? FileText;
+  const iconFor = (path: string) => ICONS[path === SCRATCH_PAD ? "journal" : noteTypes[path]] ?? FileText;
 
   // Path currently hovered as a drop target (for highlight). Each Tree instance
   // tracks its own; only one node sits under the cursor at a time.
@@ -77,7 +78,7 @@
 {#each nodes as node (node.path)}
   <button
     type="button"
-    draggable={dnd}
+    draggable={dnd && node.path !== SCRATCH_PAD}
     class="flex w-full items-center gap-1.5 rounded py-1.5 pr-2 text-left text-[15px] transition-colors md:gap-1 md:py-1 md:text-sm {dnd
       ? '[&_*]:pointer-events-none'
       : ''} {dragOver === node.path

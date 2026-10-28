@@ -17,7 +17,7 @@
   import { markAppScroll, appScrolling } from "$lib/app-scroll";
   import { slugify } from "$lib/slug";
   import { editorSettings } from "$lib/editor-settings.svelte";
-  import { noteTypeInfo, noteTypeOf, type NoteType } from "$lib/note-type";
+  import { noteTypeInfo, noteTypeAt, type NoteType } from "$lib/note-type";
   import MarkdownToolbar from "$lib/components/editor/MarkdownToolbar.svelte";
   import { X } from "@lucide/svelte";
 
@@ -99,7 +99,7 @@
   // exactly one operational mode, drawn by its own component.
   const view = $derived(noteType === "journal" ? "journal" : singleView ? "source" : mode);
   $effect(() => {
-    noteType = noteTypeOf(content);
+    noteType = noteTypeAt(path, content);
   });
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;

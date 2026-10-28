@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isBlankNote, newNoteContent } from "./note-type";
+import { SCRATCH_PAD, isBlankNote, newNoteContent, noteTypeAt } from "./note-type";
 
 test("blank: nothing, whitespace, a fresh typed note, empty journal cells", () => {
   for (const t of ["", "  \n\n", newNoteContent("journal"), newNoteContent("markdown")]) {
@@ -16,4 +16,11 @@ test("not blank: any text, in the body or a journal cell", () => {
   expect(isBlankNote("---\nMeeting with Sam\n---\n")).toBe(false);
   expect(isBlankNote("---\ntype: journal\ntags: [x]\n---\n")).toBe(false);
   expect(isBlankNote("<!-- todo -->\n")).toBe(false);
+});
+
+test("the scratch pad is a journal by its path, with or without frontmatter", () => {
+  expect(noteTypeAt(SCRATCH_PAD, "")).toBe("journal");
+  expect(noteTypeAt(SCRATCH_PAD, "plain text")).toBe("journal");
+  expect(noteTypeAt(`work/${SCRATCH_PAD}`, "")).toBe("markdown");
+  expect(noteTypeAt("other.md", newNoteContent("journal"))).toBe("journal");
 });

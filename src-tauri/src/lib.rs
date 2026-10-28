@@ -212,16 +212,15 @@ async fn set_background_sync(
 }
 
 // Apply the desktop side of the Background sync setting: remember it (for
-// close-to-tray), show/hide the tray icon (visible only while on, so it's not
-// menu-bar clutter), and register/unregister launch-at-login. Shared by the
-// command and the tray's "Turn off" item.
+// close-to-tray), put its status in the tray menu, and register/unregister
+// launch-at-login. Shared by the command and the tray's "Turn off" item.
 #[cfg(desktop)]
 fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
     use std::sync::atomic::Ordering;
     use tauri_plugin_autostart::ManagerExt;
     LIVE_SYNC.store(enabled, Ordering::Relaxed);
-    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
-        let _ = tray.set_visible(enabled);
+    if let (Some(tray), Ok(menu)) = (app.try_state::<tauri::tray::TrayIcon>(), tray_menu(app, enabled)) {
+        let _ = tray.set_menu(Some(menu));
     }
     let autostart = app.autolaunch();
     let _ = if enabled {
@@ -229,9 +228,10 @@ fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
     } else {
         autostart.disable()
     };
-    // Turned the hub off while running window-less (menu-bar agent): nothing left
-    // to keep the process around for, so exit cleanly instead of lingering invisibly.
-    if !enabled && app.webview_windows().is_empty() {
+    // Turned the hub off while running without the main window (menu-bar agent):
+    // nothing left to keep the process around for, so exit cleanly instead of
+    // lingering invisibly. The hidden popup doesn't count.
+    if !enabled && app.get_webview_window("main").is_none() {
         app.exit(0);
     }
 }
@@ -601,11 +601,24 @@ pub fn run() {
             // backgrounding, and the hub may keep the process (and its MCP
             // server) running for days — so a closed window locks them all (#274).
             if let tauri::RunEvent::WindowEvent {
+                label,
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } = &_event
             {
                 _app_handle.state::<private::PrivateVaults>().lock_all();
+                // The hidden popup would otherwise keep the app alive once the
+                // main window closes. Without the hub, closing the main window
+                // still quits; with it, drop the Dock icon as ExitRequested does.
+                #[cfg(desktop)]
+                if label == "main" {
+                    if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                        #[cfg(target_os = "macos")]
+                        let _ = _app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    } else if let Some(popup) = _app_handle.get_webview_window("popup") {
+                        let _ = popup.destroy();
+                    }
+                }
             }
             // Keep the always-on hub alive when the last window closes. ExitRequested
             // with code = None is an implicit exit (last window closed / Cmd+Q); with
@@ -717,25 +730,15 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-// System-tray icon (desktop). Shown only while Background sync is on (it's the
-// only time the app runs without a window), so it doubles as the daemon's
-// presence + control surface: a status line, Open, Turn off background sync, and
-// Quit. Built hidden at startup and managed as app state; visibility is toggled
-// by apply_desktop_background_sync.
+// Menu-bar (tray) icon (desktop). Left-click toggles the scratch-pad popup
+// (#288); right-click opens a menu to bring up the full app or quit, plus the
+// Background sync status and its off switch while the hub is on (when the app
+// may be running with no window at all).
 #[cfg(desktop)]
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::image::Image;
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::Emitter;
-
-    // Disabled header so the menu reads as the daemon's status.
-    let status = MenuItem::with_id(app, "status", "Background sync: on", false, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let show = MenuItem::with_id(app, "show", "Open Vellum", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "stop", "Turn off background sync", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Vellum", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status, &sep, &show, &stop, &quit])?;
 
     // The logo as a monochrome template image so macOS tints it to the menu-bar
     // appearance (light/dark) instead of showing the full-color app icon.
@@ -744,8 +747,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let tray = TrayIconBuilder::new()
         .icon(icon)
         .icon_as_template(true)
-        .tooltip("Vellum — background sync")
-        .menu(&menu)
+        .tooltip("Vellum")
+        .menu(&tray_menu(app.handle(), false)?)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, ev| match ev.id.as_ref() {
             "show" => show_main_window(app),
@@ -761,17 +764,93 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
+                rect,
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                toggle_popup(tray.app_handle(), rect);
             }
         })
         .build(app)?;
-    // Hidden until Background sync turns it on (see apply_desktop_background_sync).
-    let _ = tray.set_visible(false);
     app.manage(tray);
     Ok(())
+}
+
+#[cfg(desktop)]
+fn tray_menu(app: &tauri::AppHandle, sync_on: bool) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let show = MenuItem::with_id(app, "show", "Open Vellum", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Vellum", true, None::<&str>)?;
+    if !sync_on {
+        return Menu::with_items(app, &[&show, &quit]);
+    }
+    // Disabled header so the menu reads as the daemon's status.
+    let status = MenuItem::with_id(app, "status", "Background sync: on", false, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let stop = MenuItem::with_id(app, "stop", "Turn off background sync", true, None::<&str>)?;
+    Menu::with_items(app, &[&status, &sep, &show, &stop, &quit])
+}
+
+#[cfg(desktop)]
+const POPUP_W: f64 = 360.0;
+#[cfg(desktop)]
+const POPUP_H: f64 = 480.0;
+
+// When the popup last hid itself on losing focus. Clicking the tray icon while
+// the popup is open blurs it first, so without this the same click would hide it
+// and then immediately show it again.
+#[cfg(desktop)]
+static POPUP_HIDDEN_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+// Show the scratch-pad popup centred under the tray icon, or hide it if it is
+// up. Built on first use and then kept (hidden) so it reopens instantly with
+// its state; it hides whenever it loses focus.
+#[cfg(desktop)]
+fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
+    use tauri::{PhysicalPosition, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+    let just_hidden = POPUP_HIDDEN_AT
+        .lock()
+        .unwrap()
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300));
+    let popup = match app.get_webview_window("popup") {
+        Some(w) => w,
+        None => {
+            let built = WebviewWindowBuilder::new(app, "popup", WebviewUrl::default())
+                .title("Scratch Pad")
+                .inner_size(POPUP_W, POPUP_H)
+                .decorations(false)
+                .resizable(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible_on_all_workspaces(true)
+                .visible(false)
+                .disable_drag_drop_handler()
+                .build();
+            let w = match built {
+                Ok(w) => w,
+                Err(e) => return tracing::error!("failed to create the popup: {e}"),
+            };
+            let hide = w.clone();
+            w.on_window_event(move |e| {
+                if let WindowEvent::Focused(false) = e {
+                    *POPUP_HIDDEN_AT.lock().unwrap() = Some(std::time::Instant::now());
+                    let _ = hide.hide();
+                }
+            });
+            w
+        }
+    };
+    if popup.is_visible().unwrap_or(false) || just_hidden {
+        let _ = popup.hide();
+        return;
+    }
+    let scale = popup.scale_factor().unwrap_or(1.0);
+    let pos = tray.position.to_physical::<f64>(scale);
+    let size = tray.size.to_physical::<f64>(scale);
+    let x = pos.x + size.width / 2.0 - POPUP_W * scale / 2.0;
+    let _ = popup.set_position(PhysicalPosition::new(x, pos.y + size.height));
+    let _ = popup.show();
+    let _ = popup.set_focus();
 }
 
 // Build the macOS app menu. This mirrors Tauri's default menu but swaps the
