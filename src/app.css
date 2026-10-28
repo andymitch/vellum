@@ -1042,11 +1042,22 @@
 
   /* Rendered Mermaid diagrams: centered, scaled to fit, scroll if too wide. */
   .prose-content .mermaid-diagram {
+    --pele-bg: transparent;
+    --pele-fg: var(--editor-fg);
+    --pele-muted: var(--editor-muted);
+    --pele-line: var(--editor-muted);
+    --pele-surface: var(--editor-code-bg);
+    --pele-surface-alt: var(--muted);
+    --pele-border: var(--editor-border);
+    --pele-accent: var(--primary);
+    --pele-font: var(--font-sans);
+    --pele-font-mono: var(--font-mono);
     margin: 1em 0;
     text-align: center;
     overflow-x: auto;
   }
   .prose-content .mermaid-diagram svg {
+    margin-inline: auto;
     max-width: 100%;
     height: auto;
   }

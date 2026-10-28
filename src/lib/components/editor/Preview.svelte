@@ -1,7 +1,5 @@
 <script lang="ts">
   import { openExternal } from "$lib/host";
-  import { theme } from "$lib/theme.svelte";
-  import type { Mermaid } from "mermaid";
 
   import { slugify } from "$lib/slug";
   import { markAppScroll } from "$lib/app-scroll";
@@ -132,11 +130,11 @@
 
   // ---- Mermaid diagrams -------------------------------------------------
   // ```mermaid fences render as a normal code block first (hljs as plaintext),
-  // then this effect swaps each one for an SVG. mermaid is ~1MB, so it's
-  // dynamically imported the first time a diagram actually appears.
+  // then this effect swaps each one for an SVG. Pele (#289) renders them; its
+  // `lazy` entry loads only the diagram types a note uses, on first sight. Its
+  // SVG takes colors from CSS variables (`.mermaid-diagram` in app.css), so a
+  // light/dark switch recolors diagrams without rendering them again.
   // (`container` is declared above for internal-link resolution.)
-  let mermaidLib: Mermaid | undefined;
-  let mermaidThemeDark: boolean | undefined; // theme mermaid was last initialized for
   let renderSeq = 0;
 
   // Empties `placeholder` and hides it rather than removing it from the tree,
@@ -153,10 +151,10 @@
     placeholder.before(replacement);
   }
 
-  async function renderDiagram(mermaid: Mermaid, src: string, id: string) {
+  async function renderDiagram(src: string, id: string, fontFamily: string) {
     try {
-      const { svg } = await mermaid.render(id, src);
-      return svg;
+      const { renderAsync } = await import("pele/lazy");
+      return (await renderAsync(src, { idPrefix: id, fontFamily })).svg;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return `<pre class="mermaid-error">${msg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!)}</pre>`;
@@ -170,25 +168,11 @@
     const seq = ++renderSeq;
     const root = container;
     if (!root) return;
-    // Unrendered fences from a fresh {@html}, plus already-rendered diagrams
-    // that need re-theming when light/dark flips (their source is on data-src).
     const fresh = [...root.querySelectorAll<HTMLElement>("pre > code.language-mermaid")];
-    const themed = [...root.querySelectorAll<HTMLElement>(".mermaid-diagram[data-src]")];
-    if (!fresh.length && !themed.length) return;
-
-    if (!mermaidLib) {
-      mermaidLib = (await import("mermaid")).default;
-      if (seq !== renderSeq) return;
-    }
-    const mermaid = mermaidLib;
-    // initialize() resets mermaid's global state, so only call it when the theme
-    // actually changed — calling it on every render can clobber a concurrent
-    // render. securityLevel "strict" sanitizes the SVG; we still own the input.
-    const dark = theme.dark;
-    if (mermaidThemeDark !== dark) {
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
-      mermaidThemeDark = dark;
-    }
+    if (!fresh.length) return;
+    // Pele measures text to lay out the diagram, so give it the font it will be
+    // shown in.
+    const font = getComputedStyle(root).fontFamily;
 
     let i = 0;
     // Render to a string first, then re-check seq before touching live DOM, so a
@@ -196,27 +180,18 @@
     for (const codeEl of fresh) {
       const pre = codeEl.closest("pre");
       if (!pre) continue;
-      const src = codeEl.textContent ?? "";
-      const svg = await renderDiagram(mermaid, src, `mmd-${seq}-${i++}`);
+      const svg = await renderDiagram(codeEl.textContent ?? "", `mmd-${seq}-${i++}-`, font);
       if (seq !== renderSeq) return;
       const wrap = document.createElement("div");
       wrap.className = "mermaid-diagram";
-      wrap.dataset.src = src;
       wrap.innerHTML = svg;
       swapInPlace(pre, wrap);
     }
-    for (const wrap of themed) {
-      const svg = await renderDiagram(mermaid, wrap.dataset.src ?? "", `mmd-${seq}-${i++}`);
-      if (seq !== renderSeq) return;
-      wrap.innerHTML = svg;
-    }
   }
 
-  // Re-run when the rendered HTML changes (new/changed diagrams) or the theme
-  // flips (existing diagrams need recoloring).
+  // Re-run when the rendered HTML changes (new/changed diagrams).
   $effect(() => {
     html;
-    theme.dark;
     renderMermaid();
   });
 
