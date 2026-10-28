@@ -240,6 +240,12 @@ jobs:
         run: |
           node scripts/release-notes.mjs > notes.md
           cat notes.md
+          # tauri-action wrote the draft's "Building…" placeholder into the
+          # updater manifest; give it the real notes before going live (#297).
+          gh release download "$TAG" --repo "$REPO" -p latest.json
+          jq --rawfile notes notes.md '.notes = $notes' latest.json > manifest.json
+          mv manifest.json latest.json
+          gh release upload "$TAG" --repo "$REPO" latest.json --clobber
           # Publish the draft now that both builds succeeded and all artifacts
           # are attached.
           gh release edit "$TAG" --repo "$REPO" --notes-file notes.md \
