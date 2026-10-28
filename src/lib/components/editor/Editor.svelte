@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { EditorView, keymap } from "@codemirror/view";
+  import { EditorView, keymap, drawSelection } from "@codemirror/view";
+  import { selectNextOccurrence } from "@codemirror/search";
   import { EditorState, Compartment } from "@codemirror/state";
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -17,6 +18,7 @@
   import { theme } from "$lib/theme.svelte";
   import { editorSettings, contentAttrs } from "$lib/editor-settings.svelte";
   import { markAppScroll } from "$lib/app-scroll";
+  import { isMobile } from "$lib/platform";
   import { wrapInline, insertLink, toggleLinePrefix } from "./markdown-actions";
   import { frontmatterBadge } from "./frontmatter-badge";
   import { tagMarks } from "./tag-marks";
@@ -32,7 +34,15 @@
     { key: "Mod-k", run: (v: EditorView) => (insertLink(v), true) },
     // Toggle a task-list checkbox on each selected line.
     { key: "Mod--", run: (v: EditorView) => (toggleLinePrefix(v, "- [ ] "), true) },
+    // Add the next occurrence of the selection as another cursor, like an IDE
+    // (#10). Escape collapses back to one (defaultKeymap's simplifySelection).
+    { key: "Mod-d", run: selectNextOccurrence, preventDefault: true },
   ];
+
+  // Extra cursors need drawSelection to be visible: the native selection only
+  // shows the main one. Desktop only, where Cmd+D lives, so mobile keeps its
+  // native caret and selection handles.
+  const multiCursor = isMobile ? [] : [EditorState.allowMultipleSelections.of(true), drawSelection()];
 
   // Theme lives in a compartment so light/dark (and OS) changes can reconfigure
   // it without recreating the editor.
@@ -126,6 +136,7 @@
         doc: value,
         extensions: [
           history(),
+          multiCursor,
           frontmatterBadge,
           // Reads `ontag` at click time (not now), so a changed prop is picked
           // up without recreating the view.
