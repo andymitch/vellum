@@ -36,9 +36,11 @@ const FORCE_LABEL = "changelog-include";
 // Start of the current beta cycle: when the earliest vN-beta.* for this major
 // was published. Null when cutting a beta itself (a beta's notes should list
 // everything since the last stable, so testers see the whole surface they are
-// being asked to exercise) or when the release had no betas.
+// being asked to exercise), when the release had no betas, and for a hotfix
+// (vN.X): the cycle ended at vN, so a bug raised during it shipped in vN and
+// its fix belongs in the hotfix notes.
 const cycleStart = (() => {
-  if (/-beta\./.test(TAG)) return null;
+  if (!/^v\d+$/.test(TAG)) return null;
   const major = /^v(\d+)/.exec(TAG)?.[1];
   if (!major) return null;
   let dates = [];
