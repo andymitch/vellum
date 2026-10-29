@@ -684,20 +684,21 @@
   --editor-border: var(--border);
   --font-sans: -apple-system, system-ui, sans-serif;
 }
-/* Journal chunks as soft cards on the material, as Pulse draws its rows.
-   :root outranks the component's own scoped .cell-* rules. */
+/* Journal chunks sit plain on the material and get a soft rounded fill only
+   when hovered or being edited. :root outranks the component's own scoped
+   .cell-* rules. */
 :root[data-theme="system"] :is(.cell-row, .cell-editor, .cell-placeholder) {
   margin: 0;
   width: 100%;
   border-radius: 10px;
   padding: 0.5rem 0.75rem;
+  background: transparent;
+}
+:root[data-theme="system"] :is(.cell-row, .cell-placeholder):hover {
   background: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
-:root[data-theme="system"] .cell-placeholder {
-  background: color-mix(in srgb, var(--foreground) 3%, transparent);
-}
-:root[data-theme="system"] .cell-row:hover {
-  background: color-mix(in srgb, var(--foreground) 11%, transparent);
+:root[data-theme="system"] .cell-editor {
+  background: color-mix(in srgb, var(--foreground) 9%, transparent);
 }
 
 @theme inline {
