@@ -61,9 +61,17 @@ let mode = $state<Mode>(saved.mode ?? "system");
 let font = $state<string>(saved.font ?? "basic");
 // Reactive mirror of the OS preference so `dark` recomputes when it flips.
 let systemDark = $state(mql.matches);
+// The menu-bar popup (#288) ignores the user's palette, mode and font and
+// follows the OS instead, so it reads as part of the system rather than the app.
+let systemOnly = false;
 
 function resolvedDark(): boolean {
-  return mode === "dark" || (mode === "system" && systemDark);
+  return systemOnly ? systemDark : mode === "dark" || (mode === "system" && systemDark);
+}
+
+export function useSystemTheme() {
+  systemOnly = true;
+  applyTheme();
 }
 
 // --- Material You ("Dynamic" palette) -------------------------------------
@@ -173,6 +181,12 @@ function applyMonetVars(el: HTMLElement, m: Monet | null, dark: boolean) {
 
 export function applyTheme() {
   const el = document.documentElement;
+  if (systemOnly) {
+    el.dataset.theme = "system";
+    el.classList.toggle("dark", systemDark);
+    clearMonetVars(el);
+    return;
+  }
   // "things" is the default :root palette — no attribute needed.
   if (palette === "things") delete el.dataset.theme;
   else el.dataset.theme = palette;
@@ -220,7 +234,7 @@ function persist() {
 // Follow the OS when in "system" mode.
 mql.addEventListener("change", (e) => {
   systemDark = e.matches;
-  if (mode === "system") applyTheme();
+  if (mode === "system" || systemOnly) applyTheme();
 });
 
 export const theme = {

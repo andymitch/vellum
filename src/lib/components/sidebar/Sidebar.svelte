@@ -48,7 +48,7 @@
     import { portal } from "$lib/portal";
     import { drag } from "$lib/dnd";
     import { createAndOpenNote, duplicateNote, type OpenNote } from "$lib/notes";
-    import { NOTE_TYPES, type NoteType } from "$lib/note-type";
+    import { NOTE_TYPES, SCRATCH_PAD, type NoteType } from "$lib/note-type";
 
     // Sharing and joining used to be hidden in the web build, which had no node
     // to sync with. Every build is a real peer now — the browser runs the same
@@ -120,6 +120,12 @@
     let vaultsError = $state<string | null>(null);
     let activeVault = $state<string | null>(null);
     let tree = $state<TreeNode[]>([]);
+    // The vault's scratch pad heads the tree whether or not it has been written
+    // to yet; the first entry made in it creates the note (#288).
+    const shownTree = $derived([
+        { name: SCRATCH_PAD, path: SCRATCH_PAD, is_dir: false, children: [] },
+        ...tree.filter((n) => n.path !== SCRATCH_PAD),
+    ]);
     // path -> note type, for the tree's per-type icons (#180/#181). Fetched
     // separately from the tree because it reads every note (a blob read plus a
     // CRDT merge each), and refreshTree runs on every vault-changed event — so
@@ -475,6 +481,7 @@
 
     function openMenu(e: MouseEvent, node: TreeNode) {
         e.preventDefault();
+        if (node.path === SCRATCH_PAD) return;
         menu = { x: e.clientX, y: e.clientY, node };
     }
     const closeMenu = () => (menu = null);
@@ -704,9 +711,9 @@ Delete this note whenever you're ready. Happy writing!
               }
             : undefined}
     >
-        {#if activeVault && tree.length}
+        {#if activeVault}
             <Tree
-                nodes={tree}
+                nodes={shownTree}
                 {activePath}
                 {expanded}
                 dnd={dndEnabled}
@@ -716,8 +723,6 @@ Delete this note whenever you're ready. Happy writing!
                 onmove={moveTo}
                 {noteTypes}
             />
-        {:else if activeVault}
-            <p class="px-2 py-4 text-sm text-muted-foreground">Empty vault.</p>
         {:else if vaultsError}
             <p class="px-2 py-4 text-sm text-destructive" role="alert">
                 {vaultsError}
