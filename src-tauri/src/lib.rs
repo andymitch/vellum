@@ -477,6 +477,9 @@ pub fn run() {
     // "menu_quit" item (see setup_macos_menu) and route it here: with the hub on,
     // just close the window (the agent lives on); otherwise quit. The tray's "Quit
     // Vellum" hard-quits via app.exit(0).
+    // Turns the menu-bar popup into an NSPanel (see toggle_popup).
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
     #[cfg(target_os = "macos")]
     let builder = builder.on_menu_event(|app, ev| {
         if ev.id().as_ref() == "menu_close_window" {
@@ -850,18 +853,27 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
                 Ok(w) => w,
                 Err(e) => return tracing::error!("failed to create the popup: {e}"),
             };
-            // Joining every Space isn't enough to show over a full-screen app:
-            // macOS keeps other windows out of its Space unless they're also
-            // marked as a full-screen auxiliary, as a status-item popover is (#303).
+            // A window of a regular (Dock) app can't enter another app's
+            // full-screen Space, and showing it activates the app, which switches
+            // Spaces. A non-activating panel marked as a full-screen auxiliary
+            // does both, as a status-item popover does (#303).
             #[cfg(target_os = "macos")]
-            if let Ok(ptr) = w.ns_window() {
-                use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-                let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
-                ns.setCollectionBehavior(
-                    ns.collectionBehavior()
-                        | NSWindowCollectionBehavior::CanJoinAllSpaces
-                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
-                );
+            {
+                use objc2_app_kit::{NSWindowCollectionBehavior, NSWindowStyleMask};
+                use tauri_nspanel::WebviewWindowExt;
+                match w.to_panel::<PopupPanel>() {
+                    Ok(panel) => {
+                        let mask = panel.as_panel().styleMask() | NSWindowStyleMask::NonactivatingPanel;
+                        if let Err(e) = panel.set_style_mask(mask) {
+                            tracing::warn!("popup panel style: {e:?}");
+                        }
+                        panel.set_collection_behavior(
+                            NSWindowCollectionBehavior::CanJoinAllSpaces
+                                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                        );
+                    }
+                    Err(e) => tracing::warn!("popup panel: {e}"),
+                }
             }
             let hide = w.clone();
             w.on_window_event(move |e| {
@@ -882,8 +894,25 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
     let size = tray.size.to_physical::<f64>(scale);
     let x = pos.x + size.width / 2.0 - POPUP_W * scale / 2.0;
     let _ = popup.set_position(PhysicalPosition::new(x, pos.y + size.height));
+    // As a non-activating panel it takes the keyboard without bringing the app
+    // forward, which would switch away from a full-screen Space.
+    #[cfg(target_os = "macos")]
+    if let Ok(panel) = tauri_nspanel::ManagerExt::get_webview_panel(app, "popup") {
+        panel.show_and_make_key();
+        return;
+    }
     let _ = popup.show();
     let _ = popup.set_focus();
+}
+
+#[cfg(target_os = "macos")]
+tauri_nspanel::tauri_panel! {
+    panel!(PopupPanel {
+        config: {
+            can_become_key_window: true,
+            is_floating_panel: true
+        }
+    })
 }
 
 // Build the macOS app menu. This mirrors Tauri's default menu but swaps the

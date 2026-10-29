@@ -78,6 +78,9 @@ tauri-plugin-biometric = "2"
 # Versions match what tauri already resolves.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# The menu-bar popup as a non-activating NSPanel, so it can show over another
+# app's full-screen Space (#303).
+tauri-nspanel = "2.1"
 objc2-app-kit = { version = "0.3", features = [
   "NSWindow",
   "NSButton",
