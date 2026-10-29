@@ -850,6 +850,19 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
                 Ok(w) => w,
                 Err(e) => return tracing::error!("failed to create the popup: {e}"),
             };
+            // Joining every Space isn't enough to show over a full-screen app:
+            // macOS keeps other windows out of its Space unless they're also
+            // marked as a full-screen auxiliary, as a status-item popover is (#303).
+            #[cfg(target_os = "macos")]
+            if let Ok(ptr) = w.ns_window() {
+                use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+                let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+                ns.setCollectionBehavior(
+                    ns.collectionBehavior()
+                        | NSWindowCollectionBehavior::CanJoinAllSpaces
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+            }
             let hide = w.clone();
             w.on_window_event(move |e| {
                 if let WindowEvent::Focused(false) = e {
