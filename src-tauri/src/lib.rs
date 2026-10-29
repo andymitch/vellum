@@ -828,14 +828,16 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
                 .visible_on_all_workspaces(true)
                 .visible(false)
                 .disable_drag_drop_handler();
-            // Look like a native popover (as Pulse's NSPopover does): rounded,
-            // shadowed, and see-through to the system material, Liquid Glass on
-            // macOS 26 and the popover blur before it. The transparent webview is
-            // what needs `macOSPrivateApi`.
+            // Look like a native popover (as Pulse's NSPopover does): rounded and
+            // see-through to the system material, Liquid Glass on macOS 26 and the
+            // popover blur before it. No window shadow: AppKit draws it, with a
+            // light rim in dark mode, around the square window rather than the
+            // rounded material, and the glass's own edge already sets it apart.
+            // The transparent webview is what needs `macOSPrivateApi`.
             #[cfg(target_os = "macos")]
             {
                 use tauri::window::{Effect, EffectState, EffectsBuilder};
-                b = b.transparent(true).shadow(true).effects(
+                b = b.transparent(true).shadow(false).effects(
                     EffectsBuilder::new()
                         .effects([Effect::LiquidGlassRegular, Effect::Popover])
                         .state(EffectState::Active)
