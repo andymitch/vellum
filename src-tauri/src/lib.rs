@@ -795,6 +795,8 @@ fn tray_menu(app: &tauri::AppHandle, sync_on: bool) -> tauri::Result<tauri::menu
 const POPUP_W: f64 = 360.0;
 #[cfg(desktop)]
 const POPUP_H: f64 = 480.0;
+#[cfg(target_os = "macos")]
+const POPUP_RADIUS: f64 = 12.0;
 
 // When the popup last hid itself on losing focus. Clicking the tray icon while
 // the popup is open blurs it first, so without this the same click would hide it
@@ -815,7 +817,8 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
     let popup = match app.get_webview_window("popup") {
         Some(w) => w,
         None => {
-            let built = WebviewWindowBuilder::new(app, "popup", WebviewUrl::default())
+            #[allow(unused_mut)]
+            let mut b = WebviewWindowBuilder::new(app, "popup", WebviewUrl::default())
                 .title("Scratch Pad")
                 .inner_size(POPUP_W, POPUP_H)
                 .decorations(false)
@@ -824,8 +827,23 @@ fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
                 .skip_taskbar(true)
                 .visible_on_all_workspaces(true)
                 .visible(false)
-                .disable_drag_drop_handler()
-                .build();
+                .disable_drag_drop_handler();
+            // Look like a native popover (as Pulse's NSPopover does): rounded,
+            // shadowed, and see-through to the system material, Liquid Glass on
+            // macOS 26 and the popover blur before it. The transparent webview is
+            // what needs `macOSPrivateApi`.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::window::{Effect, EffectState, EffectsBuilder};
+                b = b.transparent(true).shadow(true).effects(
+                    EffectsBuilder::new()
+                        .effects([Effect::LiquidGlassRegular, Effect::Popover])
+                        .state(EffectState::Active)
+                        .radius(POPUP_RADIUS)
+                        .build(),
+                );
+            }
+            let built = b.build();
             let w = match built {
                 Ok(w) => w,
                 Err(e) => return tracing::error!("failed to create the popup: {e}"),

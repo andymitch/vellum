@@ -36,20 +36,15 @@
 </script>
 
 <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
-  <header class="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
-    <span class="text-sm font-medium">Scratch Pad</span>
-    {#if vaults.length > 1}
-      <select
-        bind:value={vault}
-        aria-label="Vault"
-        class="ml-auto min-w-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground"
-      >
+  {#if vaults.length > 1}
+    <header class="flex shrink-0 justify-end px-3 pt-2.5">
+      <select bind:value={vault} aria-label="Vault" class="min-w-0 text-xs text-muted-foreground">
         {#each vaults as v (v.id)}
           <option value={v.id}>{v.name}</option>
         {/each}
       </select>
-    {/if}
-  </header>
+    </header>
+  {/if}
   <!-- contain:paint keeps LockScreen's fixed overlay inside this box, so the
        switcher above stays usable on a locked vault. -->
   <div class="relative flex min-h-0 flex-1 flex-col [contain:paint]">

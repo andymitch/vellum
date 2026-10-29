@@ -653,12 +653,15 @@
 
 /* ====================== System (popup only) ====================== */
 /* The menu-bar popup (#288) follows the OS instead of the user's palette, so it
-   reads as part of macOS: WebKit's -apple-system-* colors track the system
-   appearance and accent color. Light and dark share one block because those
-   colors resolve per appearance on their own (color-scheme). */
+   reads as part of macOS, like Pulse's popover: WebKit's -apple-system-* colors
+   track the system appearance and accent color, and the background is clear so
+   the window's native material (Liquid Glass, or the popover blur) shows
+   through. Light and dark share one block because those colors resolve per
+   appearance on their own (color-scheme). */
 [data-theme="system"] {
   color-scheme: light dark;
-  --background: -apple-system-window-background;
+  font-size: 13px;
+  --background: transparent;
   --foreground: -apple-system-label;
   --card: -apple-system-control-background;
   --card-foreground: -apple-system-label;
@@ -680,6 +683,21 @@
   --editor-code-bg: -apple-system-control-background;
   --editor-border: var(--border);
   --font-sans: -apple-system, system-ui, sans-serif;
+}
+/* Journal chunks as soft cards on the material, as Pulse draws its rows.
+   :root outranks the component's own scoped .cell-* rules. */
+:root[data-theme="system"] :is(.cell-row, .cell-editor, .cell-placeholder) {
+  margin: 0;
+  width: 100%;
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+:root[data-theme="system"] .cell-placeholder {
+  background: color-mix(in srgb, var(--foreground) 3%, transparent);
+}
+:root[data-theme="system"] .cell-row:hover {
+  background: color-mix(in srgb, var(--foreground) 11%, transparent);
 }
 
 @theme inline {

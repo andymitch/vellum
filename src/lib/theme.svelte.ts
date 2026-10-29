@@ -184,6 +184,7 @@ export function applyTheme() {
   if (systemOnly) {
     el.dataset.theme = "system";
     el.classList.toggle("dark", systemDark);
+    clearMonetVars(el);
     return;
   }
   // "things" is the default :root palette — no attribute needed.
