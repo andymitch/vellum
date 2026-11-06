@@ -12,10 +12,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
-  // Implemented in Rust (libvellum_lib.so). Hands the JNI VM + app context to
-  // ndk_context so iroh's network monitor doesn't panic on Android.
-  private external fun initAndroidContext(context: Context)
-
   // Tells iroh the network changed (Android doesn't surface this natively), so
   // it re-probes and migrates connections on wifi <-> cellular handoff.
   private external fun notifyNetworkChange()
@@ -28,7 +24,6 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     instance = this
-    initAndroidContext(applicationContext)
     watchNetworkChanges()
   }
 
