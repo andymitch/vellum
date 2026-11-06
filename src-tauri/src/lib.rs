@@ -9,44 +9,6 @@ mod vault;
 
 use tauri::Manager;
 
-// Guards one-time Android context init. An Activity can be recreated within the
-// same process (e.g. a config change), which would call initAndroidContext again,
-// but ndk_context::initialize_android_context panics if called twice — and the
-// cached VM/context are still valid for the (same) process — so we init only once.
-#[cfg(target_os = "android")]
-static ANDROID_CTX_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Called from MainActivity.onCreate (Kotlin `external fun`). Tauri's Android
-/// runtime never populates the `ndk-context` crate global, so libraries that
-/// read it (iroh's network monitor) panic with "android context was not
-/// initialized". We hand it the JavaVM + Application context here, before the
-/// iroh node is lazily built on the first command.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_andymitch_vellum_MainActivity_initAndroidContext(
-    env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-    context: jni::objects::JObject,
-) {
-    use jni::objects::JObject;
-    // Already initialized for this process (e.g. the Activity was recreated by a
-    // config change) — skip; re-initializing panics.
-    if ANDROID_CTX_INIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    let Ok(vm) = env.get_java_vm() else { return };
-    let Ok(global) = env.new_global_ref(&context) else { return };
-    // SAFETY: vm pointer is valid for the process; the context global ref is
-    // leaked below so it outlives all readers.
-    unsafe {
-        ndk_context::initialize_android_context(
-            vm.get_java_vm_pointer() as *mut std::ffi::c_void,
-            JObject::as_raw(global.as_obj()) as *mut std::ffi::c_void,
-        );
-    }
-    std::mem::forget(global);
-}
-
 /// Called from MainActivity's ConnectivityManager callback when the active
 /// network changes. Android doesn't surface this to native code, so we notify
 /// iroh explicitly to re-probe and migrate connections (e.g. wifi <-> cellular).
