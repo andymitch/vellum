@@ -11,7 +11,6 @@
     "frontendDist": "../build"
   },
   "app": {
-    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Vellum",

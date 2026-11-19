@@ -3,6 +3,6 @@
   "identifier": "desktop",
   "description": "Desktop-only permissions: in-app auto-update.",
   "platforms": ["macOS", "windows", "linux"],
-  "windows": ["main", "popup"],
+  "windows": ["main"],
   "permissions": ["updater:default", "process:allow-restart"]
 }
