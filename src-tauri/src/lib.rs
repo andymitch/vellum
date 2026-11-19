@@ -192,7 +192,7 @@ fn apply_desktop_background_sync(app: &tauri::AppHandle, enabled: bool) {
     };
     // Turned the hub off while running without the main window (menu-bar agent):
     // nothing left to keep the process around for, so exit cleanly instead of
-    // lingering invisibly. The hidden popup doesn't count.
+    // lingering invisibly.
     if !enabled && app.get_webview_window("main").is_none() {
         app.exit(0);
     }
@@ -439,9 +439,6 @@ pub fn run() {
     // "menu_quit" item (see setup_macos_menu) and route it here: with the hub on,
     // just close the window (the agent lives on); otherwise quit. The tray's "Quit
     // Vellum" hard-quits via app.exit(0).
-    // Turns the menu-bar popup into an NSPanel (see toggle_popup).
-    #[cfg(target_os = "macos")]
-    let builder = builder.plugin(tauri_nspanel::init());
     #[cfg(target_os = "macos")]
     let builder = builder.on_menu_event(|app, ev| {
         if ev.id().as_ref() == "menu_close_window" {
@@ -566,24 +563,11 @@ pub fn run() {
             // backgrounding, and the hub may keep the process (and its MCP
             // server) running for days — so a closed window locks them all (#274).
             if let tauri::RunEvent::WindowEvent {
-                label,
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } = &_event
             {
                 _app_handle.state::<private::PrivateVaults>().lock_all();
-                // The hidden popup would otherwise keep the app alive once the
-                // main window closes. Without the hub, closing the main window
-                // still quits; with it, drop the Dock icon as ExitRequested does.
-                #[cfg(desktop)]
-                if label == "main" {
-                    if LIVE_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
-                        #[cfg(target_os = "macos")]
-                        let _ = _app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    } else if let Some(popup) = _app_handle.get_webview_window("popup") {
-                        let _ = popup.destroy();
-                    }
-                }
             }
             // Keep the always-on hub alive when the last window closes. ExitRequested
             // with code = None is an implicit exit (last window closed / Cmd+Q); with
@@ -695,8 +679,8 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-// Menu-bar (tray) icon (desktop). Left-click toggles the scratch-pad popup
-// (#288); right-click opens a menu to bring up the full app or quit, plus the
+// Menu-bar (tray) icon (desktop). Left-click brings up the main window;
+// right-click opens a menu to bring up the full app or quit, plus the
 // Background sync status and its off switch while the hub is on (when the app
 // may be running with no window at all).
 #[cfg(desktop)]
@@ -729,11 +713,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
-                rect,
                 ..
             } = event
             {
-                toggle_popup(tray.app_handle(), rect);
+                show_main_window(tray.app_handle());
             }
         })
         .build(app)?;
@@ -754,127 +737,6 @@ fn tray_menu(app: &tauri::AppHandle, sync_on: bool) -> tauri::Result<tauri::menu
     let sep = PredefinedMenuItem::separator(app)?;
     let stop = MenuItem::with_id(app, "stop", "Turn off background sync", true, None::<&str>)?;
     Menu::with_items(app, &[&status, &sep, &show, &stop, &quit])
-}
-
-#[cfg(desktop)]
-const POPUP_W: f64 = 360.0;
-#[cfg(desktop)]
-const POPUP_H: f64 = 480.0;
-#[cfg(target_os = "macos")]
-const POPUP_RADIUS: f64 = 12.0;
-
-// When the popup last hid itself on losing focus. Clicking the tray icon while
-// the popup is open blurs it first, so without this the same click would hide it
-// and then immediately show it again.
-#[cfg(desktop)]
-static POPUP_HIDDEN_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-
-// Show the scratch-pad popup centred under the tray icon, or hide it if it is
-// up. Built on first use and then kept (hidden) so it reopens instantly with
-// its state; it hides whenever it loses focus.
-#[cfg(desktop)]
-fn toggle_popup(app: &tauri::AppHandle, tray: tauri::Rect) {
-    use tauri::{PhysicalPosition, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-    let just_hidden = POPUP_HIDDEN_AT
-        .lock()
-        .unwrap()
-        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300));
-    let popup = match app.get_webview_window("popup") {
-        Some(w) => w,
-        None => {
-            #[allow(unused_mut)]
-            let mut b = WebviewWindowBuilder::new(app, "popup", WebviewUrl::default())
-                .title("Scratch Pad")
-                .inner_size(POPUP_W, POPUP_H)
-                .decorations(false)
-                .resizable(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .visible_on_all_workspaces(true)
-                .visible(false)
-                .disable_drag_drop_handler();
-            // Look like a native popover (as Pulse's NSPopover does): rounded and
-            // see-through to the system material, Liquid Glass on macOS 26 and the
-            // popover blur before it. No window shadow: AppKit draws it, with a
-            // light rim in dark mode, around the square window rather than the
-            // rounded material, and the glass's own edge already sets it apart.
-            // The transparent webview is what needs `macOSPrivateApi`.
-            #[cfg(target_os = "macos")]
-            {
-                use tauri::window::{Effect, EffectState, EffectsBuilder};
-                b = b.transparent(true).shadow(false).effects(
-                    EffectsBuilder::new()
-                        .effects([Effect::LiquidGlassRegular, Effect::Popover])
-                        .state(EffectState::Active)
-                        .radius(POPUP_RADIUS)
-                        .build(),
-                );
-            }
-            let built = b.build();
-            let w = match built {
-                Ok(w) => w,
-                Err(e) => return tracing::error!("failed to create the popup: {e}"),
-            };
-            // A window of a regular (Dock) app can't enter another app's
-            // full-screen Space, and showing it activates the app, which switches
-            // Spaces. A non-activating panel marked as a full-screen auxiliary
-            // does both, as a status-item popover does (#303).
-            #[cfg(target_os = "macos")]
-            {
-                use objc2_app_kit::{NSWindowCollectionBehavior, NSWindowStyleMask};
-                use tauri_nspanel::WebviewWindowExt;
-                match w.to_panel::<PopupPanel>() {
-                    Ok(panel) => {
-                        let mask = panel.as_panel().styleMask() | NSWindowStyleMask::NonactivatingPanel;
-                        if let Err(e) = panel.set_style_mask(mask) {
-                            tracing::warn!("popup panel style: {e:?}");
-                        }
-                        panel.set_collection_behavior(
-                            NSWindowCollectionBehavior::CanJoinAllSpaces
-                                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-                        );
-                    }
-                    Err(e) => tracing::warn!("popup panel: {e}"),
-                }
-            }
-            let hide = w.clone();
-            w.on_window_event(move |e| {
-                if let WindowEvent::Focused(false) = e {
-                    *POPUP_HIDDEN_AT.lock().unwrap() = Some(std::time::Instant::now());
-                    let _ = hide.hide();
-                }
-            });
-            w
-        }
-    };
-    if popup.is_visible().unwrap_or(false) || just_hidden {
-        let _ = popup.hide();
-        return;
-    }
-    let scale = popup.scale_factor().unwrap_or(1.0);
-    let pos = tray.position.to_physical::<f64>(scale);
-    let size = tray.size.to_physical::<f64>(scale);
-    let x = pos.x + size.width / 2.0 - POPUP_W * scale / 2.0;
-    let _ = popup.set_position(PhysicalPosition::new(x, pos.y + size.height));
-    // As a non-activating panel it takes the keyboard without bringing the app
-    // forward, which would switch away from a full-screen Space.
-    #[cfg(target_os = "macos")]
-    if let Ok(panel) = tauri_nspanel::ManagerExt::get_webview_panel(app, "popup") {
-        panel.show_and_make_key();
-        return;
-    }
-    let _ = popup.show();
-    let _ = popup.set_focus();
-}
-
-#[cfg(target_os = "macos")]
-tauri_nspanel::tauri_panel! {
-    panel!(PopupPanel {
-        config: {
-            can_become_key_window: true,
-            is_floating_panel: true
-        }
-    })
 }
 
 // Build the macOS app menu. This mirrors Tauri's default menu but swaps the
